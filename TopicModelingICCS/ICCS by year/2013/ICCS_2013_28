@@ -1,0 +1,1063 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 439 – 448
+
+International Conference on Computational Science, ICCS 2013
+
+A parallel solver for incompressible ﬂuid ﬂows
+Yushan Wanga,∗, Marc Baboulina,b , Jack Dongarrac , Jo¨el Falcoua , Yann Fraigneaua,d ,
+Olivier Le Maˆıtrea,d
+a Universit´
+e Paris-Sud, 91400, Orsay, France
+1 rue Honor´e d’Estienne d’Orves, 91120, Palaiseau, France
+c University of Tennessee, 37996, Knoxville, USA
+d LIMSI, Rue John Von Neumann, 91400, Orsay, France
+
+b INRIA,
+
+Abstract
+The Navier-Stokes equations describe a large class of ﬂuid ﬂows but are diﬃcult to solve analytically because of their nonlinearity. We present in this paper a parallel solver for the 3-D Navier-Stokes equations of incompressible unsteady ﬂows with
+constant coeﬃcients, discretized by the ﬁnite diﬀerence method. We apply the prediction-projection method which transforms
+the Navier-Stokes equations into three Helmholtz equations and one Poisson equation. For each Helmholtz system, we apply
+the Alternating Direction Implicit (ADI) method resulting in three tridiagonal systems. The Poisson equation is solved using
+partial diagonalization which transforms the Laplacian operator into a tridiagonal one. We describe an implementation based
+on MPI where the computations are performed on each subdomain and information is exchanged on the interfaces, and where
+the tridiagonal system solutions are accelerated using vectorization techniques. We present performance results on a current
+multicore system.
+Keywords: Navier-Stokes equations; prediction-projection; ADI; partial diagonalization; SIMD; parallel computing.
+
+1. Introduction
+The incompressible Navier-Stokes (NS) equations express the Newton’s second law applied to ﬂuid motion,
+with the assumptions that the ﬂuid density is constant and the ﬂuid stress is the sum of a viscous term (proportional
+to the gradient of the velocity) and an isotropic pressure term. These equations are widely used to model ﬂuid
+ﬂows in numerous scientiﬁc and industrial applications (e.g. in aeronautics, aerospace, meteorology, thermohydraulics, and climatology). Eﬃcient numerical methods for the NS equations have then received considerable
+attention over the last decades, as their simulation remains a challenging problem especially for ﬂows exhibiting
+complex transient, turbulent dynamics and features at many diﬀerent scales. Alternative numerical methods for
+the NS equations include ﬁnite diﬀerence (FD) [1, 2, 3, 4], ﬁnite element [5, 6], ﬁnite volume [1, 2], spectral
+methods [7, 8] and mesh-free methods such as the vortex method [9] or smoothed particle hydrodynamics [10,
+11, 12]. These methods have pros and cons, depending on the problem considered. In addition, the evolution
+of computer architectures and the emergence of massively parallel computers call for the development of new
+algorithms to fully exploit hardware advances.
+∗ Corresponding
+
+author. Tel.: +33-(0)174854212 .
+E-mail address: yushan.wang@u-psud.fr.
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.207
+
+440
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+In this paper, we focus on FD discretizations (of second order in time and space) of the three-dimensional NS
+equations which are solved using the classical prediction-projection method [13, 14, 15, 16]. This method relies
+on an explicit treatment of the non-linear terms and an implicit treatment of the viscous and pressure terms to
+ensure stability. As detailed in Section 2, it leads to the solution of 3-D diﬀusion (velocity) and Poisson (pressure) equations that constitute the main computational workload of the simulation. Further, we restrict ourself
+to spatial discretizations on structured cartesian grids resulting from the tensorization of one-dimensional grid.
+Although not general, the structured character of these grids greatly facilitates the design and eﬃcient implementation of the algorithms on modern computer architectures, and encompasses many situations of interest. Even
+for these simple meshes, 3-D parallel solvers are needed since complex ﬂow simulations and targeted applications
+commonly require grid resolution corresponding to 107 − 109 unknowns to properly capture the ﬂow dynamics. These large simulations require the use of parallel computers. Another important advantage brought by the
+prediction-projection approach on tensored grids is that it leads to Helmholtz-like or Poisson equations that can
+be consistently reduced to one-dimensional operators using respectively operator splitting and partial diagonalization [17]. The second order discretization results in tridiagonal systems that can solved eﬃciently by taking
+advantage of current parallel architectures. The parallel strategy is based on the idea of dividing the computational
+work between several processors which perform their calculations concurrently. We use a domain decomposition
+method in which the computational domain is divided into subdomains, each associated to one processor. The
+Poisson and Helmholtz-like equations are then solved over each subdomain in parallel using the Schur complement method [18] to ensure the continuity of the solution at the subdomains interfaces. This involves data
+communication between neighboring subdomains for the interface solution. Communications are handled by the
+Message-Passing-Interface (MPI) [19]. We also rely on the BLAS [20], LAPACK [21] and ScaLAPACK [22]
+kernels from the MKL [23] library to perform the computations. In addition to the combination of the numerical
+methods mentioned above, an important contribution of this work is the implementation of a vectorized version of
+Thomas algorithm for a fast solution of the tridiagonal systems.
+This paper is organized as follows. Section 2 summarizes the solution of the Navier-Stokes equations for
+incompressible ﬂuid ﬂows and the prediction-projection method. Then, the FD discretization in space and time is
+introduced together with the directional splitting and partial diagonalization to obtain the tridiagonal systems to
+be solved. Section 3 discusses the parallel implementation and emphasizes on vectorization techniques to improve
+the Thomas algorithm for the solution of the tridiagonal systems. In Section 4, several performance measurements
+of our Navier-Stokes solver are provided using a current parallel system. Concluding remarks are presented in
+Section 5.
+2. Navier-Stokes Problem
+We consider the unsteady ﬂow of a incompressible Newtonian ﬂuid governed by the Navier–Stokes (NS)
+equations that can be expressed as
+∂V
+1
++ ∇ · (V T ⊗ V) = −∇P +
+ΔV,
+∂t
+Re
+
+(1)
+
+∇ · V = 0,
+
+(2)
+
+where V = (u(x, y, z, t), v(x, y, z, t), w(x, y, z, t))T is the velocity vector and P = P(x, y, z, t) is the pressure. Eqs. (1)
+and (2) state the conservation of momentum and mass respectively. We have denoted ∇ the nabla and Δ the
+Laplacian operators, while ⊗ is the Kronecker product [24]. In the following, we use the shorthand notation
+CT := ∇ · (V T ⊗ V) for the convective term. In Eq. (1), Re := ρUL/μ is the Reynolds number based on a
+reference length L, a reference velocity U, the ﬂuid density ρ, and the dynamic viscosity μ. The Reynolds number
+is a good indicator of the ﬂuid state (laminar, transient, turbulent). We see from Eq. (1) that the larger Re is,
+the more dominant the convection is, with respect to viscous eﬀects. This leads to the onset of ﬂow instabilities
+and a turbulent state of the ﬂow for high Reynolds numbers. In turbulent ﬂows, the order of magnitude for the
+3
+ratio between the largest and the smallest length scale of eddy structures is Re 4 . So, a ﬁner discretization is
+required when the Reynolds number increases and the resulting order of magnitude for the 3D mesh size will be
+9
+Re 4 . Solving the NS equations also involves deﬁning the initial and boundary conditions. The details about the
+
+441
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+implementations of the boundary condition will not be discussed in this paper. We mention that our code can deal
+with mixed Dirichlet and Neumann (homogeneous or not), and periodic/symmetric boundary conditions. The
+initial conditions for velocity and pressure will depend on the physical problem.
+2.1. Prediction-Projection method
+In this section, we present the prediction-projection method applied on the NS equations. The spatial discretization uses second-order ﬁnite diﬀerences approximations of the diﬀerential operator. The domain is discretized using Nx × Ny × Nz cells, where Ni the number of mesh along the i−directions (i = x, y, z). The discrete
+velocity and pressure unknowns are deﬁned along a staggered arrangement, in which the pressure is deﬁned on
+the center of each cell, the velocity components are deﬁned on the center of the corresponding edge, see Fig. 1, to
+prevent spurious oscillations [3].
+
+v
+,
+,
+
+,
+,
+
+,
+
+,
+,
+
+,
+,
+
+,
+
+,
+
+,
+
+,
+,
+
+,
+,
+,
+
+,
+
+,
+
+,
+
+,
+
+,
+,
+
+,
+
+,
+
+,
+
+u
+
+,
+,
+
+Fig. 1. Staggered mesh structure.
+
+We denote the time level with upper-indices and Δt the time-step size. We rely on a second order approximation
+of the time derivative (BDF2) [25, 26], an implicit treatment of the viscous and pressure term, and a second order
+explicit extrapolation of the convective term. Then the discrete NS equations can be expressed as
+n+1
+1
+3V n+1 − 4V n + V n−1
+= −∇Pn+1 +
++ CT
+ΔV n+1 ,
+2Δt
+Re
+
+(3)
+
+∇ · V n+1 = 0,
+
+(4)
+
+n+1
+
+where CT
+= 2CT n − CT n−1 .
+The integration for one time-step consists of two steps: a prediction followed by a projection. The latter step
+is also called the correction step.
+2.2. Prediction step
+In the prediction step, an approximate solution for the momentum equation is sought without accounting for
+the incompressibility condition in Eq. (4). More speciﬁcally, we compute an auxiliary velocity V ∗
+n+1
+1
+3V ∗ − 4V n + V n−1
+= −∇Pn +
++ CT
+ΔV ∗ .
+2Δt
+Re
+
+(5)
+
+Note that in Eq. (5), the pressure Pn+1 has been substituted by Pn . Deﬁning σ := 2Δt/3, the Eq. (5) for V ∗ can
+be recast as
+I−
+
+σ
+Δ V∗ = S ,
+Re
+
+S :=
+
+n+1
+4V n − V n−1
+− σ(CT
++ ∇Pn ).
+3
+
+(6)
+
+442
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+To solve Eq. (6), we apply the Alternating Direction Implicit (ADI) method which approximates the 3-D
+σ
+operator (I −
+Δ) as a product of three 1-D operators:
+Re
+σ
+σ
+σ
+σ
+Δ = I−
+Δx I −
+Δy I −
+Δz + O(Δt2 ),
+(7)
+I−
+Re
+Re
+Re
+Re
+where Δi is the second order derivative along the i−direction. With this product, we can transform the 3-D
+Helmholtz-like equation (Eq. (6)) into a system of three 1-D Helmholtz-like equations
+σ
+σ
+σ
+Δx T1 = S ,
+Δy T 2 = T 1 ,
+Δz V ∗ = T 2 .
+I−
+I−
+Re
+Re
+Re
+In the remainder of this paper, Eq. (8) will be simply referred to as Helmholtz equation.
+I−
+
+(8)
+
+2.3. Projection step
+In general, V ∗ is not divergence-free so it is corrected in the second step. The correction is sought as a potential
+velocity ﬁeld as follows. Taking the divergence of the diﬀerence of Eqs. (3) and (5), it comes:
+σ
+∇ · (V n+1 − V ∗ ) = −σΔ(Pn+1 − Pn ) +
+∇ · Δ(V n+1 − V ∗ ).
+(9)
+Re
+Since ∇ · V n+1 = 0 and since, for any vector U, we have ∇ · ΔU = Δ∇ · U, then Eq. (9) becomes
+∇ · V ∗ = σΔ Pn+1 − Pn −
+Denoting φ := Pn+1 − Pn +
+
+1
+∇ · V∗ .
+Re
+
+(10)
+
+1
+∇ · V ∗ , then φ satisﬁes the Poisson equation
+Re
+
+1
+(11)
+∇ · V∗,
+σ
+which is complemented with appropriate boundary conditions. After computing φ, we update the velocity and
+pressure ﬁelds using
+Δφ =
+
+1
+∇ · V∗.
+(12)
+Re
+There exist several methods to solve the Poisson equation given in Eq. (11). For example, the fast Fourier
+transformation (FFT), fast sine/cosine transformations, and multigrid methods [27]. In this paper, we consider a
+direct method based on partial diagonalization.
+1
+Let us denote Δφ = ∇ · V ∗ = S , and rewrite Δ = Δ x + Δy + Δz . Then the second order central schemes for
+σ
+these 1-D operators Δ x , Δy and Δz give three tridiagonal matrices for the considered direction. To further simplify
+the computation, we transform tridiagonal matrices into diagonal ones by using their eigendecomposition [18] .
+Given a real square (N × N) matrix A with N linearly independent eigenvectors qi (i = 1, ..., N), then A can
+be factorized as A = QΛQ−1 where Λ is the diagonal matrix whose diagonal elements are the corresponding
+eigenvalues, and Q is the square (N × N) matrix whose ith column is the eigenvector qi of A.
+For our problem, we decompose only Δ x , Δy and keep Δz , then we have
+V n+1 = V ∗ − σφ,
+
+Pn+1 = Pn + φ −
+
+−1
+(Q x Λ x Q−1
+x + Qy Λy Qy + Δz )φ = S .
+
+(13)
+
+−1
+Then we multiply Eq. (13) with Q−1
+x Qy , and observe that
+−1
+−1 −1
+Q−1
+x Qy = Qy Q x ,
+
+−1
+−1 −1
+Q−1
+x Λy = Λy Q x ,
+
+−1
+−1 −1
+Q−1
+y Λ x = Λ x Qy ,
+
+(14)
+
+so we have
+−1
+−1 −1
+˜
+(Λ x + Λy + Δz )φ˜ = S˜ , where φ˜ = Q−1
+y Q x φ and S = Qy Q x S .
+
+(15)
+
+So the original Poisson equation (Eq. 11) is now transformed into the form of Eq. (15) which is a 1-D tridiagonal equation for the z-direction.
+
+443
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+3. Parallel implementation for solving Navier-Stokes equations
+3.1. Domain decomposition and Schur complement method
+In our parallelization strategy we divide the domain equally into subdomains and we assign each subdomain
+to one MPI process in such a way that each process has the same amount of computational workload. Once
+the subdomains and the boundary conditions have been deﬁned, the computations on each subdomain can be
+performed in parallel. The boundaries here include the real domain boundaries and the interfaces between the
+subdomains. The classical Schur complement method is used to ensure continuity of the solution at the interface
+between subdomains, and the information at the interfaces is exchanged via MPI routines.
+Fig. 2 shows an example of a 2-D domain decomposition with boundary cells. For instance in subdomain IV,
+the top and right boundaries are real domain boundaries while the left and lower boundaries are actually interfaces
+with neighboring subdomains.
+
+Fig. 2. Domain decomposition and boundary cells.
+
+Fig. 3. Illustration of variable reordering for Schur Complement
+method for the case of 2 subdomains. : interior variables. :
+interface variables. (a) original tridiagonal matrix; (b) matrix
+after reordering.
+
+We suppose now that we have obtained the tridiagonal system for one direction (corresponding for instance
+to the x-direction, as depicted in Fig. 2. The matrix structure is shown by Fig. 3.(a). This tridiagonal system is
+solved by the Schur complement method. By reordering the variables so that the interface variables are listed last,
+we obtain a new system where the matrix has a structure as depicted in Fig. 3.(b).
+We recall below how the solution is computed via the Schur complement method. Given a block system
+Ak
+Aik
+
+Aki
+Ai
+
+Xk
+Xi
+
+=
+
+Sk
+Si
+
+,
+
+(16)
+
+where indices k and i refer respectively to interior and interface variables.
+From the ﬁrst block equation in Eq. (16) the unknown vector Xk can be expressed as
+Xk = A−1
+k (S k − Aki Xi ),
+
+(17)
+
+and we substitute this into the second equation to obtain
+−1
+(Ai − Aik A−1
+k Aki )Xi = S i − Aik Ak S k .
+
+(18)
+
+If the Schur complement matrix Ai − Aik A−1
+k Aki can be formed and the linear system (18) can be solved, all the
+interface variables Xi are then available and the remaining unknowns can be computed via Eq. (17). Due to the
+particular block structure of Ak and Ai , we have r separate systems that can be solved in parallel, where r is the
+number of subdomains along the direction in which we solve the original tridiagonal system.
+3.2. Solving tridiagonal systems
+We describe in this section how the block-tridiagonal systems resulting from the discretizations of Eq. (8)
+(using ADI method) and Eq. (11) (using partial diagonalization) can be solved eﬃciently. There have been several
+eﬀorts in recent years to develop eﬃcient tridiagonal solvers [28, 29, 30]. A well-known procedure is based on
+the Thomas algorithm [31] which basically corresponds to a Gaussian elimination without pivoting.
+
+444
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+Given a tridiagonal system Ax = s, where A ∈ Rn×n is diagonally dominant (nonsingular), and x, s ∈ Rn ,
+the Thomas algorithm consists of two steps. The ﬁrst step is a forward elimination where we eliminate the lower
+diagonal coeﬃcients and transform the original matrix into an upper triangular one. The second step is a backward
+substitution that solves the upper triangular system. This requires O(n) operations.
+To better understand the structure of the linear system, let us take a simple 2-D example as depicted in Fig. 4
+which uses a 4 × 3 2D mesh and let us consider the operator Δ x in Eq. (8). We order the unknowns ﬁrst by row
+and then by column as shown in Fig. 4. Then the matrix corresponding to the operator Δ x can be represented as
+the matrix given in Fig. 5 (with m = 3 tridiagonal blocks). Similarly, if we consider the operator Δy in Eq. (8), the
+unknowns will be ordered ﬁrst by column then by row and the resulting matrix will contain 4 tridiagonal blocks.
+
+9
+
+10
+
+11
+
+12
+
+5
+
+6
+
+7
+
+8
+
+1
+
+2
+
+3
+
+4
+
+Fig. 4. 2D n × m mesh with n = 4, m = 3.
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+
+⎛
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎜⎜⎜
+⎝
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+11
+
+12
+
+⎞
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎠
+
+Fig. 5. An example of block tridiagonal matrix for operator Δ x .
+
+We apply the Thomas algorithm within each tridiagonal block. If the tridiagonal blocks are identical, then
+we consider a smaller system with multiple right-hand sides (RHS) that can be expressed as AX = S with A ∈
+Rn×n and X, S ∈ Rn×m . In the following we explain how the solution of this system can be accelerated using
+vectorization techniques.
+Since the late 90’s, processor manufacturers provide specialized processing units called multimedia extensions
+or Single Instruction Multiple Data (SIMD) extensions. This feature allows processors to exploit the latent data
+parallelism available in applications by executing a given instruction simultaneously on multiple data stored in a
+single special register. However, taking advantage of SIMD extensions in applications remains a complex task. We
+can ﬁnd for instance in [32] a description of Boost.SIMD, a high-level C++ library to program SIMD architectures.
+Boost.SIMD provides both expressiveness and performance by using generic programming to handle vectorization
+in a portable way.
+A ﬁrst requirement to achieve performance using SIMD is to ensure memory alignment. In our case, this
+means that the Fortran arrays have to be allocated by a dedicated C++ function that uses the ISO C BINDING
+interface.
+The SIMD opportunity in our algorithm stands from the fact that solving the tridiagonal systems with multiple
+RHS can be performed in parallel. This means that once we have an SIMD vector containing the tridiagonal
+values of a set of rows, the backward substitution of these rows can be issued as a single SIMD instruction.
+The triangularization followed by the backward substitution will be accelerated by the fact that data handled
+at each step of the algorithm will be contiguous in memory using a shuﬄing operation. Shuﬄing is a typical
+idiom of SIMD programming that replaces some class of complex memory access patterns by computation on
+simpler patterns. Depending on the SIMD extension, these shuﬄing operations can either be limited (like in SSE2
+where shuﬄing can only occur piecewise inside a given register) or be arbitrary (e.g. in Altivec where shuﬄing
+corresponds to permutations of bytes). Shuﬄing also enables deinterleaving of scattered data that can be fetched
+from main memory and bring back into a single, contiguous SIMD register. In our case, we use shuﬄing to
+
+445
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+aggregate values from the sparse representation of the system into a set of contiguous values located at the proper
+place so that the elimination and backward substitution phases can take place inside an SIMD vector. Expected
+beneﬁt should be a faster code due to less memory access in diﬀerent part of the memory (thus limiting cache
+misses) and augmented SIMD speedup due to the layout of the data after the shuﬄing and better use of pipelining.
+We illustrate this method in Fig. 6 by considering 2 RHS (case of SSE where a double precision vector holds
+2 values) where we would perform the following operations:
+• load 3 registers units with coeﬃcients (ai , ai+1 ), (bi , bi+1 ) and (ci , ci+1 ) coming from respectively the lower,
+main and upper diagonals,
+ci
+a i bi
+,
+• shuﬄe the data to have a 2 × 3 local matrix
+0 ai+1 bi+1
+• perform two Gaussian eliminations to eliminate the coeﬃcients (ai , ai+1 ) in the lower diagonal,
+• after elimination of the ai ’s, we perform a backward substitution to solve the upper triangular system with
+the RHS coeﬃcients loaded in one register (e.g. 2 RHS for SSE or 4 RHS for AVX SIMD extension).
+
+b1
+
+x11
+
+c1
+b2
+a3
+
+c2
+
+x21
+
+x12
+
+x22
+
+s11
+
+=
+
+s12
+
+s22
+
+b3
+
+c3
+
+x13
+
+x23
+
+s13
+
+s23
+
+a4
+
+b4
+
+x14
+
+x24
+
+s14
+
+s24
+
+b1
+
+x21
+
+x12
+
+x22
+
+c3
+
+x13
+
+x23
+
+b4
+
+x14
+
+x24
+
+c2
+b3
+
+c1
+
+x11
+
+x21
+
+s11
+
+s21
+
+b2
+
+x12
+
+x22
+
+s12
+
+s22
+
+c3
+
+x13
+
+x23
+
+s13
+
+s23
+
+b4
+
+x14
+
+x24
+
+s14
+
+s24
+
+c2
+b3
+
+x11
+
+c1
+b2
+
+b1
+
+s21
+
+=
+
+s11
+
+s21
+
+s12
+
+s22
+
+s13
+
+s23
+
+s14
+
+s24
+
+=
+
+Fig. 6. Illustations of Thomas algorithm with vectorization. (a) current iteration; (b) after eliminations; (c) backward substitution.
+
+Our implementation uses this method to handle multiple RHS. Note that the memory alignment mentioned previously enables here the “load” process to be performed eﬃciently. We point out that this vectorization approach
+can be also used in other parts of our solver, for instance to compute the source term faster.
+4. Performance results
+The following experiments were carried out using a MagnyCours-48 system from University of Tennessee.
+This machine has a NUMA architecture and is composed of four AMD Opteron 6172 (with a SSE-4a instruction
+set) running at 2.1GHz with twelve cores each (48 cores total) and 128GB of memory. Our solver is linked with the
+LAPACK and ScaLAPACK routines from the 10.3.6 version of the Intel MKL [23] library and communications
+are performed using OpenMPI 1.4.3. In our experiments, we use one MPI process per core and each MPI process
+is a single thread.
+In Fig. 4.(a) we consider a 3-D vortex problem with mesh size 2403 , e.g. about 1.4 × 107 unknowns. We
+represent the performance (in seconds) for one iteration of the NS solver including the Helmholtz and Poisson
+equations, and miscellaneous tasks (mainly I/O and velocity/pressure updates). The number of threads varies
+from 1 to 48. We observe in Fig. 4.(a) that the CPU time decreases signiﬁcantly with the number of threads,
+showing then a good scalability of the solver. We observe that the Helmholtz equation represents about 30% of
+the global computational time and this percentage remains the same when the number of threads increases.
+Fig. 4.(b) shows the parallel speedup of the solver. We obtain a speedup up of 33 using 48 cores. We also
+observe in Fig. 4.(b) that the solution for the Poisson equation scales slightly better than for the Helmholtz equation. This is because in the Poisson equation we have only one tridiagonal system to solve (vs three systems in
+Helmholtz equation) and thus there is less information exchanged (as mentionned in Section 3, when we solve
+
+446
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+350
+
+50
+Helmholtz
+Poisson
+Other
+
+300
+
+CPU
+Helmholtz
+Poisson
+Ideal
+
+45
+40
+35
+
+Speedup
+
+Time (s)
+
+250
+
+200
+
+150
+
+30
+25
+20
+15
+
+100
+
+10
+50
+5
+0
+
+0
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+8
+
+10
+
+12
+
+15
+
+16
+
+20
+
+24
+
+30
+
+40
+
+48
+
+0
+
+5
+
+10
+
+15
+
+Number of processes
+
+20
+
+25
+
+30
+
+35
+
+40
+
+45
+
+50
+
+Number of processes
+
+Fig. 7. (a) time breakdown for one iteration of the NS solver; (b) scalability of NS solver.
+
+a tridiagonal system via the Schur complement method, we have a reordering of the variables that results in
+additionnal communication).
+300
+CPU
+Helmholtz
+Poisson
+250
+
+Time (ms)
+
+200
+
+150
+
+100
+
+50
+
+0
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+40
+
+45
+
+50
+
+Number of processes
+
+Fig. 8. Scalability of problems with variable size.
+
+In a second experiment, we consider a 3-D vortex problem where the size increases with the number of threads
+and with a ﬁxed mesh size per subdomain (weak scalability). The local size is set to 240 × 240 × 10 and 10 time
+iterations are performed. We observe in Fig. 8 that the time spent in solving Helmholtz and Poisson equations
+does not vary (about 60 and 110 milliseconds respectively) because the number of unknowns computed is always
+2402 × 10 = 5.76 × 105 . However the global CPU time increases linearly with the number of processes due to
+a larger amount of I/O after each iteration. Indeed, the numerical solution is stored after each time iteration in
+order to generate a detailed animation that visualizes the ﬂuid movement. In this numerical test, we only divide the
+domain along one direction (z−direction here) to keep the shape of the interfaces. Thus, the amount of information
+to be exchanged (the number of interface elements) is 2402 × (number of MPI processes − 1).
+Let us now study more speciﬁcally the performance of the tridiagonal solver described in Section 3.2. We
+compare the performance of a vectorized Thomas algorithm (as illustrated by Fig. 6) with the LAPACK 3.2
+routine DGTSV from Netlib, linked with the MKL BLAS library, which solves a general tridiagonal system using
+Gaussian elimination with partial pivoting (note that, since our matrices are diagonally dominant, the routine
+DGTSV does not pivot and only the search for pivot is performed).
+In Fig. 9.(a), we plot the number of cycles per value, e.g. the amount of CPU cycles required to compute one
+element of the result (we operate here on tridiagonal blocks of size 100 in order to exhibit the cache eﬀects). This
+metric allows us to do a ﬁne grain analysis of both the impact of vectorization and the impact of memory access.
+For the curve related to DGTSV, we observe a cycle/value amount that jumps when we hit the cache size (L2 and
+L3). This is due to the fact that every computation in the elimination and backward substitution processes requires
+more memory access to be completed. However, when we consider the vectorized Thomas algorithm, we have
+
+447
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+a constant amount of CPU cycle/value up to the largest sizes, due to the shuﬄing that replaces memory access
+by computation. Fig. 9.(b) shows the time ratio between DGTSV and the vectorized Thomas algorithm. For
+large problem sizes (e.g. more than 106 unknowns), we observe that the vectorized version of Thomas algorithm
+outperforms DGTSV with a factor 3.
+70
+
+5
+
+4
+
+50
+
+Ratio of time
+
+Cycle per value (c/v)
+
+60
+
+DGTSV
+vectorized Thomas
+L2 cache size
+L3 cache size
+
+40
+
+30
+
+3
+
+2
+
+1
+20
+
+10
+1.0e+02
+
+1.0e+03
+
+1.0e+04
+
+Number of RHS
+
+1.0e+05
+
+1.0e+06
+
+0
+1.0e+02
+
+1.0e+03
+
+1.0e+04
+
+1.0e+05
+
+1.0e+06
+
+Number of RHS
+
+Fig. 9. (a) cycles per value for Thomas algorithm; (b) time ratio between DGTSV and vectorized Thomas.
+
+5. Conclusion
+In this paper, we presented a numerical method and a parallel implementation for the solution of the 3-D
+Navier-Stokes equations. The resulting solver is scalable on problems of realistic size and the solution of the
+tridiagonal systems can be signiﬁcantly enhanced by using vectorization. We point out that this solver can also
+take into account other characteristics of the ﬂuid or of the domain that are not discussed in details in the paper.
+For example, several boundary conditions are implemented and the domain can be treated either as continuous or
+discontinuous. Note that other physical factors like temperature and density are also considered in the solver.
+Acknowledgments
+ˆ
+This work was supported by R´egion Ile-de-France
+and Digit´eo (http://www.digiteo.fr), CALIFHA project,
+contract No 2011-038D. We also thank Pierre Esterie (University Paris-Sud) for his support in using Boost SIMD.
+References
+[1] J. Anderson, Computational Fluid Dynamics: The Basics with Applications, McGraw-Hill, 1995.
+[2] J. H. Ferziger, M. Peri´c, Computational Methods for Fluid Dynamics, 3rd Edition, Springer, 1996.
+[3] F. Harlow, J. E. Welch, Numerical calculation of time-deendent viscous incompressible ﬂow of ﬂuid with free surface, The Physics of
+Fluids 8 (12) (1965) 2182–2189.
+[4] J. P. D. Angeli, A. M. P. Valli, N. C. Reis Jr., A. F. D. Souza, Finite diﬀerence simulations of the Navier-Stokes equations using parallel
+distributed computing, 15th Symposium on Computer Architecture and High Performance Computing, 2003.
+[5] O. Pironneau, The Finite Element Method for Fluids, 1st Edition, John Wiley & Sons, 1990.
+[6] R. Rannacher, Finite element methods for the incompressible Navier-Stokes equations, Fundamental Directions in Mathematical Fluid
+Mechanics (2000) 191–293.
+[7] A. Q. C. Canuto, M. Meneguzzi, T. Zang, Spectral Methods: Fundamentals in Single Domains, Springer, 2006.
+[8] A. Vincent, M. Meneguzzi, The spatial structure and statistical properties of homogeneous turbulence, Journal of Fluid Mechanics 225
+(1991) 1–20.
+[9] G. Cottet, P. Koumoutsakos, Vortex Methods Theory and Practice, Cambridge University Press, 2000.
+[10] J. J. Monaghan, Smoothed particle hydrodynamics, Annual Review of Astronomy and Astrophysics 30 (1992) 543–574.
+[11] S. Li, W. K. Liu, Meshfree and particle methods and their applications, Applied Mechanics Reviews 55 (2002) 1–34.
+[12] D. Martin, P. Colella, N. Keen, A. Deane, G. Brenner, A. Ecer, et al, An incompressible Navier-Stokes with particles algorithm and
+parallel implementation, in: Proceedings of the 2005 International Conference on Parallel Computational Fluid Dynamics, College Park,
+MD, USA, 2006, pp. 461–468.
+[13] A. J. Chorin, Numerical solution of the Navier-Stokes equations, Mathematics of Computation 22 (104) (1968) 745–762.
+
+448
+
+Yushan Wang et al. / Procedia Computer Science 18 (2013) 439 – 448
+
+[14] J. Kim, P. Moin, Application of a fractional-step method to incompressible Naver-Stokes equations, Journal of Computational Physics
+59 (1985) 308–323.
+[15] J. L. Guermond, P. D. Minev, J. Shen, An overview of projection methods for incompressible ﬂows, CMAME 195 (2006) 6011–6045.
+[16] D. L. Brown, R. Cortez, M. L. Minion, Accurate projection methods for the incompressible Navier-Stokes equations, Journal of Computational Physics (2001) 464–499.
+[17] H. Abdi, The eigen-decomposition: Eigenvalues and eigenvectors, in: N. J. Salkind (Ed.), Encyclopedia of Measurement and Statistics,
+Sage Publications, 2007, pp. 304–308.
+[18] Y. Saad, Iterative Methods for Sparse Linear Systems, 2nd Edition, SIAM, 2003.
+[19] M. P. I. Forum, MPI : A Message-Passing Interface Standard, Int. J. Supercomputer Applications and High Performance Computing,
+1994.
+[20] Basic Linear Algebra Subprograms Technical Forum Standard, Int. J. of High Performance Computing Applications 16 (1).
+[21] E. Anderson, Z. Bai, C. Bischof, S. Blackford, J. Demmel, J. Dongarra, et al., LAPACK Users’ Guide, SIAM, Philadelphia, 1999, third
+edition.
+[22] L. Blackford, J. Choi, A. Cleary, E. D’Azevedo, J. Demmel, I. Dhillon, et al., ScaLAPACK Users’ Guide, SIAM, Philadelphia, 1997.
+[23] Intel, Math Kernel Library (MKL), http://www.intel.com/software/products/mkl/.
+[24] A. Graham, Kronecker Products and Matrix Calculus with Application, Wiley, New York, 1981.
+[25] U. M. Ascher, L. R. Petzold, Computational Methods for Ordinary Diﬀerential Equations and Diﬀerential-Algebraic Equations, SIAM,
+1998.
+[26] W. Hundsdorfer, Partially implicit BDF2 blends for convection dominated ﬂows, Journal of Numerical Analysis 38 (6) (2001) 1763–
+1783.
+[27] S. Noury, S. Boivin, O. L. Maˆıtre, A fast Poisson solver for OpenCL using multigrid methods, GPU Pro2: Advanced Rendering Techniques, 2011.
+[28] D. A. Bini, B. Meini, The cyclic reduction algorithm: From Poisson equation to stochastic processes and beyond, Journal of Numerical
+Algorithm 51 (1) (2009) 23–60.
+[29] G. E. Karniadakis, R. M. Kirby II, Parallel Scientiﬁc Computing in C++ and MPI, Cambridge University Press, 2003.
+[30] E. Polizzi, A. H. Sameh, A parallel hybrid banded system solver: the SPIKE algorithm, Journal of Parallel Computing 32 (2006) 177–
+194.
+[31] K. Atkinson, W. Han, Elementary Numerical Analysis, John Wiley & Sons, 2003.
+[32] P. Esterie, M. Gaunard, J. Falcou, J.-T. Laprest´e, B. Rozoy, Boost.simd: generic programming for portable simdization, in: Proceedings
+of the 21st international conference on Parallel architectures and compilation techniques, New York, NY, USA, 2012, pp. 431–432.
+
+

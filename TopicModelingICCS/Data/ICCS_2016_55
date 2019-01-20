@@ -1,0 +1,967 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 201–211
+ICCS 2016. The International Conference on Computational
+Science
+
+A Case Study in Adjoint Sensitivity Analysis of
+Parameter Calibration
+Johannes Lotz1 , Marc Schwalbach2 , and Uwe Naumann1
+1
+
+LuFG Informatik 12: Software and Tools for Computational Engineering, RWTH Aachen, Germany
+[lotz, naumann]@stce.rwth-aachen.de
+2
+Von Karman Institute for Fluid Dynamics, Belgium
+marc.schwalbach@vki.ac.be
+
+Abstract
+Adjoint sensitivity computation of parameter estimation problems is a widely used technique in
+the eld of computational science and engineering for retrieving derivatives of a cost functional
+with respect to parameters e ciently. Those derivatives can be used, e.g. for sensitivity analysis,
+optimization, or robustness analysis. Deriving and implementing adjoint code is an error-prone,
+non-trivial task which can be avoided by using Algorithmic Di erentiation (AD) software.
+Generating adjoint code by AD software has the downside of usually requiring a huge amount
+of memory as well as a non-optimal run time. In this article, we couple two approaches for
+achieving both, a robust and e cient adjoint code: symbolically derived adjoint formulations
+and AD. Comparisons are carried out for a real-world case study originating from the remote
+atmospheric sensing simulation software JURASSIC developed at the Institute of Energy and
+Climate Research Stratosphere, Research Center Julich. We show, that the coupled approach
+outperforms the fully algorithmic approach by AD in terms of run time and memory requirement
+and argue that this can be achieved while still preserving the desireable feature of AD being
+automatic.
+Keywords: Adjoints, Algorithmic Diﬀerentiation, Optimization, C++
+
+1
+
+Problem Statement and Summary of Results
+
+In this article a comparison is carried out between di erent approaches for computing rstorder adjoint sensitivities of a parameter calibration problem. We consider the application of
+adjoint Algorithmic Di erentiation [6, 14] (also known as Automatic Di erentiation; AD) as
+well as a combination of AD with symbolically derived adjoint formulations for the respective
+optimizer of the parameter calibration problem. The latter strategy was already successfully
+pursued for various algorithms, see for example [9, 16, 17]. In particular [16] derives a combined
+symbolic adjoint formulation as described in this article for a general nonlinear system solver.
+We apply these results to the parameter calibration problem and carry out a case study showing
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.310
+
+201
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+the bene ts. The sensitivities computed by the adjoint code are of great value when solving
+e.g. bilevel optimization problems [3, 13] targeted in the BeProMod project1 , or in general for
+analyzing the robustness of the optimal solution [1] or for uncertainty quanti cation [12].
+Adjoint AD is a semantic program transformation that automatically generates a program
+which computes the gradient of a target functional at a cost that is a constant multiple of the
+cost of an evaluation of the target functional itself. In particular, that means the gradient is
+computed at a cost independent of the number of parameters. This advantage has the downside
+of requiring a huge amount of additional memory, since a data ow reversal is required, i.e. all
+intermediate variables need to be accessed in reverse order. Coupling adjoint AD with symbolic
+adjoint formulations can resolve this issue of high memory consumption and in addition possibly
+reduces the computational complexity signi cantly. Such a coupling can be implemented seamlessly with modern AD tools and preserve the desireable feature of AD being automatic and
+e cient. In this article we consider the optimization problem isolated from how it is possibly
+embedded in a surrounding overall simulation program. An analogue embedding is explained
+in more detail in the articles cited above, in particular [16].
+The parameter calibration problem is stated as follows. For given observations o IRm ,
+known parameters
+IRm , and forward model g(x, i ), unknown model parameters x IRn
+are sought such that for the residual function
+F = [oi
+
+g (x,
+
+i )]i=1
+
+(1)
+
+m
+
+the least squares cost function
+G(x, ) = F T F =
+
+m
+
+[oi
+
+g(x,
+
+i )]
+
+2
+
+(2)
+
+i=1
+
+is minimized, yielding an overall problem statement
+x( ) = S(x0 , ) = arg minn G(x, )
+x IR
+
+with optimum
+
+G(x( ), ),
+
+(3)
+
+where S denotes the optimization method (Gauss-Newton [5] in our case) and x0 the starting
+value. In addition to calibrating the unknown parameters x
+IRn , we are also interested
+in rst-order sensitivities of some scalar target functional J(x( )) with respect to the input
+parameters , i.e. the gradient dλ J IRm .
+After a short introduction into the used notation and to AD and its capabilities in Section 2,
+we present two di erent approaches for the computation of rst-order sensitivities in Section 3.
+Besides a fully algorithmic approach by plain application of AD to the solver implementation,
+a coupled approach is proposed taking mathematical properties into account and symbolically
+deriving adjoint formulations for decreasing memory footprint and increasing performance. In
+addition, we address the issue of e ciently computing the Jacobian of the residual F required
+during the minimization of G. Since this Jacobian computation is also part of the overall optimization algorithm S, computing its sensitivities implicitly involves higher-order derivatives
+of F . We go into further details there and recapitulate results from [11] concerning the computation of dx F . The theoretically deduced memory and run time bene t is underpinned by
+a case study coming from a real-life atmospheric remote sensing application developed at the
+Research Center Juelich in Section 4. We close with conclusion and outlook in Section 5.
+
+1 see
+
+202
+
+Acknowledgments
+
+Case Study in Adjoint Sensitivity Analysis
+
+2
+
+Lotz, Schwalbach, Naumann
+
+Algorithmic Diﬀerentiation
+
+This section introduces the used notation and gives a brief overview of AD [6, 14]. Scalars
+are non-bold lower case letters, vectors are bold lower case letters, and matrices are non-bold
+upper case letters. Total derivatives of outputs y IRm with respect to inputs x IRn , i.e. the
+IRm n . Second derivatives are correspondingly denoted by
+Jacobian, are denoted by dx y
+dxx y. Similarly, partial derivatives of y with respect to x are denoted by ∂x y. Particular
+elements of a vector or a matrix are denoted by indexes, e.g. xi for the i-th element of a vector
+x IRn .
+Without loss of generality, for a given implementation of the multi-variate twice continuously
+di erentiable function
+y = f (x),
+
+f : IRn
+
+IR,
+
+with x
+
+IRn , and y
+
+IR ,
+
+(4)
+
+AD is a semantical program transformation which automatically generates programs computing
+sensitivities. This transformation is usually done under support of an AD tool. Which tool to
+use depends strongly on the programming language as well as the speci c application. Generally,
+AD provides two di erent models. Firstly, the tangent or forward model of f (x) is given as
+y (1) = dx f (x) x(1) ,
+(1)
+
+n
+
+(5)
+
+(1)
+
+IR and output tangent y
+IR. Using AD, one evaluation of
+with input tangents x
+the tangent model can be performed at a cost of O(1) cost(f ). For computing all individual
+gradient entries [dx f (x)]i , n inner vector products need to be computed with x(1) ranging over
+the Cartesian basis vectors in IRn yielding an accumulated cost of O(n) cost(f ). Secondly, the
+adjoint or reverse model of f (x) is given as
+x(1) = dx f (x)T y(1) ,
+
+(6)
+n
+
+IR and input adjoints x(1)
+IR . One evaluation of the adjoint
+with output adjoint y(1)
+model can also be performed at a cost of O(1) cost(f ) (usually with a bigger constant than
+for the tangent case). In contrast to the tangent model, all indiviual gradient entries can be
+computed in one evaluation yielding a huge run time bene t. The implementation of adjoint
+mode AD requires a data ow reversal, where required [7] intermediate variables need to be
+accessible in reverse order. This requires a stack-like data structure, that is lled during a
+forward run and used during the reverse run. The memory consumption is therefore one of the
+biggest challenges for adjoint mode AD. Based on the tangent and the adjoint model, recursive
+application generates higher derivative models. In particular applying tangent di erentiation
+to the adjoint model yields the so-called tangent-over-adjoint model
+(2)
+
+(2)
+
+x(1) = dx f (x)T y(1) + y(1) dxx f (x) x(2) ,
+
+(7)
+(2)
+y(1)
+
+(2)
+x(1)
+
+IR and
+IRn .
+with adjoint y(1) IR, tangents x(2) IRn , and second-order adjoints
+n n
+can be computed at a cost of O(n) cost(f ) by performing n
+The Hessian dxx f (x) IR
+(2)
+runs of the above given model with y(1) = 1, y(1) = 0, and x(2) ranging over the Cartesian
+basis vectors in IRn . Each individual evaluation of the model computes one row or column of
+the Hessian. Analogously, adjoint-over-tangent, tangent-over-tangent and adjoint-over-adjoint
+models can be used to compute the Hessian, see [14]. Multiple software packages for the
+implementation of AD are listed on www.autodiff.org. The code for this project is written in
+C++ and our C++ operator overloading library dco/c++ [10, 9, 15, 18] is used. For more articles
+related to AD, the interested reader is referred to [2, 4].
+203
+
+Case Study in Adjoint Sensitivity Analysis
+
+3
+
+Lotz, Schwalbach, Naumann
+
+Adjoint Sensitivity Analysis
+
+In the following, we rst brie y recapitulate the algorithmic results from [11] for the computation of the Jacobian dx F followed by the theoretical description of the two approaches for
+computing rst-order adjoints, i.e. sensitities of the target functional. Measurements of memory
+consumption and run times for the di erent approaches are shown in Section 4.
+
+3.1
+
+Computing the Jacobian
+
+The Gauss-Newton method requires the Jacobian dx F of the residual F , see Equation (1).
+Computing the entire Jacobian in adjoint mode AD would involve m adjoint model evaluations
+of F , yielding a total cost of O(m) cost(F ). Since usually m > n, this is presumably less
+e cient than computing the Jacobian using tangent mode AD, which involves n tangent model
+evaluations at a total cost of O(n) cost(F ). However, note that mutual independence of the
+individual residual elements
+(8)
+yi = oi g(x, i )
+can be exploited. This corresponds to an ensemble structure [6, 11, 19] of which we take
+advantage by expanding the vector of the parameters x IRn into a matrix X IRm n with
+rows X i = xT for i = 1, ..., m. We now de ne the extended residual function
+y = F (X, ) = oi
+which ful lls F (X, )
+
+g(X i ,
+
+i ) i=1
+
+m
+
+IRm
+
+with y
+
+(9)
+
+F (x, ). The adjoint model of F with respect to X is given as
+i
+X(1)
+= dX i F
+
+T
+
+( )
+
+y(1) = dX i Fi = dx Fi .
+
+(10)
+
+Equality ( ) holds, since the i-th residual only depends on the i-th row of the complete matrix
+X. The Jacobian can now be obtained at a cost of O(1) cost(F ) = O(1) cost(F ) by setting
+T
+the adjoint y(1) = 1 = (1, ..., 1) . After the adjoint model evaluation we get X(1) = dx F . In
+i
+can be run in parallel using multiple
+addition, the m individual adjoint computations of X(1)
+processes, where each thread computes one row of the Jacobian, e.g. by using OpenMP. Memory
+and run time measurements are shown in Section 4.
+
+3.2
+
+First-Order Sensitivities of Optimizer
+
+First-order sensitivities are computed in two di erent ways. First, by plain application of adjoint
+mode AD to the implementation of the target functional J including optimizer S. Secondly,
+by exploiting the rst-order optimality condition for x to derive a sensitivity equation via
+symbolic di erentiation of G. The former approach is called algorithmic approach and the
+latter symbolic approach in the following. As we will see later, the symbolic approach also
+involves some algorithmic adjoint computations of the underlying function G but completely
+avoids algorithmic adjoints of the optimizer algorithm S.
+We consider the adjoint model
+(1)
+
+= [dλ J]
+
+T
+
+J(1) = [∂λ J]
+
+T
+
+J(1) + [∂λ x]
+
+T
+
+[∂xˆ J]
+
+T
+
+J(1) .
+
+(11)
+
+ˆ (1)
+x
+
+Algorithmic Approach Setting J(1) = 1 will allow us to compute the rst-order sensitivities
+with a single adjoint run of J including S at a cost of O(1) (cost(S) + cost(J)). However, note
+that the adjoint evaluation of S(x0 , ) involves an adjoint evaluation of the Jacobian calculation
+dx F . Since the Jacobian is computed already using adjoint mode AD, this implicitly requires
+204
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+adjoint-over-adjoint computations, which usually yields less e cient second-order adjoint code
+than tanget-over-adjoint mode2 [6, 14]. This can be avoided by exploiting the symmetry of the
+Hessian and using the tangent-over-adjoint mode instead, yielding less memory requirements
+and shorter run times. Measurements are shown in Section 4.
+Symbolic Approach The rst-order sensitivities dλ J can also be computed using symbolic
+di erentiation of the rst-order optimality condition
+dx G (x, ) = 0 .
+
+(12)
+
+Di erentiating this equation at x = x with respect to
+taking the dependency x( ) into account yields
+
+using the implicit function theorem
+
+∂xλ G + ∂xx G ∂λ x = 0.
+
+(13)
+
+Using the transpose of Equation (13) in the last term of Equation (11) yields
+(1)
+
+= [∂λ J]
+
+T
+
+J(1)
+
+[∂xλ G]
+
+T
+
+[∂xx G]
+
+1
+
+x(1) ,
+
+(14)
+
+=:z
+
+where the transposal of ∂xx G is neglected since the Hessian is symmetric. The rst term on
+the right is computed as an algorithmic adjoint projection of J only, i.e. without evaluating S
+(because the partial derivative is required), at a cost of O(1) cost(J). The second term results
+in solving the linear system
+(15)
+∂xx G z = x(1)
+for z. ∂xx G can be computed by using second-order tangent-over-adjoint mode of G at x = x
+at a cost of O(n) cost(G). The linear system could also be solved with an approximated
+Hessian matrix. This especially seems obvious, when using a Gauss-Newton method to solve
+the parameter calibration problem as done in the case study in Section 4. Once the system has
+been solved for z, we can compute
+[∂xλ G]
+
+T
+
+[∂xx G]
+
+1
+
+x(1) =
+
+[∂xλ G]
+
+T
+
+z
+
+(16)
+
+from Equation (14) with a single call of the second-order adjoint of G at x = x at a cost of
+O(1) cost(G). This is performed by one evaluation of the tangent-over-adjoint model
+(2)
+
+x(1)
+
+(2)
+(1)
+(2)
+
+=
+
+and setting G(1) = 1, G(1) = 0,
+
+∂G
+∂(x, )
+(2)
+
+T
+
+(2)
+
+G(1) + G(1)
+
+= 0, and x(2) =
+
+∂2G
+∂(x, )
+
+x(2)
+2
+
+(2)
+
+(17)
+
+z. The required matrix-vector product
+
+(2)
+(1) .
+
+Note that cost(G) = O(1) cost(F ) and the optimizer S
+from Equation (16) is returned in
+has to run only once at a cost of cost(S) to obtain x at the beginning. This way the symbolic
+approach avoids the tool-based data ow reversal of S as well as the problem of generating
+and running the reverse-over-reverse model of F . This yields a huge reduction in memory
+requirement and a moderate improvement in terms of run time as shown later in the case study
+Section 4.
+
+4
+
+Case Study
+
+In this section, we consider the di erent approaches presented in the previous section applied
+to a real-life related problem. The model used for these tests is based on the J¨
+ulich Rapid Spec2 Note, that this statement is tool and application dependent. If enough memory is available, we’ve seen
+cases where dco/c++ computes the Hessian more eﬃciently in adjoint-over-adjoint mode.
+
+205
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+Figure 1: Overview of the model setup for the case study. For measurement data oi ,
+ˆ using an inverse problem formulaJURASSIC2 solves for the unknown atmospheric state x
+tion [11].
+tral Simulation Code Version 2 (JURASSIC2) which is developed by the Institute of Energy
+and Climate Research – Stratosphere, Research Center J¨
+ulich [20] and was already successfully
+combined with AD [11]. The code used in this section is a simpliﬁed version of this model and
+was kindly provided by J¨orn Ungermann3 . It is used in the ﬁeld of atmospheric remote sensing
+and solves an inverse problem to compute an approximation of the 3-dimensional space-ﬁlling
+atmospheric state in the upper troposphere and lower stratosphere for given radiance measurements. Measurements are performed by a measurement instrument mounted on an airplain [8]
+or a satellite (not yet realized). An overview of the measurement setup is shown in Fig. 1. The
+numerics for solving the inverse problem are based on a forward model simulating radiances
+from a guessed atmospheric state and line-of-sight elevations, two of which are sketched in the
+ﬁgure. With the symbols from the introduction, the forward model is given as yi = g(x λi )
+with y ∈ IRm denoting the simulated radiances, x ∈ IRn the atmospheric parameters, and
+λ ∈ IRm the line-of-sight elevations. For given measured radiances o ∈ IRm , the residual vector
+F ∈ IRm is computed as
+(18)
+F = (oi − g(x λi ))i=1...m
+For this case study, observations are generated by a twin experiment, which is a widespread
+technique for benchmarking inverse problem algorithms. Artiﬁcial measurements are obtained
+by running the forward model with a known set of parameters xs . The cost functional consists
+of the sum of the squares of the residuals already shown in the introduction plus a regularization
+term since the inverse problem is ill-posed. The cost function is then given by
+G (x λ) = F T S −1 F + (x − xa )T Sa−1 (x − xa )
+m×m
+
+(19)
+n
+
+is a measurement error correlation matrix, xa ∈ IR denotes typical atmowhere S ∈ IR
+spheric values taken from historic data, and Sa ∈ IRn×n is a Tikhonov regularization matrix,
+here Sa = S = I and xa is chosen to be a constant value identical to the starting value for the
+Gauss-Newton method x0 . The inverse problem is to solve
+ˆ = S(x0 λ) = arg minn G (x λ)
+x
+x∈IR
+
+(20)
+
+Applying Gauss-Newton, i.e. neglecting second-order derivatives of F when computing dxx G in
+Newton’s method, yields the iteration formula
+xi+1 = xi − (Sa−1 + dx F T S −1 dx F )−1 · Sa−1 (xi − xa ) + dx F T S −1 F
+3 Institute
+
+206
+
+of Energy and Climate Research, Research Center Julich
+
+(21)
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+103
+
+10
+
+2
+
+10
+
+7
+
+cost function G(x, )
+norm of gradient dx G
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10
+
+12
+
+14
+
+16
+
+18
+
+20
+
+22
+
+24
+
+(a)
+
+10
+
+5
+
+10
+
+6
+
+10
+
+7
+
+exact solution xs
+initial solution x0 = xa
+tted solution x
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+11
+
+12
+
+13
+
+14
+
+15
+
+16
+
+17
+
+(b)
+
+Figure 2: Convergence behavior of the Gauss-Newton method applied to the parameter calibration problem Equation (20) is shown in (a). Corresponding exact, initial, and tted solution
+after convergence is shown in (b).
+
+The convergence behavior as well as the tted solution is shown in Fig. 2. As convergence
+criterion we chose the two norm of the gradient dx G 2 . As shown in Figure (a), the cost function as well as the norm of the gradient decrease very quickly at the beginning until iteration 6.
+After that, the cost function stays quite constant while the norm of the gradient continues
+decreasing down to 10 7 in iteration 24. As shown in Figure (b), the initial solution x0 is set
+to 2.0 10 6 . The tted solution x is a good approximation to the exact solution xs inbetween
+indexes 2 and 12. The model does not return any information for the remaining indexes, since
+the tted solution is quite identical to the reference state xa used in the regularization term in
+Equation (21).
+Concerning derivative computations, let s rst consider run time and memory consumption
+of the two di erent approaches to the computation of the Jacobian matrix dx F required in
+Equation (21) shown in Fig. 3(a). As expected, the run time of plain application of adjoint
+mode AD for computing dx F at a cost of O(m) cost(F ) is much higher compared to the
+approach exploiting the mutual independence of the computations of each Fi . Both, run time
+as well as memory consumption have a lower order of complexity as can be seen in the doublelogarithmic plot. The memory consumption of the version exploiting the ensemble structure
+seems to be constant, which is due to the fact that the additional memory consumption is
+even below the base memory allocation done by the program executable anyway. Figure 3(b)
+shows run time and memory consumption for a fully algorithmic approach to the computation
+of sensitivities dλ J, once with the implicitly required reverse-over-reverse mode during the
+computation of the Jacobian and once with making use of a forward-over-reverse mode locally
+instead. As can be seen, the complexity classes seem to be the same for both, run time as well
+as memory consumption (similar slopes). Nonetheless, a non-negligible o set can be identi ed
+especially for the memory.
+207
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+10,000
+
+10,000
+
+1,000
+
+1,000
+
+100
+
+100
+
+10
+
+10
+
+1
+
+10
+
+20
+
+40
+
+100
+
+200
+
+1
+
+1,000
+
+10
+
+run time: plain AD
+run time: AD expl. ensemble structure
+memory: plain AD
+memory: AD expl. ensemble structure
+
+20
+40
+100
+run time: reverse-over-reverse
+run time: forward-over-reverse
+memory: reverse-over-reverse
+memory: forward-over-reverse
+(b)
+
+(a)
+
+Figure 3: Overall run time in seconds and memory consumption in megabytes for the di erent
+approaches to the computation of the Jacobian is shown in (a). The impact of the chosen secondorder di erentiation method (reverse-over-reverse and forward-over-reverse) on the computation
+of sensitivities using the algorithmic approach is shown in (b).
+run time: algorithmic
+run time: symbolic
+memory: algorithmic
+memory: symbolic
+
+104
+103
+102
+101
+2
+
+4
+
+8
+
+16
+
+32
+
+Figure 4: Run time in seconds and memory consumption in megabytes for algorithmic and
+symbolic approaches to the computation of sensitivities dλ J and do J over a varying number of
+Gauss-Newton iterations.
+
+Fig. 4 shows run time and memory consumption of algorithmic and symbolic approaches to
+the computation of the sensitivities of J with respect to the parameters. The plot in doublelogarithmic scale shows that the run time of the symbolic approach lives in a lower-order
+complexity class with respect to the number of required iterations for convergence. The breakeven point is in this case at 16 iterations, above which the symbolic approach is faster. Memorywise, the symbolic approach outperforms the algorithmic by far, since no data ow reversal (see
+Section 2) is required for the iteration process itself. The memory consumption therefore only
+depends on the dimension of x (since dxx G needs to be saved somewhere) and is independent
+of the number of performed iterations.
+As already mentioned in Section 3, the algorithmic approach computes (similar to a nite
+di erence approximation) sensitivities of what is actually computed. The symbolic approach
+on the other hand requires full convergence of the nonlinear solver since the adjoint sensitivity
+208
+
+Case Study in Adjoint Sensitivity Analysis
+
+10
+
+Lotz, Schwalbach, Naumann
+
+5
+
+10
+
+2
+
+2
+
+0
+
+0
+
+2
+
+2
+
+4
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+4
+
+35
+
+5
+
+algorithmic
+symbolic
+nite di erence
+0
+
+5
+
+10
+
+15
+
+(a)
+
+10
+
+3
+
+10
+
+3
+
+3
+
+2
+
+2
+
+1
+
+1
+
+0
+
+0
+0
+
+5
+
+10
+
+15
+
+20
+
+20
+
+25
+
+30
+
+35
+
+(b)
+
+25
+
+30
+
+35
+
+(c)
+
+0
+
+3
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+(d)
+
+Figure 5: Sensitivities computed by algorithmic mode, symbolic mode, and by nite di erences
+for the parameters (top) and the observations o (bottom) after one Gauss-Newton iteration
+(left) and after convergence (right).
+equations are derived under the assumption of dx G being exactly 0 (see e.g. [6, Ch. 15] for
+further reading). This is visualized in Fig. 5. The sensitivities dλ J and do J are computed after 2
+Gauss-Newton iterations (i.e. not converged state) and after 24 iterations (i.e. converged state,
+see Fig. 2(a)). We compare the algorithmic approach, the symbolic approach, and a nite
+di erence approximation. Figures 5(a) and 5(c) clearly show that algorithmic and symbolic
+approaches result in di erent values. The nite di erence approximation behaves quite similar
+to the algorithmic approach which is as expected. On the other hand, Figures 5(b) and 5(d)
+nicely show that all approaches converge to the same sensitivities when solving the nonlinear
+system with good accuracy.
+
+5
+
+Conclusion and Outlook
+
+On the one hand, the case study shows that a coupled approach is possibly advantageous over
+a purely algorithmic approach. The accuracy of the computed adjoint sensitivities on the other
+hand makes it desireable to have a fully algorithmic approach available for veri cation reasons.
+Further steps should include an analysis of iterative linear solvers that possibly could be used
+within the Gauss-Newton iteration as well as the e ect of using only the approximate Hessian
+for the sensitivity computation in the symbolic approach. In addition, the results shown here
+209
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+for the case study should be applied to the problems occuring in the BeProMod project, which
+would also include exploration of parallelization possibilities.
+
+Acknowledgments
+This work was nancially supported by the BeProMod project, which is part of the NRWStrategieprojekt BioSC funded by the Ministry of Innovation, Science and Research of the
+German State of North Rhine-Westphalia. In addition, we thank Jorn Ungermann for providing
+the stripped-down version of JURASSIC2 for the case study.
+
+References
+[1] M. Beckers and U. Naumann. Uncertainty Quantiﬁcation for First-Order Nonlinear Optimization
+Algorithms. In CFD & Optimization. ECCOMAS Thematic Conference, 2011.
+[2] C. Bischof, M. B¨
+ucker, P. Hovland, U. Naumann, and J. Utke, editors. Advances in Automatic
+Diﬀerentiation, volume 64 of Lecture Notes in Computational Science and Engineering. Springer,
+Berlin, 2008.
+[3] G. M. Bollas, P. I. Barton, and A. Mitsos. Bilevel optimization formulation for parameter estimation in vapor–liquid (–liquid) phase equilibrium problems. Chemical Engineering Science,
+64(8):1768–1783, 2009.
+[4] S. Forth, P. Hovland, E. Phipps, J. Utke, and A. Walther, editors. Recent Advances in Algorithmic
+Diﬀerentiation, volume 87 of Lecture Notes in Computational Science and Engineering. Springer,
+Berlin, 2012.
+[5] S. Gratton, A. S. Lawless, and N. K. Nichols. Approximate Gauss-Newton methods for nonlinear
+least squares problems. SIAM Journal on Optimization, 18(1):106–132, 2007.
+[6] A. Griewank and A. Walther. Evaluating Derivatives: Principles and Techniques of Algorithmic
+Diﬀerentiation. Number 105 in Other Titles in Applied Mathematics. SIAM, Philadelphia, PA,
+2nd edition, 2008.
+[7] L. Hasco¨et, U. Naumann, and V. Pascual. To-be-recorded analysis in reverse mode automatic
+diﬀerentiation. Future Generation Computer Systems, 21:1401–1417, 2005.
+[8] M. Kaufmann, J. Blank, T. Guggenmoser, J. Ungermann, A. Engel, M. Ern, F. Friedl-Vallon,
+D. Gerber, J.-U. Grooß, G. G¨
+unther, et al. Retrieval of three-dimensional small scale structures
+in upper tropospheric/lower stratospheric composition as measured by GLORIA. Atmospheric
+measurement techniques discussions, 7:4229–4274, 2014.
+[9] J. Lotz, U. Naumann, R. Hannemann-Tam´
+as, T. Ploch, and A. Mitsos. Higher-order discrete
+adjoint ODE solver in C++ for dynamic optimization. Procedia Computer Science, 51:256 – 265,
+2015.
+[10] J. Lotz, U. Naumann, M. Sagebaum, and M. Schanen. Discrete adjoints of PETSc through
+dco/c++ and adjoint MPI . Euro-Par 2013 Parallel Processing, pages 497–507, 2013.
+[11] J. Lotz, U. Naumann, and J. Ungermann. Hierarchical algorithmic diﬀerentiation: A case study.
+In [4], pages 187–196. Springer, 2012.
+[12] O. Le Maˆıtre. Spectral Methods of Uncertainty Quantiﬁcation: With Applications to Computational
+Fluid Dynamics. Scientiﬁc Computing. Springer, 2nd edition, 2010.
+[13] A. Mitsos, B. Chachuat, and P. I. Barton. Towards global bilevel dynamic optimization. Journal
+of Global Optimization, 45(1):63–93, 2009.
+[14] U. Naumann. The Art of Diﬀerentiating Computer Programs. An Introduction to Algorithmic
+Diﬀerentiation. Number 24 in Software, Environments, and Tools. SIAM, Philadelphia, PA, 2012.
+
+210
+
+Case Study in Adjoint Sensitivity Analysis
+
+Lotz, Schwalbach, Naumann
+
+[15] U. Naumann, K. Leppkes, and J. Lotz. dco/c++ user guide. Technical Report AIB-2014-03, RWTH
+Aachen University, January 2014.
+[16] U. Naumann, J. Lotz, K. Leppkes, and M. Towara. Algorithmic diﬀerentiation of numerical
+methods: Tangent and adjoint solvers for parameterized systems of nonlinear equations. ACM
+Trans. Math. Softw., 41(4):26:1–26:21, October 2015.
+[17] N. Saﬁran, J. Lotz, and U. Naumann. Second-order tangent solvers for systems of parameterized
+nonlinear equations. Procedia Computer Science, 51:231 – 238, 2015.
+[18] M. Sagebaum, N. R. Gauger, U. Naumann, J. Lotz, and K. Leppkes. Algorithmic diﬀerentiation
+of a complex C++ code with underlying libraries. Procedia Computer Science, 18:208–217, 2013.
+[19] M. Schwalbach. Adjoint algorithmic diﬀerentiation for large-scale data assimilation. Master’s
+thesis, RWTH Aachen University, 2015.
+[20] J. Ungermann, L. Hoﬀmann, P. Preusse, M. Kaufmann, and M. Riese. Tomographic retrieval approach for mesoscale gravity wave observations by the premier infrared limb-sounder. Atmospheric
+Measurement Techniques, 3(2):339–354, 2010.
+
+211
+
+

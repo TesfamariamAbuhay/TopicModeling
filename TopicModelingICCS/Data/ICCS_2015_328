@@ -1,0 +1,685 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 70–79
+ICCS 2015 International Conference On Computational Science
+
+Towards Scalability and Data Skew Handling in
+GroupBy-Joins using MapReduce Model
+M. Al Hajj Hassan1 and M. Bamha2
+1
+2
+
+Lebanese International University, Beirut, Lebanon
+mohamad.hajjhassan01@liu.edu.lb
+Universit´e Orl´eans, INSA Centre Val de Loire, France
+bamha@univ-orleans.fr
+
+Abstract
+For over a decade, MapReduce has become the leading programming model for parallel
+and massive processing of large volumes of data. This has been driven by the development of
+many frameworks such as Spark, Pig and Hive, facilitating data analysis on large-scale systems.
+However, these frameworks still remain vulnerable to communication costs, data skew and
+tasks imbalance problems. This can have a devastating eﬀect on the performance and on the
+scalability of these systems, more particularly when treating GroupBy-Join queries of large
+datasets.
+In this paper, we present a new GroupBy-Join algorithm allowing to reduce communication
+costs considerably while avoiding data skew eﬀects. A cost analysis of this algorithm shows
+that our approach is insensitive to data skew and ensures perfect balancing properties during
+all stages of GroupBy-Join computation even for highly skewed data. These performances have
+been conﬁrmed by a series of experimentations.
+Keywords: Join and GrouBy-join operations, Data skew, MapReduce programming model, Distributed
+ﬁle systems, Hadoop framework, Apache Pig Latin
+
+1
+
+Introduction
+
+Business intelligence and large-scale data analysis have been recently the object of increased
+research activity using MapReduce model and especially in the evaluation of complex queries
+involving GroupBy-Joins using hash based approach [2, 10, 14]. GroupBy-joins still suﬀer from
+the eﬀect of high redistribution cost, disk I/O and task imbalance in the presence of skewed
+data in large scale systems.
+GroupBy-Join queries are queries involving join and group-by operations in addition to
+aggregate functions. In these queries, aggregate functions allow us to obtain a summary data
+for each group of tuples based on a designated grouping. We can distinguish two types of
+GroupBy-Join queries as illustrated in the following table.
+70
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.200
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+SELECT
+FROM
+WHERE
+GROUP BY
+
+Query Q1
+R.x, R.y, S.z, f (S.u)
+R, S
+R.x = S.x
+R.x, R.y, S.z
+
+M. Alhajj, M. Bamha
+
+Query Q2
+SELECT
+R.y, S.z, f (S.u)
+FROM
+R, S
+WHERE
+R.x = S.x
+GROUP BY R.y, S.z
+
+Table 1: Diﬀerent types of ”GroupBy-Join” queries.
+The diﬀerence between queries Q1 and Q2 resides in the GroupBy and Join attributes. In
+query Q1 , the join attribute x is part of the GroupBy attributes which is not the case in query
+Q2 . This diﬀerence plays an important role in processing the queries especially on parallel and
+distributed systems.
+In traditional algorithms that treat such queries, join operation is performed in the ﬁrst
+step and then the group-by operation [4, 15]. But the response time of these queries may be
+signiﬁcantly reduced if the group-by operation and aggregate function are performed before the
+join [4]. This helps in reducing the size of the relations to be joined. In addition, redistribution
+of tuples of both relations is necessary in join evaluation on parallel and distributed systems.
+Thus, reducing the size of relations to be joined helps in reducing the communication cost and
+by consequence in reducing the execution time of queries in parallel and distributed systems.
+Several optimization techniques were introduced in the literature in order to generate the query
+execution plan with the lowest processing costs [4,7,15,16]. Their aim is to study the necessary
+and suﬃcient conditions that must be satisﬁed by the relational query in order to be able to
+push the GroupBy past join operation and to ﬁnd when this transformation helps in decreasing
+the execution time. In general, when the join attributes are part of the group-by attributes, as
+in query Q1 , it is preferable to evaluate the group-by and aggregate function ﬁrst and then the
+join operation [8, 9, 13]. In the contrary, group-by cannot be applied before the join in query
+Q2 because the join attribute x is not part of the group-by attributes [11, 12].
+We have recently proposed in [10], MRFA-Join algorithm, a MapReduce based algorithm
+for evaluating join operations on Distributed File Systems (DFS). MRFA-Join algorithm is a
+scalable and skew-insensitive join algorithm based on distributed histograms and on a randomised key redistribution approach while guaranteeing perfect balancing during all stages of
+join computation. MRFA-Join algorithm, or other MapReduce hash based join algorithms presented in the literature [2, 17], could be easily extended to evaluate GroupBy-Join queries by
+adding a ﬁnal job that redistributes the join result based on the values of the select attributes
+((R.x, R.y, S.z) for query Q1 and (R.y, S.z) for query Q2 ). However, this does not allow us to
+beneﬁt from the optimization techniques described above.
+In this paper, we introduce a new GroupBy-Join algorithm called MRFAG-Join (MapReduce
+Frequency Adaptive Groupby-Join) based on distributed histograms to get detailed information
+about data distribution. Information provided by distributed histograms in both MRFA-Join
+and MRFAG-join algorithms allow us to balance load processing among processor nodes due
+to the fact that all the generated join tasks and buﬀered data never exceed a user deﬁned
+size, using threshold frequencies, while reducing communication costs to only relevant data.
+Moreover in MRFAG-Join, we partially apply the group-by operation and aggregate function
+before evaluating the join. In addition, we do not fully materialize the join result. This helps
+us to reduce the communication and disk input/output costs to a minimum while preserving
+the eﬃciency and the scalability of the algorithm even for highly skewed data. We recall that
+all existing MapReduce GroupBy-Join algorithms presented in the literature are derived from
+parallel hashing approaches which make them very sensitive to data skew.
+71
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+2
+
+M. Alhajj, M. Bamha
+
+The MapReduce Programming Model
+
+MapReduce [5] is a simple yet powerful framework for implementing distributed applications
+without having extensive prior knowledge of issues related to data redistribution, task allocation
+or fault tolerance in large scale distributed systems.
+Google’s MapReduce programming model presented in [5] is based on two functions: map
+and reduce. These two functions should have the following signatures:
+map:
+(k1 , v1 ) −→ list(k2 , v2 ),
+reduce: (k2 , list(v2 )) −→ list(v3 ).
+The user must write the map function that has two input parameters, a key k1 and an associated
+value v1 . Its output is a list of intermediate key/value pairs (k2 , v2 ). This list is partitioned
+by the MapReduce framework depending on the values of k2 , where all pairs having the same
+value of k2 belong to the same group.
+The reduce function, that must also be written by the user, has two parameters as input:
+an intermediate key k2 and a list of intermediate values list(v2 ) associated with k2 . It applies
+the user deﬁned merge logic on list(v2 ) and outputs a list of values list(v3 ). In this paper, we
+used an open source version of MapReduce called Hadoop developed by ”The Apache Software
+Foundation”. Hadoop framework includes a distributed ﬁle system called Hadoop Distributed
+File System (HDFS) designed to store very large ﬁles with streaming data access patterns.
+For eﬃciency reasons, in Hadoop MapReduce framework, users may also specify a “Combine
+function”, to reduce the amount of data transmitted from Mappers to Reducers during shuﬄe
+phase. It is like a local reduce applied (at map worker) before storing or sending intermediate
+results to the reducers. Its signature is: combine: (k2 , list(v2 )) −→ (k2 , list(v3 )).
+To cover a large range of applications needs in term of computation and data redistribution,
+in Hadoop framework, the user can optionally implement two additional functions : init() and
+close() called before and after each map or reduce task. The user can also specify a “partition
+function” to send each key k2 generated in map phase to a speciﬁc reducer destination. The
+reducer destination may be computed using only a part of the input key k2 . The signature of
+the partition function is: partition: k2 −→ Integer, where the output of partition should
+be a positive number strictly smaller than the number of reducers. Hadoop’s default partition
+function is based on “hashing” the whole input key k2 .
+
+3
+
+MRFAG-Join : a solution for data skew for GroupBy
+joins using MapReduce model
+
+In this section, we describe the implementation of MRFAG-Join, to evaluate GroupBy-join
+query Q1 , deﬁned in section 1, using Hadoop MapReduce framework as it is, without any
+modiﬁcation. Therefore, the support for fault tolerance and load balancing in MapReduce and
+HDFS are preserved if possible: the inherent load imbalance due to repeated values must be
+handled eﬃciently by the join algorithm and not by the MapReduce framework.
+In query Q1 , “x” refers to join attribute, attributes “y” and “z” are called Select attributes
+whereas attribute “u” refers to Aggregate attribute. We assume that input relations (or
+datasets) R and S are divided into blocks (splits) of data. These splits are stored in HDFS.
+These splits are also replicated on several nodes for reliability issues. Throughout this paper,
+for a relation T ∈ {R, S}, we use the following notations:
+• T : the restriction (a fragment) of relation T which contains tuples that appear in the
+ﬁnal GroupBy-join result,
+• Timap : the split(s) of relation T aﬀected to mapper i,
+72
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+• Ti : the split(s) of relation T aﬀected to mapper i,
+• Histx (Timap ): Mapper’s local histogram of Timap , i.e. the list of pairs (k, nk ) where k is a
+value of attribute “x” and nk its corresponding frequency in relation Timap on mapper i,
+• Histxi (T ) : the fragment of global histogram of relation T of attribute “x” on reducer i,
+• Histxi (T )(vx ): is the global frequency nvx of value vx of attribute “x” in relation T ,
+• Histx,y (Ti ): is the local histogram of relation Ti with respect to both “x” and “y”: the
+list of pairs ((vx ,vy ),nx,y ) where vx and vy are respectively values of attributes “x” and
+“y” and nx,y its corresponding frequency in relation Ti ,
+x,y
+• Histx,y
+(T ) aﬀected to reducer i,
+i (T ): is the fragment of Hist
+w
+• AGGRf (u) (Ti ): is the result of applying the aggregate function f on the values of the
+aggregate attribute u on every group of tuples of Ti having identical values of the groupby attribute w. AGGRfw(u) (Ti ) is formed of a list of tuples having the form (v, fv ) where
+fv is the result of applying the aggregate function on the group of tuples, in Ti , having
+value v for the attribute w (w may be formed of more than one attribute),
+• AGGRfw(u),i (T ): is the fragment of AGGRfw(u) (T ) aﬀected to reducer i,
+• HistIndex(R ✶ S): join attribute values that appear in both R and S and their corresponding three parameters: Frequency index, Nb buckets1 and Nb buckets2 used in communication templates.
+MRFAG-Join proceeds in three MapReduce jobs (refer to [1] for a cost analysis of each phase):
+a. the ﬁrst map-reduce job is performed to compute global distributed histogram and to create randomized communication templates to redistribute only relevant data while avoiding
+the eﬀect of data skew,
+b. the second one, is used to compute partial aggregation of relevant data by using communication templates carried out in the previous job,
+c. the third job, is used to redistribute relevant partial aggregated data by using communication templates carried out in the ﬁrst job and then compute ﬁnal GroupBy-join result.
+Data redistribution in MRFAG-Join algorithm is the basis for eﬃcient and scalable join processing while avoiding the eﬀect of data skew in all the stages of GroupBy-join computation.
+MRFAG-Join algorithm (see Algorithm 1) proceeds in 6 steps:
+a.1: Map phase to generate tagged “local histograms” for input relations:
+In this step, each mapper i reads its assigned data splits (blocks) of relations R and S from
+DFS and emits a couple (<K,tag>,1) for each record in Rimap (resp. Simap ) where K is a value of
+join attribute “x” and tag represents input relation tag. Emitted couples (<K,tag>,1) are then
+combined and partitioned using a user deﬁned partitioning function by hashing only key part
+K and not the whole mapper tagged key <K,tag>. The result of combine phase is then sent
+to destination reducers in the shuﬄe phase of the following reduce step. We recall that, in this
+step, only local histograms Histx (Rimap ) and Histx (Simap ) are sorted and transmitted across the
+network and the sizes of these histograms are very small compared to the size of input relations
+Rimap and Simap owing to the fact that, for a relation T , Histx (T ) contains only distinct entries
+of the form (k, nk ) where k is a value of join attribute “x” and nk its corresponding frequency.
+a.2: Reduce phase to create join result global histogram index and randomized
+communication templates for relevant data:
+At the end of shuﬄe phase, each reducer i will receive a fragment of Histxi (R) (resp. Histxi (S))
+obtained through hashing of distinct values of Histx (Rjmap ) (resp. Histx (Sjmap )) of each mapper
+j. Received fragments of Histxi (R) and Histxi (S) are then merged to compute global histogram
+73
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+Algorithm 1 MRFAG-join algorithm workﬂow for query Q1
+Map Phase /* To generate “local histograms” Histx (Rimap ) and Histx (Simap ) */
+✄ Each mapper i reads its assigned data splits of input relations Rimap and Simap from DFS
+✄ Extracts join key value from input relation’s record.
+✄ Gets a tag to identify source input relation
+✄ Emits a couple ((join key,tag), 1)
+Combine Phase
+✄ Each combiner, for each pair (join key,tag) computes the sum of generated local frequencies
+associated to the join key value in each tagged join key generated in Map phase.
+Partition Phase
+✄ For each emitted tagged join key computes reducer destination according to only join key value
+a.2 Reducer Phase: /* To combine shuﬄe’s records and to create Global join histogram index*/
+✄ Compute the global frequencies for only join key values present in both R and S.
+✄ Emit, for each join key, a couple (join key,(frequency index,Nb buckets1, Nb buckets2)).
+/*frequency index ∈ {0, 1, 2}: used to get detailed information of data distribution in R and S */
+map
+map
+b.1 Map Phase /* To compute Histx,y (Ri ) and AGGRfx,z
+) */
+(u) (S i
+✄ Each mapper i reads Global join histogram index from DFS and creates a local HashTable
+✄ Each mapper i reads its assigned data splits of relations Rimap and Simap from DFS
+✄ Extract join key value from input relation’s record.
+If (join key ∈ HashTable) Then
+✄ Extract the groupby attribute y of R (resp. z of S in addition to aggregate attribute u)
+✄ Get a tag to identify source input relation
+✄ Emit a couple ((join key,groupby attribute,tag), n) where n is 1 for tuples relation R
+and the aggregate attribute’s value for S.
+End If
+Combine Phase
+✄ Each combiner, for each record with key (join key,groupby attribute,tag) computes the sum of
+generated local frequencies for R and applies aggregate function on values of attribute u of S.
+Partition Phase
+✄ For each emitted tagged (join key, groupby attribute), computes reducer destination according
+to join key and groupby attribute values.
+x,z
+b.2 Reduce Phase: /* To create Histx,y
+i (R) and AGGRf (u),i (S) */
+✄ For each key (join key,groupby attribute,tag) compute f req x,y (R), the global sum of generated
+local frequencies for R and globally compute, fux,z (S), the result of the aggregate function for S.
+✄ Emit a couple ((join key,groupby attribute, tag),f req x,y (R))
+(resp. ((join key,groupby attribute, tag),fux,z (S))).
+x,z
+c.1 Map Phase: /* Repartition of Histx,y
+i (R) and AGGRf (u),i (S) */
+✄ Each mapper i reads Global join histogram index from DFS and creates a local Hashtable
+x,z
+✄reads its assigned data splits of Histx,y
+i (R) and AGGRf (u),i (S) from DFS,
+x,z
+✄ Generates randomized communication templates for records in Histx,y
+i (R) and AGGRf (u),i (S)
+according to join key value and its corresponding frequency index in HashTable.
+x,z
+✄ Emits relevant randomised tagged records from relations Histx,y
+i (R) and AGGRf (u),i (S).
+Partition Phase:
+✄ For each emitted tagged join key, compute reducer destination according to the value of join
+attribute and random reducer destination generated in Map phase;
+c.2 Reduce Phase: /* To generate ﬁnal query Q1 result */
+✄ Combine received entries to create ﬁnal result, AGGRfx,y,z
+(u),i (R ✶ S), on each reducer i.
+a.1
+
+HistIndexi (R ✶ S) on each reducer i. HistIndex(R ✶ S) is used to compute randomized communication templates for only records associated to relevant join attribute values
+(i.e. values which will eﬀectively be present in the ﬁnal GroupBy-Join result). In this step,
+
+74
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+each reducer i, computes the global frequencies for join attribute values which are present
+in both left and right relations and emits, for each join attribute K, an entry of the form :
+(K,<Frequency index(K),Nb buckets1(K),Nb buckets2(K)>) where:
+• F requency index(K) ∈ {0, 1, 2} will allow us to decide if, for a given relevant join attribute
+value K, the frequencies of tuples in relations R and S, having the value K, are greater
+(resp. smaller) than a deﬁned threshold frequency f0 . It also permits us to choose
+dynamically the probe and the build relation for each value K of the join attribute. This
+choice reduces the global redistribution cost to a minimum.
+For a given join attribute value K ∈ HistIndexi (R ✶ S),
+⎧
+➠ Frequency index(K)=0 If Histxi (R)(K) < f0 and Histxi (S)(K) < f0
+⎪
+⎪
+⎪
+⎪
+(i.e. values associated to low frequencies in both relations),
+⎪
+⎪
+⎨
+➠ Frequency index(K)=1 If Histxi (R)(K) ≥ f0 and Histxi (R)(K) ≥ Histxi (S)(K)
+(i.e. Frequency in relation R is higher than those of S),
+⎪
+⎪
+⎪
+x
+x
+x
+⎪
+➠
+Frequency
+index(K)=2
+If
+Hist
+⎪
+i (S)(K) ≥ f0 and Histi (S)(K) > Histi (R)(K)
+⎪
+⎩
+(i.e. Frequency in relation S is higher than those of R).
+
+• Nb buckets1(K): is the number of buckets used to partition records of relation associated
+to the highest frequency for join attribute value K,
+• Nb buckets2(K): is the number of buckets used to partition records of relation associated
+to the lowest frequency for join attribute value K.
+For a join attribute value K, the number of buckets N b buckets1(K) and N b buckets2(K) are
+generated in a manner that each bucket will ﬁt in reducer’s memory. This makes the algorithm
+insensitive to the eﬀect of data skew even for highly skewed input relations.
+For a highly skewed join attribute value K, appropriate map keys are generated so that all
+records in each bucket associated to value K in one relation are forwarded to the same reducer
+holding all the corresponding buckets of other relation. This partitioning guarantees that join
+tasks, are generated in a manner that the input data for each join task will ﬁt in the memory
+of processing node and never exceed a user deﬁned size, even for highly skewed data [10].
+Using HistIndex information, each reducer i, has local knowledge of how relevant records
+of input relations will be redistributed in the next map phase.
+To guarantee a perfect balancing of the load among processing nodes, communication templates are carried out jointly by all reducers (and not by a coordinator node) for only join
+attribute values which are present in GroupBy-Join result : Each reducer deals with the redistribution of the data associated to a subset of relevant join attribute values.
+b.1: Map phase to create a local hashtable and to generate relevant partial aggregated data :
+In this step, each mapper i reads join result global histogram index, HistIndex, to create a local
+hashtable. Once local hashtable is created on each mapper, input relations are then read from
+DFS, and each input record is either discarded (if record’s join key value is not present in the
+local hashtable) or routed to a designated random reducer destination using communication
+templates computed in step a.2 (Map phase details are described in Algorithm 5 of appendix
+in [1]).
+b.2: Reduce phase to compute relevant partial aggregated data, Histx,y
+i (R) and
+AGGRfx,z
+(S)
+:
+(u),i
+x,z
+At the end of step b.1, each reducer i receives a fragment Histx,y
+i (R) (resp. AGGRf (u),i (S))
+map
+map
+obtained through a hashing of Histx,y (Rj ) (resp. AGGRx,z
+)) on each mapper j and
+f (u) (S j
+75
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+Figure 1: Final GroupBy-Join computation using Histx,y (R) and AGGRx,z
+f (u) (S).
+then a local merge of received data. This partial aggregated data is then written to DFS. (refer
+to Algorithm 8 of appendix in [1] for a complete description of this reduce phase).
+c.1: Map phase to create a local hashtable and to redistribute relevant aggregated
+data using randomized communication templates:
+In this step, each mapper i reads join result global histogram index, HistIndex, to create a local
+hashtable. Once local hashtable is created on each mapper, input relations are then read from
+DFS, and each record is either discarded (if record’s join key is not present in the local hashtable)
+or routed to a designated random reducer destination using communication templates computed
+in step a.2 (refer to Algorithm 9 of Appendix in [1] for a detailed description of Map phase).
+We recall that, in this step, only relevant data is emitted by mappers (which reduces communication cost in the shuﬄe step to a minimum) and records associated to high frequencies
+(those having a large eﬀect on data skew) are redistributed according to an eﬃcient dynamic
+partition/replicate schema to balance load among reducers and avoid the eﬀect of data skew.
+However records associated to low frequencies (these records have no eﬀect on data skew) are
+redistributed using hashing functions.
+c.2: Reduce phase to compute join result:
+x,z
+At the end of step b.1, each reducer i receives a fragment Histx,y
+i (R) (resp. AGGRf (u),i (S))
+map
+map
+obtained through randomized hashing of Rj
+(resp. S j ) on each mapper j and performs a
+local GroupBy-join of received data. Figure 1 shows how the frequency in Histx,y (R) and the
+value of aggregate function in AGGRx,z
+f (u) (S) are used to generate ﬁnal GroupBy-Join result.
+Remark: In practice, data imbalance related to the use of hashing functions can be due to:
+• a bad choice of used hash function. This imbalance can be avoided by using the hashing
+techniques presented in the literature making it possible to distribute evenly the values
+76
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+of the join attribute with a very high probability [3],
+• an intrinsic data imbalance which appears when some values of the join attribute appear more frequently than others. By deﬁnition a hash function maps tuples having
+the same join attribute values to the same processor. There is no way for a clever
+hash function to avoid load imbalance that results from these repeated values [6]. But
+this case cannot arise here owing to the fact that histograms contain only distinct values
+of the join attribute and the hashing functions we use are always applied to histograms
+or applied to aggregated data.
+
+4
+
+Experiments
+
+To evaluate the performance of MRFAG-Join algorithm presented in this paper, for query Q1 ,
+we compared our algorithm to the best known solution using PigLatin a high-level language for
+analyzing large data sets based on Apache Pig plateform which generates optimized MapReduce
+programs. Pig includes routines to handle the eﬀects of data skew in join operations.
+We ran a large series of experiments on the Grid’5000 testbed where 50 nodes were randomly
+selected from three clusters of Grid’5000 Sophia’s site. Nodes characteristics are described in
+Table 2. Setting up a Hadoop cluster consisted of deploying each centralized entity (namenode
+and jobtracker) on a dedicated machine and co-deploying datanodes and tasktrackers on the
+rest of the nodes. Typically, we used a separate machine as a Hadoop client to manage job
+submissions. Data replication parameter was ﬁxed to three in HDFS conﬁguration ﬁle.
+To study the eﬀect of data skew on performance, join attribute values in the generated data
+Table 2: Grid’5000 - Sophia’s site computing resource characteristics
+Cluster
+ID
+1
+2
+3
+
+Number
+of nodes
+56
+50
+45
+
+CPU
+AMD@2.2GHz
+AMD@2.6GHz
+Intel@2.26GHz
+
+CPUs
+per node
+2
+2
+2
+
+Cores
+per CPU
+2
+2
+4
+
+Memory
+(GB)
+3GB RAM
+3GB RAM
+31GB RAM
+
+Disk
+Storage
+135GB
+232GB
+557GB
+
+have been chosen to follow a Zipf distribution [18] as it is the case in most database tests: Zipf
+factor was varied from 0 (for a uniform data distribution) to 1.0 (for a highly skewed data).
+Input relations sizes were ﬁxed to 1 Billion records for the right relation (∼100GB of data) and
+500M of records for the left relation ∼50GB of data) and the GroupBy-Join result varying from
+approximately 20M to 50M records (corresponding respectively to about 400MB and 1GB of
+aggregated output data).
+We noticed in all the tests and also those presented in Figure 2, that our MRFAG-Join (including
+histograms and aggregate data preprocessing) algorithm outperforms PigLatin GroupBy Join
+execution even for low or moderated skew (∼ 10x faster than PigLatin GroupBy Join). We
+recall that our algorithm requires the scan of input data twice: the ﬁrst scan is performed for
+histograms processing and the second one to generate relevant partial aggregated data.
+We can see, in Figure 2, that MRFAG-Join time is relatively very small compared to MRFAG-Join
+preprocessing time this is explained by the fact that MRFAG Join Preprocessing operates on
+whole input data (to generate distributed histograms or relevant aggregated data) whereas
+MRFAG Join operates on relevant aggregated data which is very small compared to the size of
+input relations.
+The cost analysis (see [1]) and tests performed showed that the overhead related to histogram processing is compensated by the gain in GroupBy-join processing since only relevant
+77
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+data (that appears in the ﬁnal GroupBy-Join result) is emitted by mappers which reduce considerably the amount of data transmitted over the network in shuﬄe phase (see Figure 3).
+Moreover, in PigLatin GroupBy Join implementation all records, emitted by the mappers,
+having the same value for join attribute are sent and processed by the same reducer which
+makes the algorithm very sensitive to data skew and limits its scalability. This cannot occur
+in MRFAG-Join owing to the fact that attribute values associated to high frequencies are forwarded to distinct reducers using randomised join attribute keys and not by a simple hashing
+of join key values.
+8000
+
+50
+
+6000
+
+Reduce Shuffle (Gbytes)
+
+Join Processing time (sec)
+
+60
+
+MRFAG_Join_Preprocessing
+MRFAG_Join
+PigLatin_GroupBy-Join
+
+7000
+
+5000
+4000
+3000
+2000
+
+0
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+20
+
+0
+
+1
+
+Attribute Value Skew : Zipf parameter
+
+Figure 2:
+
+Data skew eﬀect on Hadoop
+GroupBy-join processing time
+
+5
+
+MRFAG_Join_Preprocessing
+MRFAG_Join
+PigLatin_GroupBy-Join
+
+30
+
+10
+
+1000
+0
+
+40
+
+0
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+1
+
+Attribute Value Skew : Zipf parameter
+
+Figure 3: Data skew eﬀect on data volume
+moved across the network during shuﬄe phase
+
+Conclusion and future work
+
+In this paper, we have presented MRFAG-Join a GroupBy-Join algorithm using MapReduce
+model based on distributed histograms and a randomised key redistribution approach. This
+algorithm achieves several enhancements compared to hash based solutions suggested in the
+literature by reducing communication costs to only relevant or aggregated data while guaranteeing perfect balancing properties even for highly skewed data. The cost analysis and the
+tests performed on Grid5000 infrastructure showed that the overhead related to distributed histogram management remains very small compared to the gain it provides to avoid the eﬀect of
+load imbalance due to data skew, and to reduce the communication costs in MapReduce’shuﬄe
+phase. We recall that, data processing, unnecessary disk I/O and redistribution of the intermediate results can lead to a signiﬁcant degradation of the performance using ’pure’ hash based
+approaches presented in the literature to perform GroupBy joins on large datasets.
+Future work will be devoted to extend this algorithm to multi-join and pipelined GroupBy-join
+queries on large scale systems.
+
+Acknowledgements
+Experiments presented in this paper were carried out using the Grid’5000 experimental testbed, being
+developed under the INRIA ALADDIN development action with support from CNRS, RENATER and
+several Universities as well as other funding bodies (see https://www.grid5000.fr).
+
+78
+
+Towards Scalability and data skew handling in GroupBy-joins in MapReduce
+
+M. Alhajj, M. Bamha
+
+References
+[1] M. Bamha and M. Al Hajj Hassan. Scalability and optimisation of groupby-joins in mapreduce.
+Technical report, LIFO, Universit´e d’Orl´eans, France., March 2015.
+[2] Spyros Blanas, Jignesh M. Patel, Vuk Ercegovac, Jun Rao, Eugene J. Shekita, and Yuanyuan Tian.
+A comparison of join algorithms for log processing in mapreduce. In Proceedings of ACM SIGMOD
+International Conference on Management of data, pages 975–986, New York, USA, 2010.
+[3] J. Lawrence Carter and Mark N. Wegman. Universal Classes of Hash Functions. Journal of
+Computer and System Sciences, 18(2):143–154, 1979.
+[4] Surajit Chaudhuri and Kyuseok Shim. Including group-by in query optimization. In VLDB ’94:
+Proceedings of the 20th International Conference on Very Large Data Bases, pages 354–366, San
+Francisco, CA, USA, 1994. Morgan Kaufmann Publishers Inc.
+[5] Jeﬀrey Dean and Sanjay Ghemawat. MapReduce: Simpliﬁed Data Processing on Large Clusters.
+In OSDI, pages 137–150. USENIX Association, 2004.
+[6] D. J. DeWitt, J. F. Naughton, D. A. Schneider, and S. Seshadri. Practical Skew Handling in
+Parallel Joins. In VLDB, pages 27–40, 1992.
+[7] Ashish Gupta, Venky Harinarayan, and Dallan Quass. Aggregate-query processing in data warehousing environments. In Proceedings of the 21th International Conference on Very Large Data
+Bases, pages 358 – 369, San Francisco, CA, USA, 1995. Morgan Kaufmann Publishers Inc.
+[8] M. Al Hajj Hassan and M. Bamha. Parallel processing of ’group-by join’ queries on Shared Nothing
+machines. In Proceedings of the International Conference on Software and Data Technologies
+(ICSOFT’06), volume 1, pages 301–307, Setubal, Portugal, 11-14 September 2006. INSTICC press.
+[9] M. Al Hajj Hassan and M. Bamha. An optimal evaluation of groupby-join queries in distributed
+architectures. In Proceedings of the third International Conference on Web Information Systems
+and Technologies (WEBIST 2007), volume IT, pages 246–252, Barcelona, Spain, 3 - 6 March 2007.
+[10] M. Al Hajj Hassan, M. Bamha, and F. Loulergue. Handling data-skew eﬀects in join operations
+using mapreduce. In International Conference on Computational Science, pages 145–158. Elsevier,
+2014.
+[11] Yi Jiang, Kevin H. Liu, and Clement H. C. Leung. Parallel algorithms for queries with aggregate functions in the presence of data skew. In HiPC ’99: Proceedings of the 6th International
+Conference on High Performance Computing, pages 207–211, London, UK, 1999. Springer-Verlag.
+[12] D. Taniar, Y. Jiang, K.H. Liu, and C.H.C. Leung. Aggregate-join query processing in parallel
+database systems,. In the 4th International Conference/Exhibition on High Performance Computing in Asia-Paciﬁc Region, volume 2, pages 824–829. IEEE Computer Society, 2000.
+[13] David Taniar and Wenny Rahayu. Parallel ”groupby-before-join” query processing for high performance parallel/distributed database systems. In Proceedings of the 20th International Conference
+on Advanced Information Networking and Applications - Volume 1, pages 693–700, Washington,
+USA, 2006. IEEE Computer Society.
+[14] Srinivas Vemuri, Maneesh Varshney, Krishna Puttaswamy, and Rui Liu. Execution primitives for
+scalable joins and aggregations in map reduce. PVLDB, 7(13):1462–1473, 2014.
+[15] Weipeng P. Yan and Per-˚
+Ake Larson. Performing group-by before join. In the International
+Conference on Data Engineering, pages 89–100, Washington, USA, 1994. IEEE Computer Society.
+[16] Weipeng P. Yan and Per-˚
+Ake Larson. Eager aggregation and lazy aggregation. In VLDB ’95:
+Proceedings of the 21th International Conference on Very Large Data Bases, pages 345–357, San
+Francisco, CA, USA, 1995. Morgan Kaufmann Publishers Inc.
+[17] H. Yang, A. Dasdan, R. Hsiao, and D. Parker. Map-reduce-merge: simpliﬁed relational data
+processing on large clusters. In the ACM SIGMOD international conference on Management of
+data, pages 1029–1040, New York, USA, 2007.
+[18] G. K. Zipf. Human Behavior and the Principle of Least Eﬀort: An Introduction to Human Ecology.
+Adisson-Wesley, 1949.
+
+79
+
+

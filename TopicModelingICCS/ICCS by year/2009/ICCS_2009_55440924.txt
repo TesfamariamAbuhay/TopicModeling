@@ -1,0 +1,1155 @@
+Experiences with Mapping Non-linear Memory
+Access Patterns into GPUs
+Eladio Gutierrez, Sergio Romero, Maria A. Trenas, and Oscar Plata
+Department of Computer Architecture
+University of Malaga, Spain
+{eladio,sromero,maria,oplata}@uma.es
+
+Abstract. Modern Graphics Processing Units (GPU) are very powerful computational systems on a chip. For this reason there is a growing
+interest in using these units as general purpose hardware accelerators
+(GPGPU). To facilitate the programming of general purpose applications, NVIDIA introduced the CUDA programming environment. CUDA
+provides a simpliﬁed abstraction of the underlying complex GPU architecture, so as a number of critical optimizations must be applied to the
+code in order to get maximum performance. In this paper we discuss our
+experience in porting an application kernel to the GPU, and all classes of
+design decisions we adopted in order to obtain maximum performance.
+
+1
+
+Introduction
+
+Driven by the huge computing demand of the graphics applications, Graphics
+Processing Units (GPU) have become highly parallel, multithreaded and manycore processors. Modern GPUs deliver a very large amount of raw performance
+that have drawn attention to the scientiﬁc community, with a growing interest
+in using these units to boost the performance of their compute-intensive applications. That is, to use the GPUs as general-purpose hardware accelerators
+(General-Purpose Computation on GPUs, or GPGPU [2]).
+Developing GPGPU codes using the conventional graphics programming APIs
+is a very hard task and with many limitations. This situation motivated the
+development of general parallel programming environments for GPUs [11,12].
+NVIDIA CUDA (Compute Uniﬁed Device Architecture) [11], one of the most
+widespread models, is built around a massively parallel SIMT (Single-Instruction,
+Multiple-Thread) execution model, supported by the NVIDIA GPU architecture [7], and provides a shared-memory, multi-threaded architectural model for
+general-purpose GPU programming [10].
+CUDA provides a convenient and successful model at programming scalable
+multi-threaded many-core GPUs, across various problem domains [5]. However,
+the simpliﬁed abstraction that CUDA model provides does not permit to extract
+maximum performance from the underlying GPU physical architecture without
+applying a set of optimizations to the parallel code [8,13]. We can distinguish two
+classes of optimizations. The ﬁrst class corresponds to techniques that fall within
+G. Allen et al. (Eds.): ICCS 2009, Part I, LNCS 5544, pp. 924–933, 2009.
+c Springer-Verlag Berlin Heidelberg 2009
+
+Experiences with Mapping Non-linear Memory Access Patterns into GPUs
+
+925
+
+the programming model, that is, those that improve the use of the architectural
+resources deﬁned at CUDA level. The second class includes those optimizations
+that fall outside the programming model. We consider in this class techniques at
+a level lower than CUDA, that is, that must be included in the parallel execution
+implementation of the programming model.
+This paper discusses our experience in porting application kernels to a GPU
+accelerator, with the aim of obtaining maximum performance. In order to have
+enough room for optimization, we have selected as a working example a kernel
+showing non-linear access patterns to memory, the fast Fourier transform (FFT).
+We will show that if the optimization eﬀorts are only within the CUDA model,
+the obtained performance is much lower than the expected peak one. We have
+to resort to additional low-level techniques in order to improve signiﬁcantly the
+resulting performance. An important issue is that these techniques are hard to
+apply and very dependent on the kernel computational structure. A ﬁnal issue
+we also analyzed refers to the algorithm chosen to implement the kernel.
+Due to its interest, several contributions can be found in the literature focused on porting FFT algorithms to graphics processing units [1,3,6,9,14]. More
+recently works about CUDA implementations report higher performance [4,15].
+This is accomplished by a much more eﬃcient use of GPU resources, through
+the application of many optimization techniques (CUDA level and low level).
+The implementation described in [4] behaves specially well. They use a diﬀerent
+algorithm for FFT, a hierarchical Stockham.
+
+2
+
+CUDA Programming Model
+
+NVIDIA CUDA is both a hardware and software architecture for issuing and
+managing computations on the GPU, making it to operate as a truly generic
+data-parallel computing device. An extension to the C programming language
+is provided in order to develop source codes.
+From the hardware viewpoint, the GPU device consists of a set of SIMT multiprocessors each one containing several processing elements. Diﬀerent memory
+spaces are available. The global device memory is a unique space accessible by
+all multiprocessors, acting as the main device memory with a large capacity. Besides, each multiprocessor owns a private on-chip memory, called shared memory
+or parallel data cache, of a smaller size and lower access latency than the global
+memory. A shared memory can be only accessed by the multiprocessor that owns
+it. In addition, there are other addressing spaces for speciﬁc purposes.
+CUDA execution model is based on a hierarchy of abstraction layers: grids,
+blocks, warps and threads. The thread is the basic execution unit that is actually
+mapped onto one processor. A block is a batch of threads cooperating together
+in one multiprocessor and hence all threads in a block share the shared memory.
+A grid is composed by several blocks, and because there can be more blocks than
+multiprocessors, diﬀerent blocks of a grid are scheduled among the multiprocessors. In turn, a warp is a group of threads executing in an SIMT way, so threads
+of a same block are scheduled in a given multiprocessor warp by warp.
+
+926
+
+E. Gutierrez et al.
+
+Two kinds of codes are considered in the CUDA model: those executed by
+the CPU (host side) and those executed by the GPU, called kernel codes. The
+CPU is responsible of transferring data between host and device memories as
+well as invoking the kernel code, setting the grid and block dimensions. Memory
+accesses and synchronization schemes are the most important aspects to take
+into account. Warp addresses issued by SIMT memory access instructions may be
+grouped thus obtaining a high memory bandwidth. This is known as coalescing
+condition. Otherwise, access will be serialized and the resulting latency will be
+diﬃcult to hide with the execution of other warps of the same block.
+
+3
+
+Experiences in Optimizing the FFT in CUDA
+
+We have selected as a benchmark a kernel code showing non-linear access patterns to memory: the Fast Fourier Transform (FFT). Basically, the FFT follows
+a divide and conquer strategy in order to reduce the computational complexity
+of the discrete Fourier transform (DFT), which provides a discrete frequencydomain representation X[k] from a discrete time-domain signal x[n]. For a 1dimensional signal of N samples, DFT is deﬁned by the following pair of transN −1
+formations (forward and inverse): X = DF T (x) : X[k] = n=0 x[n]WNnk , 0 ≤
+N −1
+k < N , and x = IDF T (X) : x[n] = N1 k=0 X[k]WN−kn , 0 ≤ n < N , where the
+2π
+powers of WN = e−j N are the so-called twiddle factors.
+The design decisions to develop an eﬃcient GPU implementation of a kernel
+code like FFT may be classiﬁed into three levels:
+– Algorithm level: It refers to the algorithm chosen to implement the kernel.
+The basic strategy is the well-know Cooley-Tukey decomposition, but some
+other strategies, like the Stockham approach, have been shown to behave
+better in SIMD architectures. In addition, the selection of the radix parameter has strong inﬂuence in the performance.
+– CUDA level: Once the algorithm has been conﬁgured, it must be mapped
+into the CUDA architecture. The resulting performance depends strongly on
+two main issues: parallelism extracted and memory hierarchy exploitation.
+Both issues are closely related to platform features, and are clearly inﬂuenced
+by the problem memory access patterns.
+– Code level: The CUDA architecture hides many low-level details of the underlying hardware platform. This way, an important fraction of the overall
+performance may depend on a series of low level tricks that would help the
+compiler to generate an eﬃcient object code.
+
+Algorithm level. In this paper we have considered a radix-2, DIT (Decimation
+In Time), Cooley-Tukey implementation. Although this algorithm requires an
+initial bit-reversal stage, however it could be used in signal transformations where
+such bit-reversal operation is not required (e.g., Walsh). This is not the case of
+the Stockham method, which is auto-sorted.
+
+Experiences with Mapping Non-linear Memory Access Patterns into GPUs
+x[0]
+x[8]
+x[4]
+
+0
+1
+2
+
+x[12]
+x[2]
+
+3
+4
+
+W2
+
+x[10]
+x[6]
+x[14]
+x[1]
+x[9]
+
+5
+
+W
+
+W
+2
+W4
+
+0
+
+0
+8
+
+W
+1
+W8
+2
+W8
+3
+W8
+
+0
+2
+0
+
+W
+
+8
+9
+
+W2
+
+x[15] 15
+
+1
+2
+
+0
+4
+
+6
+7
+
+x[5] 10
+x[13] 11
+x[3] 12
+x[11] 13
+x[7] 14
+
+0
+
+0
+
+W2
+
+W4
+2
+W4
+
+0
+2
+
+0
+16
+
+W
+1
+W16
+2
+W16
+3
+W16
+4
+W16
+5
+W16
+6
+W16
+7
+W16
+
+0
+0
+4
+
+W
+1
+W4
+
+0
+
+W2
+
+0
+8
+
+W
+1
+W8
+2
+W8
+3
+W8
+
+0
+2
+
+W
+
+0
+4
+
+W
+1
+W4
+
+0
+
+W2
+
+X
+Y
+
+927
+
+X[0]
+X[1]
+X[2]
+
+3
+4
+
+X[3]
+X[4]
+
+5
+
+X[5]
+
+6
+7
+
+X[6]
+X[7]
+
+8
+9
+
+X[8]
+X[9]
+
+10
+
+X[10]
+
+11
+
+X[11]
+
+12
+13
+
+X[12]
+X[13]
+
+14
+15
+
+X[14]
+X[15]
+
+X+Y·WNb
+X−Y·WNb
+
+WNb
+
+Fig. 1. Radix-2 decimation-in time FFT in terms of butterﬂy operators
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+
+W 08
+W 18
+2
+W8
+W 38
+
+W 08
+W 18
+W 28
+W 38
+
+W 016
+W 116
+W 28
+W 316
+4
+W 16
+W 516
+W 616
+W 716
+
+W 08
+W 18
+W 28
+W 38
+W 016
+
+(a)
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+
+0
+1
+2
+3
+16
+17
+18
+19
+32
+33
+34
+35
+48
+49
+50
+51
+64
+65
+66
+67
+80
+81
+82
+83
+96
+
+W 032
+W 132
+2
+W 32
+W 332
+
+W 432
+W 532
+W 632
+W 732
+
+W 064
+W 164
+W 264
+W 364
+4
+W 64
+W 564
+W 664
+W 764
+
+W 832
+W 932
+W 1032
+W 1132
+W 864
+
+0
+1
+2
+3
+16
+17
+18
+19
+32
+33
+34
+35
+48
+49
+50
+51
+64
+65
+66
+67
+80
+81
+82
+83
+96
+
+(b)
+
+Fig. 2. (a) Computing 3rd and 4th stages of the FFT; (b) computing 5th and 6th stages
+of the FFT using the pattern of 3rd and 4th stages over a properly permuted input
+
+The radix-2, DIT, Cooley-Tukey FFT organizes the DFT computations, as
+shown in Fig. 1, in terms of basic blocks, known as butterﬂies. The computation
+is carried out along log2 N stages being computed N coeﬃcients per stage. Before
+the ﬁrst stage, input coeﬃcients must be bit reversed (omitted in the ﬁgure).
+Focusing on memory locality, we observe that if the input coeﬃcients are located into consecutive memory positions, the reference patterns of higher stages
+will exhibit poorer locality features than the lower ones. In addition, if the input
+coeﬃcients are permuted properly, it is possible to carry out one of the stages
+using the access pattern of another, simply by using the corresponding twiddle factors. Such an equivalence is depicted in Fig. 2 showing how 5th and 6th
+
+928
+
+E. Gutierrez et al.
+Signal (2 n samples)
+......
+k
+
+2 chunks with distance 2 s chunks
+are assigned to the same block
+
+Subsignal
+(2 c+k+s samples)
+
+2s blocks per subsignal
+
+s
+
+distance 2 chunks
+
+c
+
+Chunk (2 samples)
+
+Global Memory Space
+Shared Memory Space
+
+Block (0,0)
+
+Block (1,0)
+
+.....
+
+Block (2 s−1,0)
+
+Fig. 3. Mapping of the input signal from global to shared memory spaces
+
+stages can be performed with the access pattern of the 3rd and 4th ones, after
+permuting the coeﬃcients. This mapping is denoted as: [5 : 6] → [3 : 4].
+CUDA level. The goal in the CUDA version is to obtain a high degree of
+parallelism taking into account system constrains, speciﬁcally those related to
+the memory hierarchy. The basic idea consists of mapping input signal samples
+placed in global (device) memory into the data parallel cache (shared memory),
+performing all possible computations with these local data and then copying the
+updated samples back to the global memory. This process may be repeated with
+diﬀerent mapping functions until all stages are done.
+Fig. 3 depicts how the input signal is repeatedly mapped from global memory
+into shared memory spaces. This mapping try to maximize coalesced accesses to
+global memory. The ﬁgure also shows a number of parameters deﬁned to describe
+our CUDA version, named as ctFFT (from Cooley-Tukey FFT) from now on.
+First, we consider that the input signal size is a power of two (2n samples). This
+signal is subdivided into equal-sized subsignals, which are further subdivided into
+ﬁxed-size chunks of 2c samples. A set of 2k chunks, separated among themselves
+a distance of 2s chunks, are grouped and assigned to the same CUDA block.
+So, each subsignal contains a total of 2s chunk blocks, or a total of 2(s+k+c)
+samples. Hence, the size of each CUDA block is of 2(c+k) samples, and the
+complete input signal contains a total of 2n−(c+k) such blocks. There is a size
+restriction for CUDA blocks, as each one will be processed in parallel in a single
+GPU multiprocessor, so it must be ﬁtted completely in the shared memory.
+With the above data mapping strategy, ctFTT proceeds as a series of synchronized phases, as follows:
+– Initial Phase: Processing of CUDA blocks composed of consecutive chunks
+(s = 0). The ﬁrst k + c FFT stages can be accomplished with these data
+blocks ([0 : (k + c − 1)] → [0 : (k + c − 1)]).
+– Intermediate Phase 1: After ﬁnishing these ﬁrst k + c stages, we can
+continue with the remaining FFT stages. These stages should not overlap
+
+Experiences with Mapping Non-linear Memory Access Patterns into GPUs
+Sample’s global address
+
+Sample’s global address
+
+n−(s+k+c)
+
+b
+
+k−1
+
+blockId.y
+(subsignal)
+
+b {0,1}
+
+threadId.y
+
+b
+
+929
+
+s
+
+blockId.x
+
+k−1
+
+c
+
+c
+
+threadId.x
+
+threadId.y
+
+c
+
+threadId.y threadId.x
+Sample’s shared memory address
+b {0,1}
+
+(a)
+
+n−2c
+
+c
+
+blockId
+c
+
+threadId.x
+c
+
+threadId.x threadId.y
+Sample’s shared memory address
+
+(b)
+
+Fig. 4. (a) Bit-block addressing deﬁning the mapping of the input signal from global
+to shared spaces, and (b) addressing for the bit reversal operation
+
+the previous ones already processed, so we must select the suitable CUDA
+blocks to be transferred to shared memory. Stage overlapping is avoided if
+we select blocks corresponding to values of s that are integer multiple of
+k. So, in the ﬁrst intermediate phase, we process CUDA blocks composed
+of chunks separated k chunks, that is, s = k. These data allow to compute
+the following k FFT stages: [s + c : s + c + k − 1] → [c : c + k − 1] =
+[k + c : 2k + c − 1] → [c : c + k − 1].
+– Intermediate Phase i: In general, the above procedure is repeated. Now,
+we take CUDA blocks corresponding to s = ik, that allow to compute a
+bunch of k FFT stages: [s + c : s + c + k − 1] → [c : c + k − 1] = [ik + c :
+(i + 1)k + c − 1] → [c : c + k − 1].
+– Final Phase: The last FFT stages to be computed could be less than k. If
+the total number of intermediate phases is P , in this ﬁnal phase the next
+FFT stages are computed: [s + c : n] → [c : n − s] = [(P + 1)k + c : n] →
+[c : n − (P + 1)k]. The number of intermediate phases can be calculated as
+P = (n − (k + c))/k , if this number is positive.
+ctFFT organizes parallel execution by assigning to each thread two main tasks:
+(i) copying of two signal samples from global to shared spaces, and (ii) processing
+of a single FFT butterﬂy, accessing two signal samples stored in shared memory.
+So, the total number of threads is 2n /2 = 2n−1 (radix-2). These threads are
+organized in a grid of (nBlock.x, nBlock.y) thread blocks, and each of these
+thread blocks groups (nT hreads.x, nT hreads.y) threads. With this grouping of
+threads, the data mapping shown if Fig. 3 can be deﬁned by mapping bit-blocks
+of the memory addresses, as depicted in Fig. 4 (a). The b bit in both addresses
+allows to distinguish between the two signal samples assigned to the same thread,
+and it is in use during the copy-in and copy-out operations (global to shared and
+shared to global). During the computation of a butterﬂy in the i FFT stage, the
+thread accesses the corresponding signal samples in shared memory by inserting
+a bit 0 or 1 in the i bit of the shared memory address composed of the bit-blocks
+threadIdx.y|threadIdx.x. Note that if c is larger than the number of threads in
+a single warp, then coalescing condition is completely fulﬁlled.
+As a DIT implementation is considered here, the initial bit reversal operation
+applied to the input signal is required. Fig. 4 (b) shows how this operation is
+implemented in ctFFT. Basically, it consists in a coalesced copy of the input
+
+930
+
+E. Gutierrez et al.
+
+signal samples to the shared memory, storing them in positions given by the bit
+reversal of the thread bit-block identiﬁers. Afterwards, these samples are copied
+back to the corresponding positions in global memory (not in-place).
+Code level. Among the low-level optimization techniques, we can highlight
+four with high impact on the code performance: loop unrolling, padding, constant
+propagation and thread synchronization. Padding is used to reduce shared memory bank conﬂicts. Constant propagation avoids unnecessary arithmetic instructions, specially when computing padding functions. Additional non-mandatory
+thread barrier synchronizations are beneﬁcial. For example, after completing
+global memory accesses. We consider that most of these optimizations should be
+implemented in the CUDA compiler, but our experience shows that without the
+help of the programmer, the compiler fail to apply many of these techniques.
+
+4
+
+Experimental Evaluation
+
+In this section we experimentally evaluate ctFFT. All experiments were conducted on a NVIDIA GeForce 280 GTX GPU, which includes 30 multiprocessors
+of eight processors each (240 cores in total), working at 1.3GHz with a device
+(global) memory of 1 GB. Each multiprocessor has a 16KB parallel data cache
+(shared memory). Codes were written in C using the version 1.0 of NVIDIA
+CUDA [11]. NVIDIA provides its own FFT library (CUFFT), that we take as a
+reference in order to assess the quality of our optimized CUDA version (ctFFT).
+Fig. 5 (top) shows the performance of ctFFT compared to CUFFT. These
+plots correspond to the CUDA version discussed in the previous section, considering only CUDA level optimizations, specially, coalescing (no low-level). According to the CUFFT interface, two dimensionality parameters are taken into
+consideration: the signal size and the number of signals of the given size to be
+processed (known as a batch of signals). The number of FLOPS is calculated
+using the equation 5bN log2 N , for a batch of b signals of N samples per signal.
+From the plots it can be seen that in cases of batches of large signals, our
+ctFFT outperforms CUFFT. However, CUFFT is better for a large number
+of batches of small signals. In addition, ctFFT allows to process larger signals
+than CUFFT. The CUFFT library is unable to perform the transform beyond
+223 samples [11] whereas our implementation can manage up to 226 samples,
+making a better exploitation of the available device memory. Fig. 5 bottom
+summarizes all these results (GFLOPS in the plot at the left, relative GFLOPS
+in the plot at the right). The bottom-right plot allows to determine for which
+signal conﬁgurations ctFFT outperforms CUFFT.
+The above results show that the best performance attained is almost 40
+GFLOPS, which is much lower than the peak performance of the GPU platform. And there are no other relevant performance strategies at CUDA level
+that we can use to further improve the parallel code. So, only two alternatives
+remain, either change the original FFT algorithm, that maps better into the
+
+Experiences with Mapping Non-linear Memory Access Patterns into GPUs
+
+931
+
+ctFFT
+CUFFT
+0
+
+1
+
+3
+
+batch of 2 signals
+
+batch of 2 signals
+
+30
+
+30
+
+30
+
+30
+
+20
+10
+10
+
+15
+lgnx
+
+lgnx (2
+
+20
+
+20
+10
+0
+
+25
+
+10
+
+15
+lgnx
+
+samples/signal) lgnx (2
+4
+
+20
+
+25
+
+20
+10
+0
+
+10
+
+15
+lgnx
+
+samples/signal) lgnx (2
+5
+
+batch of 2 signals
+
+GFLOPS
+
+40
+
+GFLOPS
+
+40
+
+0
+
+20
+
+20
+10
+0
+
+25
+
+30
+
+30
+
+30
+
+0
+
+10
+
+15
+lgnx
+
+lgnx (2
+
+20
+
+10
+
+25
+
+0
+
+10
+
+15
+lgnx
+
+samples/signal) lgnx (2
+
+20
+
+25
+
+GFLOPS
+
+30
+
+GFLOPS
+
+40
+
+20
+
+20
+10
+0
+
+10
+
+15
+lgnx
+
+samples/signal) lgnx (2
+
+20
+
+25
+
+batch of 2 signals
+
+40
+
+10
+
+20
+
+samples/signal)
+7
+
+batch of 2 signals
+
+40
+
+20
+
+15
+lgnx
+
+6
+
+batch of 2 signals
+
+10
+
+samples/signal) lgnx (2
+
+40
+GFLOPS
+
+GFLOPS
+
+2
+
+batch of 2 signals
+40
+GFLOPS
+
+GFLOPS
+
+batch of 2 signals
+40
+
+25
+
+20
+10
+0
+
+10
+
+15
+lgnx
+
+samples/signal) lgnx (2
+
+20
+
+25
+
+samples/signal)
+
+100
+ctFFT
+CUFFT
+
+90
+
+2.5
+
+80
+
+Relative GFLOPS (ctFFT/CUFFT)
+
+Batch of 215 signals
+
+70
+GFLOPS
+
+60
+50
+
+Batch of 1 signal
+
+40
+30
+20
+
+2
+
+Batch of 1 signal
+
+1.5
+
+1
+
+0.5
+
+10
+0
+8
+
+Batch of 215 signals
+
+10
+
+12
+
+14
+16
+18
+20
+lgnx (2 lgnxsamples/signal)
+
+22
+
+24
+
+26
+
+0
+
+8
+
+10
+
+12
+
+14
+16
+18
+lgnx (2lgnx samples/signal)
+
+20
+
+22
+
+24
+
+Fig. 5. Performance in GFLOPS of ctFFT compared to CUFFT
+
+GPU architecture, or apply low-level optimization techniques. These optimizations fall outside the CUDA programming model, are dependent on the speciﬁc
+CUDA code at hand, and represent a hard eﬀort to apply.
+Table 1 (a) illustrates the change in performance that ctFFT underwent when
+an incremental series of low-level optimization techniques were applied. These
+ﬁgures were obtained for a batch of 215 signals of 29 samples per signal, in such
+a way that each signal ﬁts completely in the shared memory of a CUDA block.
+This table shows a broad range of achieved performance results, from 17.5 to
+229 GFLOPS, depending on diﬀerent optimizations and algorithms used. At
+present, the best known FFT implementation on CUDA [4] performs a peak of
+300 GFLOPS (based on considerable hand-coded low-level optimizations). The
+ﬁrst column in the table corresponds to a ctFFT version where all computations are carried out over the global memory, using coalesced accesses (shared
+memory is not used). The second column is the CUDA version analyzed in the
+previous section. This version uses the shared memory as a cache of the global
+one, resulting in about 2× performance improvement. The next two columns
+
+932
+
+E. Gutierrez et al.
+
+Table 1. Incremental performance improvements: (a) applying low-level optimizations,
+(b) for diﬀerent memory access patterns (batch of 215 signals of 29 samples)
++
++
++ constant
+ctFFT
++
++
+(global) ctFFT unrolling padding radix-4 radix-8 propagation
+GFLOPS
+17.5
+35.1
+59.5
+63.5
+106
+116
+130
+(a)
+Incoherent ld/st
+0
+0
+0
+0
+0
+0
+0
+Warp serialize
+0
+806·103 668·103 649·103 428·103 255·103 221·103
+DIF,
+DIF,
+DIT, no
+Stockham
+bit reversal wo/ synch w/ synch
+GFLOPS
+142
+167
+199
+229
+(b)
+Incoherent ld/st
+0
+0
+0
+0
+3
+3
+3
+Warp serialize
+189·10
+211·10
+170·10
+95·103
+
+add loop unrolling and padding low-level optimizations to ctFFT. The performance improvement due to padding is lower than expected because the padding
+function must be simple in order to not introducing too much overhead. The use
+of a higher radix (than 2), as shown in the next two columns, allows to increase
+the performance even more. The reason for this behaviour is a more intensive
+(re)use of the processor registers, that represent the fastest level of the memory
+hierarchy. For radices beyond 8, the performance degrades due to two eﬀects.
+First, the ﬁxed number of registers limits the number of active threads per multiprocessor (this is called occupancy). Second, for a higher radix, the number
+of threads per block decreases, reducing the opportunities of hiding memory latency via warp scheduling. Constant values resulting from padding functions can
+be precomputed and propagated directly in the code. This optimization has an
+important impact in the performance, as shown in the corresponding column.
+Table 1 (b) corresponds to other four implementations we have developed for
+the same signal conﬁguration, and also including all the previously discussed
+low-level optimizations. This table show the impact in performance of various
+memory access patterns. The ﬁrst one is ctFFT but with the bit reversal stage
+omitted. The second and third columns correspond to the radix-8, DIF (Decimation In Frequency) version of the Cooley-Tukey algorithm. The diﬀerence
+between them is the inclusion or not of additional non-mandatory thread barrier synchronizations. Finally, the fourth column corresponds to the Stockham
+algorithm, developed using similar strategies than discussed for ctFFT.
+Basically, the performance of ctFFT is modest due to two main reasons: the
+cost of the bit reversal operation, and the loss of parallelism due to conﬂicts in
+shared memory banks. Other interesting measurements included in tables are the
+number of incoherent loads/stores and the warp serialize parameter (obtained
+by activating CUDA PROFILE). The ﬁrst one shows the number of non-coalesced
+accesses to global memory. In all evaluated cases, coalescing was perfect. Warp
+serialize represents the number of threads serialized due to shared memory bank
+conﬂicts. Note that the low-level optimizations reduces signiﬁcantly this number, with a clear eﬀect in performance. But also the memory access pattern
+associated to the algorithm (Cooley-Tukey/Stockham, DIT/DIF, radix-2/-4/-8)
+has an important impact. The lowest number of warp conﬂicts correspond to
+Stockham version (radix-8, DIF).
+
+Experiences with Mapping Non-linear Memory Access Patterns into GPUs
+
+5
+
+933
+
+Conclusions
+
+This paper discusses our experience in porting application kernels to GPU accelerators using CUDA. In particular, a FFT benchmark was chosen due to its
+non-linear memory access patterns that allow to play with many design issues
+when mapping it to the complex GPU architecture. According to our experience,
+developers should take into account three classes of design issues: at algorithm
+level, at CUDA level and at code level (low level). In any level we may observe
+strong impact in performance. We specially highlight low-level optimizations,
+that may increase the performance of the CUDA version by one order of magnitude. However, the bad part is that these techniques are very dependent on
+the speciﬁc CUDA code and represent a hard eﬀort to apply. New programming
+environments should include technology to automatize, at least partially, these
+essential and high-impact low-level optimizations.
+
+References
+1. Fialka, O., Cadik, M.: FFT and Convolution Performance in Image Filtering on
+GPU. In: 10th Int’l. Conf. on Information Visualization (2006)
+2. General-Purpose Computation Using Graphics Hardware, http://www.gpgpu.org
+3. Govindaraju, N.K., Larsen, S., Gray, J., Manocha, D.: A Memory Model for Scientiﬁc Algorithms on Graphics Processors. In: ACM Int. Conf. Supercomputing (2006)
+4. Govindaraju, N.K., Lloyd, B., Dotsenko, Y., Smith, B., Manferdelli, J.: High Performance Discrete Fourier Transforms on Graphics Processors. In: Int’l. Conf. for
+High Performance Computing, Networking, Storage and Analysis (SC 2008) (2008)
+5. Garland, M., Le Grand, S., Nickolls, J., Anderson, J., Hardwick, J., Morton, S.,
+Phillips, E., Zhang, Y., Volkov, V.: Parallel Computing Experiences with CUDA.
+IEEE Micro. 28(4), 13–27 (2008)
+6. Jansen, T., von Rymon-Lipinski, B., Hanssen, N., Keeve, E.: Fourier volume rendering on the GPU using a split-stream FFT. In: Vision, Modeling, and Visualization
+Workshop (2004)
+7. Lindholm, E., Nickolls, J., Oberman, S., Montrym, J.: NVIDIA Tesla: A Uniﬁed
+Graphics and Computing Architecture. IEEE Micro. 28(2), 39–55 (2008)
+8. Manikandan, M., Bondhugula, U., Krishnamoorthy, S., Ramanujam, J., Rountev,
+A., Sadayappan, P.: A Compiler Framework for Optimization of Aﬃne Loop Nests
+for GPGPUs. In: ACM Int’l. Conf. on Supercomputing (2008)
+9. Moreland, K., Angel, E.: The FFT on a GPU. In: ACM Conf. Graph. Hardware
+(2003)
+10. Nickolls, J., Buck, I., Garland, M., Skadron, K.: Scalable Parallel Programming
+with CUDA. ACM Queue 6(2), 40–53 (2008)
+11. NVIDIA CUDA (2008), http://developer.nvidia.com/object/cuda.html
+12. The OpenCL Speciﬁcation, Ver. 1.0.29, Khronos OpenCL Working Group, http://
+www.khronos.org/registry/cl/specs/opencl-1.0.29.pdf
+13. Petit, E., Matz, S., Bodin, F.: Data Transfer Optimization in Scientiﬁc Applications
+for GPU based Acceleration. In: Workshop Compilers for Parallel Computers (2007)
+14. Sumanaweera, T., Liu, D.: Medical Image Reconstruction with the FFT. GPU
+Gems 2, 765–784 (2005)
+15. Volkov, V., Kazian, B.: Fitting FFT onto the G80 Architecture (2008),
+http://www.cs.berkeley.edu/~kubitron/courses/cs258-S08/projects/
+reports/project6_report.pdf
+
+

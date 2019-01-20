@@ -1,0 +1,881 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 299 – 308
+
+International Conference on Computational Science, ICCS 2013
+
+Dynamic distribution of workload between CPU and GPU for a
+parallel conjugate gradient method in an adaptive FEM✩
+Jens Langa , Gudula R¨ungera
+a Department
+
+of Computer Science, Chemnitz University of Technology, Chemnitz, Germany
+
+Abstract
+The parallel preconditioned conjugate gradient method (CGM) is often used in adaptive FEMs and has a critical impact on the
+performance. This article proposes a method for dynamically balancing the computational load of this CGM between CPU and
+GPU. For the determination of the optimal balance of the computational load on CPU and GPU, an execution time model for the
+CGM is developed which considers the diﬀerent execution speeds of the two kinds of processing units. The model relies on
+data-speciﬁc and machine-speciﬁc parameters which are both determined at runtime. The accuracy of the model is veriﬁed in
+experiments. This auto-tuning-based approach for CPU/GPU collaboration enables signiﬁcant performance beneﬁts compared
+to CPU-only or GPU-only execution.
+Keywords: CPU/GPU collaboration, conjugate gradient method, performance modelling, auto-tuning
+
+1. Introduction
+For eﬃcient simulations in science and technology, fast numerical methods are essential. As an important
+tool for increasing the performance of the simulations, graphics processing units (GPUs) have emerged during
+the last years. Depending on the algorithm, a single GPU can be faster than a single CPU by a multiple [1, 2]. A
+pattern frequently applied is that the CPU executes the core algorithm and oﬀ-loads compute-intensive work to
+the GPU. This approach is especially feasible if there exist independent algorithmic blocks, or tasks, of which
+some are more suitable for execution on the CPU and some for execution on the GPU. In contrast, schemes in
+which CPU and GPU work together in a way such that both do computation of the same kind and the workload is
+distributed between them dynamically at runtime have been rarely investigated. Such schemes are preferable if the
+computation is suitable for both, execution on the CPU and on the GPU, and there are no independent tasks of
+another kind which can be used for overlapping CPU and GPU computation. In this article, a method for CPU/GPU
+collaboration is proposed for a parallel preconditioned conjugate gradient method (CGM) which is used in an
+adaptive ﬁnite element method (FEM).
+There exist basically two methods for distributing workload to diﬀerent processing units: static and dynamic
+methods. Static methods determine the percentage of the computational workload which is to be processed on each
+of the processing units in advance and do not alter it during the runtime of the program. If the distribution is not
+✩ This work is supported by the cluster of excellence Energy-Eﬃcient Product and Process Innovation in Production Engineering (eniPROD)
+funded by the European Union (European Regional Development Fund) and the Free State of Saxony.
+Email addresses: jens.lang@cs.tu-chemnitz.de (Jens Lang), ruenger@cs.tu-chemnitz.de (Gudula R¨unger)
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.193
+
+300
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+hard-coded into the program, it can, e.g., be calculated using hardware speciﬁcs such as the peak performance
+of the processing units which could be stored in a library. In order to better take into account hardware or data
+speciﬁcs, such as the data size or its structure, dynamic methods can be helpful. These methods can determine the
+distribution considering their actual execution time and thus achieve a good balance among the processing units. If
+the dynamic workload distribution is applied to an iterative method, the execution times measured in one iteration
+can be considered for the determination of the distribution for the next iteration, which gives the possibility to adapt
+the distribution eﬀects changing between two iterations. This article proposes such a method for the adaptive FEM.
+Dynamic workload distribution is especially suitable for an adaptive FEM since the number of ﬁnite elements, and
+thus the amount of workload, in the next reﬁnement step is not known in advance.
+The contribution of this article is enabling CPU/GPU collaboration with a dynamic distribution of workload for
+a parallel preconditioned CGM used in an adaptive FEM. For the dynamic workload distribution, an execution time
+model for this CGM is needed, which is also developed in this article. By measuring the execution times for each
+reﬁnement step of the FEM and using the results for determining the distribution in the next reﬁnement step, the
+distribution adapts to the hardware and to the input data using an automatic tuning method.
+The subsequent sections are organised as follows: Section 2 gives a short overview on the speciﬁcs of the CGM
+investigated. In Sect. 3, an execution time model for this method is developed. Section 4 veriﬁes this model and
+investigates the performance of CPU/GPU collaboration. Section 5 gives related work and Sect. 6 concludes the
+article.
+2. Parallel preconditioned conjugate gradient method
+The scientiﬁc code considered is an adaptive ﬁnite element method (FEM) [3] which, e.g., is applied to
+deformation problems. The FEM reﬁnes its mesh adaptively at the most critical points in contiguous iterations, i.e.
+it adds more elements to the mesh at the points with the largest deformation gradients. One component of the FEM
+is a parallel solver for linear systems of equations using the conjugate gradient method [4]. This method solves the
+linear system of equations
+Au = b
+(1)
+by testing for a potential solution uk if Auk ≈ b holds. More precisely, it is tested whether the residuum rk = |Auk −b|
+is below a given error bound e, i.e. rk < e. If the condition is not fulﬁlled, the next solution uk+1 is computed and
+tested in a further iteration. The ﬁrst potential solution u1 is chosen arbitrarily. Using a preconditioner for choosing
+uk+1 accelerates the convergence and hence reduces the number of iterations needed.
+The routine Ppcgm shown as pseudo code in Alg. 1 executes the conjugate gradient method as described. Ppcgm
+calls the routine Axmebe to calculate the matrix-vector multiplication y = Au. Axmebe does not use the overall
+vectors u and y and the overall matrix A, but performs an element-wise matrix-vector multiplication of the form:
+yel = Ael uel
+
+(2)
+
+for all ﬁnite elements el of the FEM. While the size of the overall vectors grows proportionally to the number of
+elements and may grow to some hundreds of thousands, the size of the element vectors remains constant. Depending
+on the number of nodes per elements and the number of degrees of freedom, it is between 8 and 81. The data
+needed for processing one element, i.e. the element data structures Ael , uel and yel , is extracted from the overall data
+structures and converted back by dedicated functions o2el and el2o:
+Ael = o2el(A, el) ,
+y=
+
+uel = o2el(u, el) ,
+
+el2o(yel ) .
+
+(3)
+(4)
+
+el
+
+Since the equations (2) to (4) are independent for each element from each other, Axmebe can be executed in parallel,
+as shown in Alg. 1 (Lines 11 to 15): In Line 12, the element data structures are extracted from the overall data
+structures according to Eq. (3). The matrix-vector multiplication of Eq. (2) is performed in Line 13, and the element
+data structures are converted back according to Eq. (4) in Line 15. The writing into the overall vector y, which is
+shared between the processors, in Line 15, the synchronisation of the write accesses has to be ensured.
+
+301
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+1
+2
+3
+4
+5
+6
+7
+8
+
+PPCGM(A, b)
+begin
+repeat
+call preconditioner
+calculate next u
+y := AXMEBE(A, u)
+until y ≈ b
+return u
+
+9
+10
+11
+12
+13
+14
+15
+
+AXMEBE(A, u)
+begin
+for each el do in parallel
+Ael := o2el(A, el), uel := o2el(u, el)
+yel := Ael uel
+begin synchronised
+y := y + el2o(yel )
+return y
+
+16
+
+Algorithmus 1: Pseudo code of Ppcgm and Axmebe.
+
+The parallel section in lines 11 to 15 is suitable for being executed on both, CPU or GPU. For an execution on a
+GPU, the required data from A and u has to be transferred to the GPU memory beforehand and the result y has to
+be fetched from the GPU memory afterwards. For a detailed description of the implementation, see Sect. 4.1.
+3. Execution time modelling
+The calculation of the Equations (2) to (4) is executed in parallel by a number of CPU cores and one GPU, as
+described in Sect. 2. As the routine Ppcgm has a longer execution time than any other routine in the FEM, this
+article focuses on minimising the execution time of this routine. For minimising the execution time of Ppcgm, the
+workload is distributed to the processing units such that each ﬁnishes its amount of workload in roughly the same
+time. In this section, an execution time model is proposed which predicts the execution time of Ppcgm taking the
+performance diﬀerences of the processing units, i.e. CPU and GPU, into account.
+The routine Ppcgm mainly consists of a loop which performs the following steps: (i) execution of the preconditioner, (ii) calculation of the next approximation u and (iii) call of the routine Axmebe, see Alg. 1. The execution
+time tcgm of Ppcgm can be modelled as follows:
+tcgm = l(tpre + taxmebe ) ,
+
+(5)
+
+where l denotes the number of iterations of the CGM main loop, taxmebe denotes the execution time of Axmebe and
+tpre is the execution time of the preconditioner and the calculation of the next u. The number of iterations l is not
+known beforehand, but can, e.g., be estimated from the mean number of iterations in the past. For the execution of
+Axmebe, nel ﬁnite elements are distributed uniformly on pcpu CPU cores and one GPU. Denoting the percentage
+of the number of ﬁnite elements processed on the GPU as a number rgpu , 0 ≤ rgpu ≤ 1, the numbers of elements
+gpu
+cpu
+processed on the GPU nel and on one CPU core nel , respectively, are
+gpu
+
+nel = rgpu nel
+
+cpu
+
+, nel =
+
+1 − rgpu
+nel
+pcpu
+cpu
+
+.
+
+(6)
+
+gpu
+
+Using these numbers from Eq. (6) and the execution times tpar and tpar of the parallel section of Axmebe for
+cpu/gpu
+one element on the CPU and on the GPU, respectively, the execution time taxmebe of Axmebe with CPU/GPU
+collaboration is then the maximum of the execution times on the CPU cores and the GPU:
+cpu/gpu
+
+cpu cpu
+
+gpu gpu
+
+taxmebe = max nel tpar , nel tpar
+
+.
+
+(7)
+
+gpu
+
+The value tpar includes the portion of the transfer times of u and y for one element. By extending Eq. (5) and
+cpu/gpu
+combining it with Eq. (7), the execution time tcgm of Ppcgm with CPU/GPU collaboration can be modelled as
+cpu/gpu
+
+tcgm
+
+gpu
+
+cpu cpu
+
+gpu gpu
+
+= nel tcopy + l tpre + max nel tpar , nel tpar
+
+where tcopy is the transfer time of that part of A needed for determining one Ael .
+
+,
+
+(8)
+
+302
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+cpu/gpu
+
+Before balancing the workload between CPU and GPU for minimising the execution time tcgm , the following
+gpu
+cpu cpu
+gpu
+condition has to be satisﬁed: In Eq. (8), nel tcopy must decrease faster than nel l tpar increases, depending on nel ,
+i.e.
+cpu
+tcopy < l · tpar .
+(9)
+If the transfer of the data of one element to the GPU memory consumes more time than processing it on the CPU,
+gpu
+then all elements should be processed on the GPU, i.e. nel = 0 and rgpu = 0. For l, the mean number of CGM
+iterations is used.
+If the condition from Eq. (9) is satisﬁed, which is the case for the experimental setting in this article, see Table 1
+cpu/gpu
+cpu/gpu
+in the following section, the execution time of Ppcgm tcgm becomes minimal if taxmebe is minimal, i.e. if the
+following condition holds:
+cpu cpu
+gpu gpu
+nel tpar = nel tpar .
+(10)
+After inserting Eq. (6) into Eq. (10), the following value results:
+rgpu
+
+⎞−1
+⎛
+gpu
+tpar
+⎟⎟
+⎜⎜⎜
+⎜
+= ⎝1 + cpu pcpu ⎟⎟⎠
+tpar
+
+.
+
+(11)
+
+If rgpu is chosen according to equation (11), the execution time of Ppcgm becomes minimal.
+4. Veriﬁcation
+In this section, the execution time model developed in Sect. 3 is veriﬁed for real hardware. The parameters
+cpu
+gpu
+tpre , tcopy , tpar and tpar are measured for an implementation of the CGM. Using Eq. (8) with these parameters, a
+prediction of the execution time is made for the speciﬁc machine on which the CGM is executed. Furthermore, the
+optimal workload distribution between CPU and GPU for this machine is determined according to Eq. (11).
+4.1. Implementation
+The code used here is based on an existing shared-memory parallel implementation of the adaptive FEM in
+OpenMP [5]. The additional GPU code has been developed in CUDA. An implementation using CUBLAS has
+been very ineﬃcient, see Sect. 4.7, and is not considered further.
+Algorithm 2 shows the implementation of the GPU execution of Axmebe and the calculation of the workload
+distribution. The bars annotating the pseudo code indicate which lines of the code each of the execution time
+cpu
+gpu
+parameters tpre , tcopy , tpar and tpar comprises. These values for these parameters are measured during each mesh
+reﬁnement step of the FEM and are used for the calculation of each distribution for the next reﬁnement step.
+The value of tpre is measured by taking the time immediately before the call of the preconditioner and after the
+calculation of the next approximation u. The parameter tcopy is determined by measuring the time needed for
+transferring the data to the GPU memory and dividing this value by the number of elements processed on the GPU.
+cpu
+gpu
+The parameters tpar and tpar are determined by taking the times at the beginning and at the end of the parallel
+section and dividing them by the number of elements processed on the respective processing unit. If multiple CPUs
+cpu
+are used, the arithmetic mean of the values obtained for tpar is computed. The execution times have been measured
+using the function PAPIF get virt usec of the PAPI library [6].
+The percentage rgpu of elements processed on the GPU is computed in Line 3 of Alg. 2. The parameters obtained
+in the preceding mesh reﬁnement step are taken for the calculation for the current step. Eﬀects on the execution
+time that arise from diﬀerent data sizes are taken into account. For example, the execution time might depend
+on whether the input or output vectors completely ﬁt into the cache. Their length changes as the total number of
+elements increases in each mesh reﬁnement step. By updating rgpu regularly, such eﬀects that depend on the data
+sizes are considered suﬃciently, see Sect. 4.4. The overhead which is introduced by the repeated measuring is
+investigated in Sect. 4.6. The ﬁrst reﬁnement step starts with a ﬁxed distribution which processes an equal number
+of elements on the CPUs and on the GPU.
+In Line 4 of Alg. 2, the elements of the set of ﬁnite elements E are distributed among Egpu and all Ecpuk , 1 ≤
+k ≤ pcpu , where Egpu denotes the set of elements to be processed on the GPU and Ecpuk denotes the set of elements
+
+303
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+Figure 1. Example objects drill hole (left) and crankshaft (right), each after 8 reﬁnement steps according to [3].
+
+to be processed on the kth CPU core, 1 ≤ k ≤ pcpu . In line 5, the parts of matrix A for processing the elements
+of Egpu are transferred to the GPU memory. The routine Axmebe is executed by multiple threads, each of which
+has a unique thread id tid, 0 ≤ tid ≤ pcpu . The ﬁrst thread with tid = 0 is the GPU thread (see Line 17), which is
+responsible for transferring the data to and from the GPU memory (lines 18 and 25) and for launching the GPU
+kernels. Apart from the GPU thread, there are the pcpu CPU threads, which perform the computation on the CPU
+cores. At the end of Axmebe, the two result vectors ygpu and ygpu are added and returned.
+The method of dynamic distribution of workload between CPU and GPU as presented in this article can be
+seen as a kind of auto-tuning where execution speeds of code fragments are measured in order to adapt software to
+the underlying hardware [7]. However, while standard auto-tuning uses diﬀerent software implementations of an
+algorithm in order to ﬁnd the variant with minimum execution time, the method of this article executes similar code,
+but on diﬀerent hardware. This method and auto-tuning have in common that they use models for the execution
+time in order to minimise it using the parameters obtained in the measurements.
+1
+2
+3
+4
+
+5
+6
+7
+8
+9
+10
+11
+12
+
+PPCGM(A, b)
+begin
+rgpu := 1 +
+
+13
+14
+
+−1
+
+gpu
+
+tpar
+
+cpu
+tpar
+
+15
+
+pcpu
+
+distribute all el ∈ E to Egpu and Ecpuk , 1 ≤ k ≤ pcpu
+cpu
+such that Egpu = ngpu
+el and E cpuk = nel
+for each el ∈ Egpu do
+copy part of A for el to GPU memory tcopy
+repeat
+call preconditioner
+calculate next u
+y := AXMEBE GPU(A, u)
+until y ≈ b
+return u
+
+16
+17
+18
+19
+20
+21
+
+tpre
+
+22
+23
+24
+
+AXMEBE GPU(A, u)
+begin
+initialise ycpu and ygpu as zero vectors
+begin parallel
+if tid == 0 then
+transfer u to GPU memory
+for each el ∈ Egpu do (on GPU)
+Ael := o2el(A, el)
+uel := o2el(u, el)
+gpu
+ngpu
+el tpar
+yel := Ael uel
+critical section
+ygpu := ygpu + el2o(yel )
+transfer ygpu to main memory
+
+25
+26
+27
+28
+29
+30
+31
+32
+
+33
+
+else
+for each el ∈ Ecputid do
+Ael := o2el(A, el)
+uel := o2el(u, el)
+yel := Ael uel
+critical section
+ycpu := ycpu + el2o(yel )
+
+cpu
+ncpu
+el tpar
+
+return ycpu + ygpu
+
+Algorithmus 2: Pseudo code of Ppcgm and Axmebe for CPU and GPU.
+
+4.2. Experimental setup
+For the experiments, a 24-core machine consisting of four hexacore Intel Xeon X5650 CPUs with a clock
+speed of 2.67 GHz and 12 GB of RAM has been used. It is equipped with an Nvidia GeForce GTX 570 HD GPU
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+coll
+execution time tcgm
+
+304
+
+measured
+predicted
+
+2.5 s
+2s
+1.5 s
+1s
+0.5 s
+
+parameter
+
+value
+
+variable
+
+value
+
+tpre
+tcopy
+tcpu
+par
+tgpu
+par
+
+719519 μs
+25 μs
+1234 μs
+55 μs
+
+nel
+ncpu
+el
+ngpu
+el
+pcpu
+t
+
+9584
+214.3
+4654
+23
+16
+
+0s
+0
+
+2
+
+4
+6
+8
+10 12
+FEM mesh reﬁnement step
+
+14
+
+Figure 2. Comparison of predicted and measured values for the
+cpu/gpu
+execution time of the routine Ppcgm tcgm
+for each FEM mesh
+reﬁnement step for the drill hole test case
+
+Table 1. Execution time parameters obtained during the eleventh
+reﬁnement step (9584 elements) of the drill hole test case (left) and
+variables needed for the calculation of the execution time prediction
+(right)
+
+consisting of 480 stream processors with a shader clock rate of 1464 MHz and 1.2 GB of GPU memory clocked
+with 1900 MHz. The machine has the following software conﬁguration: Linux kernel version 3.2, Nvidia CUDA
+toolkit version 4.2, gfortran compiler version 4.7.1 and PAPI library version 5.0.0.
+Two diﬀerent objects, see Fig. 1, have been used as test cases: drill hole, representing a cuboid with a drill hole,
+and crankshaft. The objects have been taken from the library provided with [3].
+4.3. Veriﬁcation of the execution time model
+Figure 2 compares the predicted execution time calculated according to Eq. (8) with the measured execution
+times for the drill hole test case. The ﬁgure shows that the prediction is close to the the actual measurement: They
+do not diﬀer by more than 20 % in most cases. The values of all parameters and variables in Eq. (8) are given
+in Tab. 1. The exact match of the prediction of (8) to the measured values is not important for the load balance.
+In order to achieve a balanced distribution of workload, only the condition of Eq. (10) has to be fulﬁlled: The
+execution times of the CPU and the GPU threads for Axmebe should be roughly equal. Figure 3 shows that this
+condition is fulﬁlled.
+4.4. Percentage of elements processed on the GPU
+Figure 4 shows how the percentage rgpu of elements processed on the GPU for the two test cases changes
+during the mesh reﬁnement steps. The abscissa shows the total number of ﬁnite elements, which increases in each
+reﬁnement step. Two conﬁgurations have been considered: one with 23 CPU threads, i.e. with full exploitation
+of the test machine, and one with only 7 CPU threads. The ﬁgure shows that the code behaves as expected: If
+there are less CPU threads, i.e. the total computational power of the CPUs decreases, the percentage of elements
+processed on the GPU increases. The ﬁgure also shows that the optimal value for rgpu depends only on the hardware
+conﬁguration used, i.e. the number of CPU cores and their computation speed, and the size of the data. It does not
+depend on the input data itself for these cases. With 23 CPU threads, the ﬁnal value for rgpu is at roughly 0.5, and
+with 7 CPU threads, it is at roughly 0.7 for both test cases.
+The adaptivity becomes visible in the reﬁnement steps 4, 5 and 6, which have 428, 848 and 1212 elements, in
+Fig. 3. In these steps, the GPU thread needs a shorter time for executing its part of the workload than the CPU
+threads. This leads to a fast increase of rgpu for a number of elements from 500 to 1500 elements in Fig. 4.
+4.5. Performance beneﬁt
+Figure 5 shows the execution time of the routine Ppcgm over all CGM iterations for three variants: CPU-only
+execution, GPU-only execution and CPU/GPU collaboration. The time needed by the preconditioner tpre has
+been omitted. The ﬁgure indicates that the GPU implementation yields a performance beneﬁt over the CPU
+implementation. The CPU/GPU collaboration implementation yields an additional signiﬁcant performance beneﬁt.
+
+305
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+1.0
+CPU threads
+GPU thread
+
+percentage of GPU elements rgpu
+
+cpu
+gpu gpu
+execution time ncpu
+el tpar , nel tpar
+
+0.02 s
+
+0.01 s
+
+0s
+
+0.8
+0.6
+0.4
+drill hole, 23 CPU threads
+crankshaft, 23 CPU threads
+drill hole, 7 CPU threads
+crankshaft, 7 CPU threads
+
+0.2
+0.0
+
+0
+
+2
+4
+6
+8
+10
+FEM mesh reﬁnement step
+
+0
+
+Figure 3. Comparison of the execution times of the CPU threads and
+the GPU thread for the drill hole test case with 23 CPU threads and
+one GPU thread
+
+5000
+number of elements
+
+10000
+
+Figure 4. Percentage of elements processed on the GPU for two
+diﬀerent hardware conﬁgurations and two diﬀerent test cases
+
+The CPU-only and GPU-only execution times for the drill hole case are 2.41 s and 1.28 s, and for the crankshaft
+case 3.47 s and 1.70 s, respectively. The values achieved for CPU/GPU collaboration are 1.00 s and 1.42 s. The
+GPU-only implementation being clearly faster than the CPU-only implementation could not have been expected
+from the value of rgpu = 0.5 found in Sect. 4.4, which indicates a similar speed for these two kinds of execution.
+This result might be due to inﬂuences evoked, e.g., by a worse cache usage for lager data sizes in the CPU-only
+version.
+
+coll
+execution time tcgm
+− ltpre
+
+test case drill hole
+
+test case crankshaft
+
+CPU only
+3s
+
+GPU only
+CPU + GPU
+
+2s
+
+1s
+
+0s
+0
+
+5000
+
+10000
+elements
+
+15000
+
+0
+
+5000
+
+10000
+
+15000
+
+elements
+
+Figure 5. Execution times of CPU-only, GPU-only and CPU/GPU collaboration execution
+
+4.6. Overhead of execution time measuring
+A further experiment investigates the overhead which is caused in Ppcgm for measuring the execution times, i.e.
+cpu
+gpu
+the current values of the parameters tpre , tcopy , tpar and tpar . Figure 6 shows the execution times of the routine Ppcgm
+with and without the overhead for the drill hole test case. The percentage of elements processed on the GPU has
+
+306
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+Variant 1
+o2el_vector<<<n_el_gpu, el_size>>>(u, ...);
+o2el_matrix<<<n_el_gpu, el_size>>>(A, ...);
+for (k = 0; k < n_el_gpu; k++)
+cublasDspmv(...);
+el2o_vector<<<n_el_gpu, el_size>>>(y, ...);
+
+Variant 3
+o2el_vector<<<n_el_gpu, el_size>>>(u, ...);
+o2el_matrix<<<n_el_gpu, el_size>>>(A, ...);
+myDspmv<<<n_el_gpu, el_size>>>(...);
+el2o_vector<<<n_el_gpu, el_size>>>(y, ...);
+
+Variant 2
+o2el_vector<<<n_el_gpu, el_size>>>(u, ...);
+o2el_matrix<<<n_el_gpu, el_size>>>(A, ...);
+for (k = 0; k < n_el_gpu; k++)
+myDspmv<<<1, el_size>>>(...);
+el2o_vector<<<n_el_gpu, el_size>>>(y, ...);
+
+Variant 4
+axmebe_par<<<n_el_gpu, el_size>>>(u, A, y,
+...);
+
+Algorithmus 3: Implementation variants of the parallel section of Axmebe: (1) matrix-vector multiplication
+using CUBLAS, one call per element, (2) matrix-vector multiplication using CUDA, one call per element, (3)
+matrix-vector multiplication with one call for all elements, (4) combine all kernels to one
+
+been set ﬁx to 0.53. At all points of measurement, i.e. for each FEM mesh reﬁnement step, no signiﬁcant diﬀerence
+in execution times can be observed. This indicates that using an online method does not introduce a signiﬁcant
+overhead.
+4.7. Comparison of CUBLAS/CUDA execution times
+
+1.5 s
+
+with measuring
+without measuring
+
+1s
+0.5 s
+0s
+
+coll
+execution time tcgm
+
+CGM execution time
+
+Figure 7 shows the execution times of the Ppcgm routine with the matrix-vector multiplication in Axmebe
+(Line 22 in Alg. 2) implemented in CUBLAS and in CUDA. Parts of the source code are shown in Alg. 3. For the
+CUBLAS implementation (variant 1), each function call of Lines 20 to 24 of Axmebe is expressed by a separate
+kernel function. The matrix-vector multiplication is performed by a call of the function cublasDspmv for each
+element. The other kernels, o2el vector, o2el matrix and el2o vector, process all elements in parallel. The
+CUDA implementation has been investigated in three variants: one that replaces the CUBLAS function by the
+same function re-implemented in CUDA, myDspmv (variant 2), one that does the matrix-vector multiplication for
+all elements in parallel (variant 3) and one that combines all kernels of variant 3 in one kernel (variant 4). The
+ﬁgure shows that calling the matrix-vector multiplication kernel separately for each element is ineﬃcient. However,
+CUBLAS does not oﬀer another possibility. Hence, implementing the matrix-vector multiplication by hand such
+that this kernel processes several elements in parallel yields a performance beneﬁt. Combining the four kernel calls
+to one gives a further beneﬁt.
+
+10 s
+8s
+6s
+
+CUBLAS (variant 1)
+CUDA (variant 2)
+CUDA (variant 3)
+CUDA (variant 4)
+
+4s
+2s
+0s
+
+0
+
+2
+
+4
+6
+8
+10
+FEM mesh reﬁnement step
+
+Figure 6. Execution time of Ppcgm with and without measuring the
+execution time parameters during the execution
+
+0
+
+2
+4
+6
+8
+FEM mesh reﬁnement step
+
+10
+
+Figure 7. Execution times of Axmebe implementation with CUBLAS
+and with CUDA
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+5. Related work
+There exist a number of research projects which implement the preconditioned conjugate gradient method on
+systems with multiple GPUs, e.g. [8] and [9]. In [8], the workload is uniformly distributed on the GPUs present. In
+[9], several diﬀerent solvers are used for the solution, each of which is evaluated with the data to be computed on
+the respective GPU for 3 iterations. The solver that has the smallest execution time with the respective data will
+then be used for the actual execution. Both approaches use GPUs only for the computation and no CPUs in contrast
+to the approach presented in this article.
+In [10], the performance of the adaptive FEM including the CGM is investigated for diﬀerent SMP machines.
+This includes the investigation of two diﬀerent data distribution strategies for the CGM. The development of a
+precise performance model was not an objective of the article.
+There exist various approaches for CPU/GPU collaboration: Harmony [11] is a programming and execution
+model which allows the coding of programs for CPU/GPU systems and to execute them. The Harmony runtime
+system includes an automated distribution of the computational load on the CPU and the GPU. While experiments
+have shown that for some algorithms a CPU/GPU collaboration does not lead to a signiﬁcant increase in performance,
+audio-processing kernels seem to beneﬁt from the collaboration. The results have also shown that a dynamic work
+distribution is essential as the execution time is highly machine-dependent, which supports the ﬁndings of this
+article. MapCG [12] is a MapReduce framework which allows jobs to be executed either on CPUs or on GPUs.
+For diﬀerent experiments carried out, the speedup of a CPU/GPU execution compared to a GPU-only execution is
+always below 1.1, in many cases even below 1. This is attributed to the need to serialise/deserialise data for copying
+the intermediate data. Scheduling methods for jobs which can be executed on both, CPUs and GPUs, are proposed
+in [13].
+In the ﬁeld of linear algebra, there exist the following GPU-enabled libraries: CUBLAS [14], which implements
+the BLAS interface, as well as CULA [15] and MAGMA [16], which provide an implementation of a subset of
+LAPACK. In their current versions, they do not support CPU/GPU collaborations [17]. However, the MAGMA
+project aims at exploiting the full computational power of hybrid systems such as those combining multi-core CPUs
+and GPUs [18] in the future. Research results of this project are, e.g., presented in [17], [19] and [20].
+In [19], a Cholesky factorisation which is formulated as a directed acyclic graph of tasks is investigated. Some
+of these tasks can only be executed on the CPU or on the GPU, some on both. In contrast to the approach presented
+in this article, the distribution of tasks to CPU or GPU in [19] is ﬁxed, i.e. it cannot be adapted to their execution
+speed. [17] investigates a tile-based Cholesky and QR factorisation. The matrices are split into tiles of which
+some are processed on the CPU and some on the GPU. For an optimal load balance, the size of these tile blocks is
+determined from the maximum performance of the processing units and further adapted for achieving a minimum
+diﬀerence between the CPU and the GPU execution time. These computations for the determination of the block
+size are performed oﬀ-line, i.e. before the actual execution, and are stored in a library for each compute kernel and
+for each GPU.
+In [20], the DAGuE framework [21], in which a program is deﬁned as an assembly of tasks in a directed acyclic
+graph, is extended by CPU computing capabilities. Tasks are implemented by codelets. There can be multiple
+codelets for each task, each supporting a diﬀerent hardware platform. The CPU/GPU collaboration is enabled
+by the capability of executing a codelet in diﬀerent versions at the same time. Compared to GPU-only execution
+using the MAGMA library, this extended DAGuE framework achieves a speedup of 1.2. [22] distributes the dgemm
+matrix multiplication to multiple CPU cores and one GPU using an execution time prediction. For calculating
+this prediction, a formula is developed which takes into account both, computation and data transfer time. For the
+actual calculation of the data distribution between CPU and GPU, however, the data transfer time is, in contrast to
+this article, omitted as it is dominated by the computation time. The parameters of this formula are estimated on
+the basis of theoretical peak values and are not measured with the real hardware as in this article. Compared to
+GPU-only execution, the performance is improved by 35 % when adding a quad-core CPU.
+The GPU/GPU collaboration schemes in the ﬁeld of linear algebra achieved a speedup of 1.15 to 1.35 which is
+in the same order of magnitude as the speedup achieved for the CGM in this article, where up to 1.25 could be
+achieved. Except DAGuE, none of them supports distributing the workload between CPU and GPU dynamically.
+However, not all algorithms, and especially not existing codes, can be easily transformed into an directed acyclic
+graph of tasks, as needed by DAGuE.
+
+307
+
+308
+
+Jens Lang and Gudula Rünger / Procedia Computer Science 18 (2013) 299 – 308
+
+6. Conclusion
+In this article, a model for the prediction of the execution time of a CGM solver has been developed. This model
+has been used for predicting execution times of the CGM on CPU and GPU, respectively. The method enables to
+ﬁnd an optimal distribution of the workload between the CPU cores and the GPU present in a machine in order to
+minimise the overall execution time of the CGM solver. By dynamically adapting CPU/GPU collaboration in an
+adaptive FEM, a speedup of up to 1.25 compared GPU-only and of up to 2.5 compared to CPU-only execution
+could be achieved.
+An advantage of the prediction method proposed is that it automatically adapts to the underlying hardware:
+The values for the execution times measured in every mesh reﬁnement step of the FEM are used for the prediction
+of the execution times of the next mesh reﬁnement step. In that way, even hardware properties which depend on
+the data size, such as the amount of cache usage, is taken into account. Currently, the model is applied to only
+one GPU and homogeneous CPUs. An extension to the use of multiple GPUs of the same or diﬀerent types or
+to include additional computing devices is feasible. The approach of predicting execution times and adaptively
+distributing the workload to the CPU or the GPU could be applied to other applications and is useful if they consist
+of compute-intensive parts which are similarly suitable for CPU and GPU execution.
+References
+[1] M. Garland, S. Le Grand, J. Nickolls, J. Anderson, J. Hardwick, S. Morton, E. Phillips, Y. Zhang, V. Volkov, Parallel Computing
+Experiences with CUDA, Micro, IEEE 28 (4) (2008) 13–27.
+[2] J. Nickolls, W. Dally, The GPU Computing Era, Micro, IEEE 30 (2) (2010) 56–69.
+[3] S. Beuchler, A. Meyer, M. Pester, SPC-Pm3AdH v1.0 – Programmer’s Manual, Preprint SFB393 01-08, TU Chemnitz (2001, revised
+2003).
+[4] A. Meyer, A parallel preconditioned conjugate gradient method using domain decomposition and inexact solvers on each subdomain,
+Comput. 45 (1990) 217–234.
+[5] M. Balg, J. Lang, A. Meyer, G. R¨unger, Array-based reduction operations for a parallel adaptive FEM, in: R. Keller, D. Kramer, J.-P. Weiß
+(Eds.), Facing the Multicore Challenge III, Vol. 7686 of LNCS, Springer, 2013.
+[6] S. Browne, J. Dongarra, N. Garner, G. Ho, P. Mucci, A Portable Programming Interface for Performance Evaluation on Modern Processors,
+Int. J. High Perform. Comput. Appl. 14 (3) (2000) 189–204.
+[7] R. C. Whaley, A. Petitet, J. J. Dongarra, Automated empirical optimizations of software and the ATLAS project, Parallel Computing
+27 (1-2) (2001) 3–35.
+[8] M. Ament, G. Knittel, D. Weiskopf, W. Strasser, A Parallel Preconditioned Conjugate Gradient Solver for the Poisson Problem on a
+Multi-GPU Platform, in: 18th Euromicro Int. Conf. on Parallel, Distributed and Network-Based Processing (PDP), 2010, pp. 583 –592.
+[9] A. Cevahir, A. Nukada, S. Matsuoka, High performance conjugate gradient solver on multi-GPU clusters using hypergraph partitioning,
+Computer Science - Research and Development 25 (2010) 83–91.
+[10] J. Hippold, G. R¨unger, Performance Analysis for Parallel Adaptive FEM on SMP Clusters, in: J. Dongarra, K. Madsen, J. Wasniewski
+(Eds.), Applied Parallel Computing – State of the Art in Scientiﬁc Computing, Vol. 3732 of LNCS, Springer, 2006, p. 730–739.
+[11] G. F. Diamos, S. Yalamanchili, Harmony: an execution model and runtime for heterogeneous many core systems, in: 17th Int. symp. on
+High performance distributed computing, HPDC ’08, ACM, New York, NY, USA, 2008, pp. 197–200.
+[12] C.-T. Hong, D.-H. Chen, Y.-B. Chen, W.-G. Chen, W.-M. Zheng, H.-B. Lin, Providing Source Code Level Portability Between CPU and
+GPU with MapCG, Journal of Computer Science and Technology 27 (2012) 42–56.
+[13] V. Ravi, M. Becchi, W. Jiang, G. Agrawal, S. Chakradhar, Scheduling Concurrent Applications on a Cluster of CPU-GPU Nodes, in: 12th
+IEEE/ACM Int. Symp. on Cluster, Cloud and Grid Computing (CCGrid), 2012, p. 140–147.
+[14] CUBLAS, Online https://developer.nvidia.com/cublas.
+[15] CULA Tools, Online http://www.culatools.com/.
+[16] MAGMA, Online http://icl.cs.utk.edu/magma/.
+[17] F. Song, S. Tomov, J. Dongarra, Enabling and scaling matrix computations on heterogeneous multi-core and multi-GPU systems, in: 26th
+ACM Int. Conf. on Supercomputing, ICS ’12, ACM, New York, NY, USA, 2012, pp. 365–376.
+[18] E. Agullo, J. Demmel, J. Dongarra, B. Hadri, J. Kurzak, J. Langou, H. Ltaief, P. Luszczek, S. Tomov, Numerical linear algebra on
+emerging architectures: The PLASMA and MAGMA projects, Journal of Physics: Conference Series 180 (1) (2009) 012037.
+[19] S. Tomov, J. Dongarra, M. Baboulin, Towards dense linear algebra for hybrid GPU accelerated manycore systems, Parallel Comput.
+36 (5-6) (2010) 232–240.
+[20] G. Bosilca, A. Bouteiller, T. Herault, P. Lemarinier, N. Saengpatsa, S. Tomov, J. Dongarra, Performance Portability of a GPU Enabled
+Factorization with the DAGuE Framework, in: IEEE Int. Conf. on Cluster Computing (CLUSTER), 2011, pp. 395 –402.
+[21] G. Bosilca, A. Bouteiller, A. Danalis, T. Herault, P. Lemarinier, J. Dongarra, DAGuE: A generic distributed DAG engine for High
+Performance Computing, Parallel Computing 38 (1–2) (2012) 37–51.
+[22] M. Fatica, Accelerating linpack with CUDA on heterogenous clusters, in: 2nd Workshop on General Purpose Processing on Graphics
+Processing Units, GPGPU-2, ACM, New York, NY, USA, 2009, pp. 46–51.
+
+

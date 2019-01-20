@@ -1,0 +1,811 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 329 – 338
+
+International Conference on Computational Science, ICCS 2013
+
+An architecture-aware technique for optimizing sparse
+matrix-vector multiplication on GPUs
+Marco Maggionia , Tanya Berger-Wolfa
+a Department
+
+of Computer Science University of Illinois at Chicago, 851 S. Morgan, Chicago IL 60607, USA
+
+Abstract
+The sparse matrix-vector multiplication (SpMV) is a fundamental kernel used in computational science. As a result, the
+performance of a large number of applications depends on the eﬃciency of the SpMV. This kernel is, in fact, a bandwidthlimited operation and poses a challenge for optimization when the matrix has an irregular structure. Over the last few years, a
+large body of research has been devoted to implementing SpMV on throughput-oriented manycore processors. Several sparse
+matrix formats have been proposed, with diﬀerent strengths and weaknesses, as well as other alternative optimization strategies
+such as row reordering.
+This paper proposes the design of an architecture-aware technique for improving the performance of the SpMV on Graphic
+Processing Units (GPUs). This optimization is based on a novel heuristic capable of reducing cache memory accesses within
+hardware-level thread blocks (warps). The technique is designed and implemented using a variation of the sliced ELL sparse
+format. However, the underlying idea is structure-independent and can be easily adapted to other sparse representations. We
+tested the proposed architecture-aware optimization on a large set of benchmarks from heterogeneous application domains.
+The results show consistent improvements for double-precision calculations, an average 9% increase in performance with
+speedups up to 2.24 over the baseline.
+Keywords: GPU; sparse linear algebra; SpMV optimization; cache heuristic;
+
+1. Introduction
+Numerous applications in science and engineering rely on sparse linear algebra methods. This class of algorithms is conceptually very powerful and it has been included by Berkeley researchers into their motifs [1], a list
+of fundamental algorithmic patterns of computation and communication. From predicting the state of a chemical
+reaction network [2] to ranking the relative importance of web pages [3], the sparse matrix-vector multiplication
+(SpMV) is often the fundamental algorithmic kernel used to achieve the solution. As a result, SpMV eﬃciency
+aﬀects the performance of a large number of applications and its optimization is crucial for solving increasingly
+complex computational science problems.
+The evolution of high performance computer architectures has recently seen an exponential growth in the
+number of processing cores within a single chip. Graphics Processing Units (GPUs) follow this manycore design
+approach, oﬀering a high degree of ﬁne-grain parallelism. Originally dedicated only to 3D visualization, GPUs
+have evolved into more general purpose throughput-oriented processors available for scientiﬁc and engineering
+computing. Modern GPU architectures such as Fermi [4] can achieve high ﬂoating-point throughputs and memory
+E-mail address: mmaggi3@uic.edu, tanyabw@uic.edu (Marco Maggioni, Tanya Berger-Wolf).
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.196
+
+330
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+bandwidth peaks. Dense matrix operations are the foundation for 3D visualization algorithms. Their regular access
+patterns are, in fact, well-suited for being executed on GPUs (as shown in [5]). In contrast, an irregular matrix
+structure poses a challenge for optimization. SpMV is a bandwidth-limited kernel and it is generally reported to
+sustain low fractions of peak processor performance on irregular matrices [6]. However, GPUs still represent an
+attractive solution to optimizing SpMV due to their large memory bandwidth.
+In this paper, we present an architecture-aware technique for improving the performance of the SpMV on
+GPUs. Over the last few years, a large body of research has been devoted to implementing SpMV on throughputoriented manycore processors. The main focus has been on proposing and tuning novel formats to eﬃciently
+represent the sparse matrix, with the aim of optimizing ﬁne-grain parallelism, memory pattern eﬃciency, and
+memory footprint (a review on basic sparse matrix formats is presented in [7]). In this paper, we analyze some
+key aspects of the GPU architecture to propose some general optimization techniques for the SpMV (rather than
+another specialized sparse representation). As a result, our approach permits to achieve a structure-independent
+performance improvement.
+The main contribution of our work is a novel heuristic capable of reducing cache memory accesses within
+hardware-level thread blocks (warps). The heuristic takes advantage of coalescing (threads that simultaneously
+access addresses in the same cache line generate an unique cache request). Hence, it tries to change the order in
+which each thread computes its nonzeros, with the goal of maximizing coalescing and minimizing the amount of
+cache requests. To the best of our knowledge, this cache optimization has never been considered before and it is
+orthogonal to reordering techniques [8] already available in the literature.
+As an aside contribution, we also present an improved variation (based on warp granularity and local rearrangement) of sliced ELL [9] sparse matrix format. This does not represent the focus of our work, but it serves
+as an example to show that any sparse format can be potentially adapted to the proposed architecture-aware technique. Finally, we tested our optimizations on a set of benchmarks from heterogeneous application domains. The
+results show consistent improvements for double-precision calculations, an average 9% increase in performance
+with speedups up to 2.24 over the baseline.
+The structure of the remainder of the paper is as follows. Section 2 deﬁnes the SpMV kernel and introduces
+the GPU computing architecture, as well as related work on SpMV optimization. Section 3 presents an improved
+variation of sliced ELL-R sparse matrix format. Section 4 provides a detailed explanation of the cache heuristic.
+Performance results of the various optimization strategies are then given in Section 5. Finally, Section 6 is devoted
+to conclusions.
+2. Background
+In this section we state the SpMV problem and we provide the key aspects about the underlying computing
+architecture, with the aim of suggesting some optimization guidelines. Moreover, we present a brief overview of
+the related work.
+2.1. Sparse matrix-vector multiplication
+The SpMV is, arguably, the most important kernel in sparse matrix computations. In this paper, we speciﬁcally
+refer to the following operation: y = Ax, where y and x are dense vectors of length n and m, respectively, while
+A is a sparse1 matrix of size n × m. Typical matrices have thousand or even millions of rows and columns. The
+sparse structure allows to represent a matrix by only its nonzero elements. In some cases, the pattern of nonzero
+elements is quite regular (e.g., for problems resulting from discretization on regular grids), but the most interesting
+(and challenging) matrices are those whose distribution of nonzero entries appears to be random.
+The matrix sparsity pattern can be roughly evaluated by some simple metrics based on the number of nonzeros
+per row in A. In more detail, we can measure the minimum, the maximum and the μ = nnz
+n average nonzeros per
+row, where nnz is the total number of nonzero elements in A. It is then useful to derive some metrics. The ﬁrst one
+The second metric is
+tries to capture the skew between the longest row and the average and it is deﬁned as max−μ
+μ
+ρ
+the coeﬃcient of variation around the average, deﬁned in a standard way as μ , where ρ is the standard deviation.
+1 The
+
+number of nonzeros is a small fraction of the number of matrix entries
+
+331
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+Calculation of the SpMV essentially reduces to many independent dot products such as the following
+yi =
+
+ai j x j
+
+(1)
+
+∀ j:ai j ∈Ai
+
+where Ai is a sparse row of matrix A, ai j is a nonzero value, and x is a dense vector. Hence, the SpMV is
+intrinsically parallelizable. However, an irregular structure may lead to an unbalanced workload, as well as to
+a poor cache locality in accessing the dense vector x. The SpMV is a bandwidth-limited kernel due to its low
+arithmetic intensity (the ratio between performed ﬂoating point operations and bytes moved from/to memory). In
+more detail, each double-precision “multiply and add” operation needs to move 20 bytes from memory (8 bytes
+for nonzero ai j , 4 bytes for column index j and 8 bytes for element x j ), leading to a poor arithmetic ratio of 0.1.
+SpMV performance is measured in terms of FLoating-points Operation Per Second (FLOPS), considering that
+each execution exactly performs nnz multiplications and nnz additions.
+2.2. GPU computing architecture
+The architecture of modern GPUs has evolved into a general purpose parallel platform optimized for computingintensive data processing. The idea of hardware multithreading is central for this architecture. In brief, the availability of a large pool of threads ready to execute (coupled with fast context switching) can keep functional units
+busy and hide memory accesses. Hence, the use of large and complex cache memories becomes less crucial and
+more silicon area can be dedicated to implement computational cores. In this subsection we describe the key aspects of NVIDIA Fermi architecture [4]. We refer to this particular architecture because our experimental results
+are based on the CUDA programming model [10] and the speciﬁc NVIDIA GTX580 device .
+A GPU is composed by a number of processing units called Streaming Multiprocessors (SMs), each one
+containing a set of simple computing cores known as Streaming Processors (SPs) or CUDA cores. Referring to
+GTX580, we have 16 SMs with 32 SPs each for a total of 512 cores (a potential parallelism of 512 operations
+for clock cycle). The execution of instructions within SMs follows the single-instruction multiple-thread (SIMT)
+model with warp granularity (32 threads). Whenever threads within the same warp needs to execute a diﬀerent
+branch of instructions, we have a divergence and the execution is serialized with obvious performance decreasing.
+SMs are connected to a random access memory through a cache hierarchy. This global memory has high
+bandwidth (192 GB/s for GTX580) but high latency (up to 800 clock cycles). The cache hierarchy is organized
+on two levels. A coherent L2 cache (768 KB) is shared among all the SMs and provides a mean to reduce the
+global memory bandwidth usage (whereas latency is not improved). Each SM also has a local on-chip memory
+(64KB) with low latency and very high bandwidth (≈ 3.15 TB/s). This fast memory can be split (16KB + 48KB)
+to work as L1 cache (hardware managed) or as shared memory (software managed). In addition, each SM has a
+large register ﬁle composed by 215 32-bit registers (used in pairs in case of double-precision arithmetic) with very
+low latency and very high bandwidth (≈ 9.24 TB/s). Fast context switching between warps is possible by statically
+assigning diﬀerent registers to diﬀerent threads. A crucial factor for GPU eﬃciency is the memory access pattern.
+The Fermi architecture is indeed optimized for regular accesses. In more detail, the memory requests within a
+warp are converted into L1 cache line requests (128 bytes). Hence, memory performance is maximized only when
+memory addresses can be coalesced into a single 128-byte aligned transaction (opposed to ineﬃcient scattered
+accesses).
+Despite the availability of a large memory bandwidth, algorithms with low arithmetic intensity are able to
+achieve only a fraction of the theoretical performance peak. The Fermi architecture implements a fused multipleadd (FMA) instruction for which two ﬂoating point operations are executed in a single cycle. Considering a
+bandwidth of 192 GB/s and the need of loading double-precision operands from global memory, we can perform
+at most 12 GFLOPS (each FMA needs 4 doubles, or 32 bytes). This performance is way below to the Fermi
+architecture theoretical peak (≈ 789 GB/s). It might be also argued that gaming-oriented GPUs (such a GTX580)
+have a performance edge over computing-oriented GPUs (such as Tesla) for double-precision sparse linear algebra.
+In more detail, GTX580 oﬀers a larger bandwidth despite having a double-precision performance peak locked at
+one-quarter of the chip’s peak potential (≈ 197 GFLOPS). Hence, it can potentially oﬀer a better performance for
+bandwidth-limited algorithms such as sparse linear algebra.
+
+332
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+CUDA is an abstract parallel computing architecture and programming model based on few concepts. First,
+there exists a hierarchy of concurrent lightweight threads to model the computation according to a data-parallel
+model. In brief, the algorithm should be expressed in such a way that each data element is processed by an
+independent lightweight thread. All threads execute the same program on diﬀerent data. Threads are logically
+grouped into equally sized blocks. Cooperation and synchronization within blocks are allowed by the means of
+shared memory and primitives. Finally, blocks are grouped into a grid for covering all the data to process. This
+hierarchy represents an abstraction of the underlying GPU architecture. Speciﬁcally, blocks represent abstract
+SMs capable to run all the threads simultaneously. However, a block is permanently assigned to one of the
+available SMs and executed as warps in an arbitrary order. This approach assures scalability since CUDA code
+can be compiled and executed on devices with diﬀerent number of multiprocessors. Referring to GTX580, each
+SM can manage up to 1536 threads (forming up to 48 warps). Considering all the SMs, it is possible to reach
+a massive parallelism with up to 24576 simultaneous threads. We deﬁne occupancy as the number of active
+threads compared to the maximum capacity. This metric is important in order to provide an eﬀective hardware
+multithreading. Intuitively, a large number of warps ready to execute is useful to hide memory latency. However,
+active threads depend on a combination of blocks assigned to a SM and size of such blocks. Given an hardware
+limit of 8 blocks per SM, the choice of block size becomes critical. First, the block size should be a multiple
+of the warp size in order to avoid partially unused warps. Second, the block size should be big enough in order
+to cover the maximum SM occupancy with exactly or less than 8 blocks. Third, a very large block may not be
+always a good choice. For example, a block size of 1024 threads cannot achieve full occupancy since only one
+block ﬁts the SM. Moreover, a block size of 512 threads provides full occupancy but the hardware should wait the
+completion of 16 warps before allocating a new block. Intuitively, a block size of 256 may provide slightly better
+performance because full occupancy is associated with a better block turnover.
+2.3. Related work
+The literature on SpMV optimization and tuning is extensive and mostly focuses on matrix formats. Due to
+the sparse matrix structure, only nonzero elements are stored in the data structure, providing a compression over
+the dense representation. Besides the nonzero values, it is necessary to keep (explicitly or implicitly) information
+about their row and column indices. In general, the choice of sparse matrix format aﬀects the compression and the
+pattern of memory access to read the elements of A. Hence, it has a strong impact on performance. Data reuse is
+another important aspect and can optimize the structure-dependent access to the dense vector x.
+An initial and essential work on basic sparse matrix formats suitable for GPUs has been proposed in [7].
+Broadly speaking, we can classify the current work into three categories. The ﬁrst category corresponds to formats
+optimized for matrices with diagonal structure (DIA). The second category corresponds to formats optimized for
+matrices with regular or partially regular structure (ELL and HYB). The third and last category refers instead to
+more ﬂexible and general purpose formats (COO and CRS). The subsequent literature has been essentially devoted
+to improving variation of these basic formats. For example, ELL format can be improved by adding information
+about nonzeros on each row (ELL-R [11]), using multiple threads per row (ELL-T [12]), splitting the data structure
+in slices (sliced ELL [9]) or using a combination of the previous approaches (sliced ELLR-T [13]). On the other
+hand, the eﬃciency of the CRS format can be improved by packing multiple rows in a warp as done with slightly
+diﬀerent approaches in [14][15][16].
+Besides specialized sparse matrix formats, there are other optimization techniques used to improve the SpMV
+performance. Blocking techniques [17] can be used to improve data reuse and compression in CSR and ELL.
+Autotuning solutions [9][12][17][18][19] are instead tailored to ﬁnd a parameters combination that provides the
+best performance for the considered sparse matrix format. Finally, matrix reordering techniques [8][20] provide
+an appropriate permutation of rows and columns with the aim of improving the SpMV data locality.
+3. Warp-grained ELL format
+The class of ELL-derived sparse matrix formats is particularly well-suited to vector architectures. The basic
+idea of these formats is to compress a sparse n × m matrix using a dense n × k data structure, where k is the
+maximum number of nonzeros per row. In more detail, the sparse matrix is stored in memory by the means of
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+two n × k dense arrays, one for nonzero values and one for column indices (row indices remain implicit as in a
+dense matrix). Hence, zero-padding is necessary for rows with less than k elements. The structure of the SpMV
+computation, using ELL-derived formats, follows the data-parallel model. In fact, a thread is assigned to each
+row in order to compute one element yi of result vector y. Moreover, simple strategies are used to optimize the
+memory access pattern. The n × k dense arrays are stored in column-major order for coalescing and padded to
+n
+· warp for 128-byte aligning.
+n = warp
+The sliced ELL sparse matrix format [9] has been designed to improve the eﬃciency of the basic ELL data
+structure. This format is based on the idea of partitioning the matrix into slices representable with local ELL
+data structures. This approach has the practical advantage of reducing the zero-padding of each slice (which now
+depends on a local k dimension). The sliced ELL format needs additional data structures. First, we need an array
+K of size ns (where s is the slice size) in order to keep track of local ki values. Second, we need another array of
+same size in order to identify the starting location in memory of each local ELL structure.
+It is easy to see that a ﬁner granularity decreases the amount of zero-padding values. On the other hand, this
+also decreases the SM occupancy. In more detail, the original sliced ELL formulation does not make a distinction
+between slice size s and block size b (in the CUDA programming model). Suppose, s = warp. This slice size
+will give the best solution in terms of data structure eﬃciency. However, the hardware SMs will be seriously
+underutilized. Being limited by a maximum of 8 blocks for SM, we will be able to run only 256 threads (8 warps)
+simultaneously which represents only 16 of the SM capability. Here we propose the use of warp-grained slices by
+decoupling slice size (set to s = warp) from CUDA block (set to b = 256). Typically, each thread (corresponding
+to a row in ELL representation) can explicitly calculate its warp index (which also translates to the slice number).
+This allows us to decouple the slice size and the block size, achieving both data structure eﬃciency and full SM
+occupancy. This ﬁne-tuned sliced ELL format has a warp-level lockstep execution determined by the longest row.
+
+(a) Sparse matrix
+
+(b) Sliced ELL with warp granularity
+Fig. 1: Sparse matrix compression
+
+The eﬃciency of the warp-grained ELL can be further improved by row reordering. This technique is potentially able to reduce the variability of nonzeros per row within warps. A global row reordering (equivalent to pJDS
+[21]) can be performed in linear time O(n) using bucket sort. However, this approach may shuﬄe data-unrelated
+rows close together worsening the overall data locality. Hence, we propose a reordering strategy based on local rearrangement. The idea is to decrease the variability without moving related rows too far apart. Assuming
+that the block size is larger than warp granularity, we order rows within the block to minimize variability of the
+corresponding warp-grained slices.
+4. Cache heuristic
+In this section we present a novel heuristic capable of reducing cache memory accesses within hardware-level
+thread blocks (warps).
+4.1. Warp memory request optimization
+In the Fermi architecture, the execution of a memory instruction at warp level is converted to L1 cache line
+requests (128 bytes) in order to satisfy the request of each thread. An example of warp memory request is shown
+in Figure 2 (for the sake of simplicity, we assume that w = 8 and each cache line exactly contains 8 elements).
+
+333
+
+334
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+Fig. 2: Warp memory request
+
+During SpMV, each thread needs to load from memory an arbitrary element xi of dense vector x in order
+to perform a “multiply and add” instruction. This is done in lockstep at warp level. Given the set of addresses
+corresponding to [x0 , x1 , x6 , x10 , x17 , x20 , x31 ], the SM translates the memory requests into four L1 cache lines. A
+crucial factor for increasing memory access pattern eﬃciency is to coalesce the requests into the least possible
+amount of L1 cache transactions. Intuitively, this optimizes the bandwidth utilization at each level of the cache
+architecture (which is relevant in case of cache miss).
+We observe that the order of nonzeros within each row of ELL-based formats can aﬀects the amount of L1
+cache transactions during SpMV. Figure 3 shows an example of this dependency. The sequence of accesses to the
+dense vector x depends by the order in which nonzeros are stored in the ELL format. This usually follows the column index (e.g, row 0 in Figure 3(a) accesses x0 , x8 , x16 and then x24 ). However, this may not be the most eﬀective
+solution. Figure 3(a) shows a case in which each warp memory request is scattered across w diﬀerent cache lines.
+For example, the ﬁrst warp access (corresponding to the ﬁrst column of Columns [x0 , x8 , x16 , x24 , x32 , x40 , x48 , x56 ])
+is totally uncoalesced and needs 8 cache lines. This leads to a total of 32 cache transactions. On the other hand,
+Figure 3(b) shows an optimized permutation of each row that reduces the cache transactions to 11 (e.g. the same
+warp access now needs only three cache lines [0, 4, 8]).
+
+(a) Column order
+
+(b) Optimized order
+
+Fig. 3: Cache transactions for diﬀerent memory request permutations
+
+We can deﬁne this cache transaction minimization problem more formally. Given the following:
+• A warp composed of w threads (or rows).
+• For each thread ti , a list Ci = [ci0 , ci1 , ..., cik−1 ] of cache line mappings corresponding to k memory elements
+(in case of short rows, we add zero padding to reach k).
+• A w × k scheduling table S where each row i can be any permutation of the corresponding Ci .
+w−1
+The objective function z(S ) is given by z(S ) = k−1
+j=0
+i=0 S i, j or, alternatively, the sum of cache line intersections
+along the vertical direction in the scheduling table S . The optimization problem is then to ﬁnd a scheduling S that
+minimizes the objective function z(S ). An instance of this cache transaction minimization problem arises for each
+warp contained in the sparse matrix format.
+
+335
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+4.2. Heuristic for reducing cache transactions
+Here we propose a heuristic to eﬃciently solve the cache transaction problem just posed and, consequently,
+improve the SpMV performance. The idea is to use a greedy approach where the solution is incrementally constructed from row 0 to row w − 1, and each permutation is selected trying to maximize overlapping with rows
+already placed. A detailed description for the heuristic is given by the following pseudocode.
+Heuristic 1 Architecture-Aware Cache Heuristic
+Require: Hash table H[cache] = overlapping positions
+Require: List R (cache requests to allocate)
+1: Initialize ﬁrst row of S with C 0
+2: for j = 0 to k − 1 do
+3:
+add j to H[c0j ]
+4: end for
+5: for i = 1 to w − 1 do
+6:
+for j = 0 to k − 1 do
+7:
+if H[cij ] gives overlapping positions then
+8:
+Allocate cij into S i,H[cij ]
+9:
+if all T i,H[cij ] already allocated then
+10:
+Insert cij in R
+11:
+end if
+12:
+else
+13:
+Insert cij in R
+14:
+end if
+15:
+end for
+16:
+Allocate R into remaining S i,∗
+17:
+for j = 0 to k − 1 do
+18:
+add j to H[ˆcij ]
+19:
+end for
+20: end for
+
+Initialize hash table
+
+Use original order
+Update hash table
+
+The heuristic starts allocating the ﬁrst row of S according to the original column index. We use the same
+allocation policy for those cache requests that do not overlap with previous threads. Intuitively, this is a reasonable
+solution because the sequentiality of column addresses reﬂects the sequentiality of cache line mapping. The
+overlapping with threads already allocated is veriﬁed using a hash table H with cache lines as the key. The
+proposed heuristic is eﬃcient in terms of runtime. Assuming a hash table with constant time O(1) lookup, we
+spend at most k steps to check for an available overlapping position in the retrieved list. This step is repeated at
+most wk times (the size of scheduling S ) for each warp in the sparse matrix format. Considering that we have a
+total of n/w warps, the time complexity of the cache heuristic is O(k2 n). We observe that k is usually small and
+bounded due to the sparse structure of the matrices. Hence the runtime complexity is essentially linear O(n). We
+also observe that, diﬀerently from row reordering techniques, our heuristic works at warp level and does not shuﬄe
+rows. This means that data locality of the original matrix is usually preserved, avoiding undesirable performance
+decreases.
+5. Experimental results
+In this section we tested the proposed architecture-aware optimizations on a large set of benchmarks from
+heterogeneous application domains, achieving consistent improvements for double-precision calculations.
+5.1. Hardware and software setup
+All the experiments were performed on a NVIDIA GTX580 GPU equipped with 3GB of GDDR5 and a total of
+512 CUDA cores. The computing platform was a quad-socket system equipped with four 16-cores AMD Opteron
+
+336
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+6274 and with 128 GB of DDR3. The operating system was 64-bit CentOS 6.3 with kernel 2.6.32. The compilers
+used in the implementation were gcc 4.4.6 and CUDA 4.2 (GPU device driver 295.41).
+5.2. Benchmarks description
+For the tests, we used a set of benchmarks from the well-known University of Florida Sparse Matrix Collection
+[22]. We selected sparse matrices of heterogenous sizes, structures, and application domains, with the aim of
+performing a comprehensive test of the proposed architecture-aware optimizations. All the selected benchmarks
+have been used in previous literature on SpMV [7][11][9][12][14][16][17][18][19][20]. The sparse matrices were
+stored on disk using the Matrix Market coordinate format [23].
+Table 1 presents the list of benchmarks. For each matrix, we show the application domain from which the underlying scientiﬁc or engineering problem arises, as well as some information about the matrix size and structure.
+We also include the derived metrics deﬁned in section 2 such as variation coeﬃcient μ/σ and skew coeﬃcient
+max−μ
+μ . As we can see, the benchmark set includes both regular structures (e.g. mc2depi and cage14) and irregular
+structures (e.g. poisson3Db and spal 004). Intuitively, irregular patterns are not very well-suited for ELL-based
+formats. However, we focus more on the relative beneﬁt of using our optimizations rather than absolute performance (considering that the proposed ideas are general enough to be easily adapted to CSR-based formats).
+Benchmark
+cop20k A
+mc2depi
+nd6k
+raefsky3
+poisson3Db
+scircuit
+cage14
+mac econ fwd500
+oﬀshore
+spal 004
+ﬁlter3D
+kkt power
+TSOPF RS b2383
+CO
+shipsec1
+F1
+thermomech dK
+pdb1HYS
+
+Domain
+2D/3D
+2D/3D
+2D/3D
+CFD
+CFD
+Circuits
+Directed Graph
+Economy
+EM
+Linear Programming
+Model Reduction
+Optimization
+Power Networks
+Quantum Chemistry
+Structural
+Structural
+Thermal
+Undirected Graph
+
+nnz
+1362087
+2100225
+3457658
+1488768
+2374949
+958936
+27130349
+1273389
+2251231
+46168124
+1406808
+8130343
+16171169
+3943588
+3977139
+13590452
+2846228
+2190591
+
+Matrix
+n
+121192
+525825
+18000
+21200
+85623
+170998
+1505785
+206500
+259789
+10203
+106437
+2063494
+38120
+221119
+140874
+343791
+204316
+36417
+
+m
+121192
+525825
+18000
+21200
+85623
+170998
+1505785
+206500
+259789
+321696
+106437
+2063494
+38120
+221119
+140874
+343791
+204316
+140874
+
+min
+0
+2
+1
+32
+6
+1
+5
+1
+1
+13
+1
+1
+2
+1
+1
+1
+7
+1
+
+μ
+11.24
+3.99
+192.09
+70.22
+27.74
+5.61
+18.02
+6.17
+8.67
+4524.96
+13.22
+3.94
+424.22
+17.83
+28.23
+39.53
+13.93
+60.15
+
+Nonzeros per row
+max
+σ
+24
+6.75
+4
+0.08
+447
+89.29
+80
+6.33
+145
+14.71
+353
+4.39
+41
+5.37
+44
+4.44
+24
+3.12
+6029
+1491.96
+30
+3.24
+38
+3.39
+983
+484.24
+159
+4.13
+84
+10.54
+306
+18.89
+20
+1.43
+184
+27.46
+
+μ/σ
+0.60
+0.02
+0.46
+0.09
+0.53
+0.78
+0.30
+0.72
+0.36
+0.33
+0.24
+0.86
+1.14
+0.23
+0.37
+0.48
+0.10
+0.46
+
+max−μ
+μ
+
+1.14
+0.00
+1.33
+0.14
+4.23
+61.95
+1.28
+6.14
+1.77
+0.33
+1.27
+8.64
+1.32
+7.92
+1.98
+6.74
+0.44
+2.06
+
+Table 1: Benchmarks from University of Florida Sparse Matrix Collection [22].
+
+5.3. Cache heuristic
+We implemented the proposed cache transaction minimization heuristic and applied it to optimize our warpgrained ELL-based format. We then performed SpMV and measured the performance over 100 repetitions. Following the reasoning presented in section 2, we ﬁxed the CUDA blocks to b = 256 (we have kept this setting for
+all the experiments) as well as L1-cache to 48 KB. Here we are interested in the eﬀectiveness of the proposed
+heuristic in reducing the amount of cache transactions needed by warps to compute SpMV. We are also interested
+in evaluating the impact on the absolute double precision ﬂoating-point performance. Hence, we compared the
+original nonzero ordering based on column index with the one imposed by the heuristic. Moreover, we measured
+the eﬀect of a random nonzero reordering to provide an empirical worst-case bound and to assess the importance
+of cache transaction minimization.
+Table 2 shows the experimental results for warp-grained ELL format. The cache heuristic provides an average
+of 9% performance advantage over the original nonzero ordering. We also have evidence that cache transaction minimization is important for SpMV eﬃciency since random nonzero ordering drastically decreases performances. The last column in Table 2 (Cache Reduction) shows the factor that represents the eﬀect of the heuristic
+in terms of cache transactions count. This factor is usually correlated with a performance improvement, especially
+when the original numerical ordering does not provide temporal locality between adjacent rows. Speciﬁcally, adjacent threads are likely to hit the same cache line in two diﬀerent but temporally close instants. Our heuristic tries
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+Random
+Column
+Heuristic
+Cache
+Benchmark
+[GFLOPS]
+[GFLOPS]
+[GFLOPS]
+Reduction
+cop20k A
+6.728
+10.689
+10.738
+0.91
+mc2depi
+17.713
+18.722
+18.733
+1.00
+nd6k
+8.698
+12.339
+12.757
+0.48
+raefsky3
+18.021
+20.654
+20.860
+0.82
+poisson3Db
+4.488
+5.514
+5.952
+0.86
+scircuit
+3.577
+3.986
+4.012
+0.88
+cage14
+7.276
+19.971
+19.765
+0.93
+6.710
+7.340
+7.573
+0.77
+mac econ fwd500
+oﬀshore
+8.569
+9.610
+9.996
+0.80
+2.788
+4.555
+10.193
+0.35
+spal 004
+ﬁlter3D
+9.310
+12.526
+12.997
+0.80
+8.056
+10.232
+10.678
+0.87
+kkt power
+13.703
+23.864
+23.966
+0.97
+TSOPF RS b2383
+CO
+11.099
+18.821
+18.795
+0.84
+shipsec1
+16.587
+18.369
+18.415
+0.79
+F1
+5.777
+12.606
+12.697
+0.87
+4.878
+9.231
+9.390
+0.94
+thermomech dK
+pdb1HYS
+10.434
+12.897
+13.200
+0.63
+Average 1.09x speedup achieved with Cache Heuristic
+
+Table 2: Cache heuristic applied to warp-grained ELL format
+
+to merge these two accesses by putting them within the same warp-level memory transaction. When the numerical
+ordering already provides good temporal locality, it is less likely that the needed cache line will be substituted in
+between. Hence, the performance would be similar to the case when the accesses are merged by the heuristic.
+We consistently observed a speedup for most of the individual benchmark up to a factor of 2.24x (spal 004).
+We can argue that this particular case does not represent a bias in our result. In fact, we performed additional tests
+on matrices not included in this manuscript and we observed several cases (especially for the Linear Programming
+domain) with similar speedups. The cache transaction minimization heuristic is also eﬃcient in practice due to its
+linear time complexity O(n) and introduces very little overhead for the construction of ELL-based data structures.
+Moreover, each warp represents a diﬀerent instance of the cache transaction minimization problem. Hence, we
+can even solve them in parallel making the amortizing SpMV iterations negligible.
+The achieved results seem very reasonable compared with other SpMV optimization techniques. In general, it
+is not trivial to propose original ideas and it is very unlikely to achieve an impressive speedup from the state-ofthe-art. For example, the authors of [8] apply diﬀerent matrix reordering techniques showing an average speedup
+ranging from 2.7% to 12.5% from the baseline (with no reordering). Hence, we believe that an average 9%
+improvement for our cache heuristic is a good result.
+6. Conclusion
+SpMV eﬃciency aﬀects the performance of a large number of applications and its optimization is crucial for
+solving increasingly complex computational science problems. In this paper we proposed an architecture-aware
+technique for improving the performance of the SpMV on GPUs. This optimization is based on a novel heuristic
+capable of reducing cache memory accesses within hardware-level thread blocks. We also presented an improved
+variation (based on warp granularity and local rearrangement) of an ELL-based sparse matrix format. We tested
+the proposed optimizations on a large set of benchmarks from heterogeneous application domains. The results
+show consistent improvements for double-precision calculations, an average 9% increase in performance with
+speedups up to 2.24 over the baseline.
+Our architecture-aware technique represents a novel and general contribution to the state-of-the-art of SpMV
+implementation on throughput-oriented manycore processors. Our ideas can be potentially adapted to other sparse
+representations, leading to a larger and lasting impact in the ﬁeld. The ELL-based implementation proposed in this
+paper is well-suited for regular matrices but does not assure the same level of performance when the structure is
+irregular. This motivates our future plan to incorporate our architecture-aware techniques into CSR-based formats
+which intrinsically oﬀer more ﬂexibility and which are better suited for irregular sparse matrices.
+
+337
+
+338
+
+Marco Maggioni and Tanya Berger-Wolf / Procedia Computer Science 18 (2013) 329 – 338
+
+Acknowledgements
+This work was supported by NSF grants IIS-106468.
+References
+[1] K. Asanovic, R. Bodik, B. C. Catanzaro, J. J. Gebis, P. Husbands, K. Keutzer, D. A. Patterson, W. L. Plishker, J. Shalf, S. W. Williams,
+K. A. Yelick, The landscape of parallel computing research: A view from Berkeley, Tech. rep., EECS Department, University of
+California, Berkeley (Dec 2006).
+URL http://www.eecs.berkeley.edu/Pubs/TechRpts/2006/
+[2] J. Liang, H. Qian, Computational cellular dynamics based on the chemical master equation: A challenge for understanding complexity,
+Journal of Computer Science and Technology 25 (1) (2010) 154–168.
+[3] S. Brin, L. Page, The anatomy of a large-scale hypertextual web search engine, Seventh International World-Wide Web Conference
+(WWW 1998).
+URL http://ilpubs.stanford.edu:8090/361/
+[4] NVIDIA, NVIDIA’s next generation CUDA compute architecture: Fermi.
+URL http://www.nvidia.com/content/PDF/fermi white papers/
+[5] V. Volkov, J. W. Demmel, Benchmarking GPUs to tune dense linear algebra, in: Supercomputing, 2008.
+[6] S. Williams, L. Oliker, R. Vuduc, J. Shalf, K. Yelick, J. Demmel, Optimization of sparse matrix-vector multiplication on emerging
+multicore platforms, High performance computing, networking, and storage conference (2007) 10–16.
+[7] N. Bell, M. Garland, Implementing sparse matrix-vector multiplication on throughput-oriented processors, Conference on High Performance Computing Networking, Storage and Analysis.
+[8] J. C. Pichel, F. F. Rivera, M. Fern´andez, A. Rodr´ıguez, Optimization of sparse matrix–vector multiplication using reordering techniques
+on GPUs, Microprocessors and Microsystems 36 (2) (2011) 65–77.
+[9] A. Monakov, A. Lokhmotov, A. Avetisyan, Automatically tuning sparse matrix-vector multiplication for GPU architectures, High Performance Embedded Architectures and Compilers 5952 (2010) 111–125.
+[10] NVIDIA, CUDA, parallel programming made easy.
+URL http://www.nvidia.com/object/cuda home new.html
+[11] F. V´azquez, J. J. Fern´andez, E. M. Garz´on, A new approach for sparse matrix vector product on NVIDIA GPUs, Concurrency and
+Computation: Practice and Experience 23 (8) (2011) 815–826.
+[12] F. V´azquez, J. J. Fern´andez, E. M. Garz´on, Automatic tuning of the sparse matrix vector product on GPUs based on the ELLR-T
+approach, Parallel Computing.
+[13] A. Dziekonski, A. Lamecki, M. Mrozowski, A memory eﬃcient and fast sparse matrix vector on a GPU, Progress In Electromagnetics
+Research 116 (2011) 49–63.
+[14] X. Feng, H. Jin, R. Zheng, K. Hu, J. Zeng, Z. Shao, Optimization of sparse matrix-vector multiplication with variant CSR on GPUs,
+International Conference on Parallel and Distributed Systems (2011) 165–172.
+[15] T. Oberhuber, A. Suzuki, J. Vacata, New row-grouped CSR format for storing the sparse matrices on GPU with implementation in
+CUDA, Acta Technica 56 (2011) 447–466.
+[16] Z. Koza, M. Matyka, S. Szkoda, Ł. Mirosław, Compressed multiple-row storage format, CoRR.
+[17] J. W. Choi, A. Singh, R. W. Vuduc, Model-driven autotuning of sparse matrix-vector multiply on GPUs, Symposium on Principles and
+Practice of Parallel Programming 45 (5) (2010) 115–126.
+[18] I. Reguly, M. Giles, Eﬃcient sparse matrix-vector multiplication on fermi GPUs, Innovative Parallel Computing.
+[19] P. Guo, L. Wang, Auto-tuning CUDA parameters for sparse matrix-vector multiplication on GPUs, International Conference on Computational and Information Sciences (2010) 1154–1157.
+[20] S. Xu, H. X. Lin, W. Xue, Sparse matrix-vector multiplication optimizations based on matrix bandwidth reduction using NVIDIA CUDA,
+Distributed Computing and Applications to Business Engineering and Science (2010) 609–614.
+[21] M. Kreutzer, G. Hager, G. Wellein, H. Fehske, A. Basermann, A. R. Bishop, Sparse matrix-vector multiplication on GPGPU clusters :
+A new storage format and a scalable implementation, CoRR.
+[22] U. of Florida, Sparse matrix collection.
+URL http://www.cise.ufl.edu/research/sparse/matrices/
+[23] NIST, Matrix market format.
+URL http://math.nist.gov/MatrixMarket/
+
+

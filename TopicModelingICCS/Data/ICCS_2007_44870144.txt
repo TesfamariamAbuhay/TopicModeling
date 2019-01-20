@@ -1,0 +1,480 @@
+An Eﬃcient Implementation of the
+Thomas-Algorithm for Block Penta-diagonal
+Systems on Vector Computers
+Katharina Benkert1 and Rudolf Fischer2
+1
+
+High Performance Computing Center Stuttgart (HLRS), University of Stuttgart,
+70569 Stuttgart, Germany
+benkert@hlrs.de
+2
+NEC High Performance Computing Europe GmbH, Prinzenallee 11,
+40549 Duesseldorf, Germany
+rfischer@hpce.nec.com
+
+Abstract. In simulations of supernovae, linear systems of equations
+with a block penta-diagonal matrix possessing small, dense matrix blocks
+occur. For an eﬃcient solution, a compact multiplication scheme based on
+a restructured version of the Thomas algorithm and speciﬁcally adapted
+routines for LU factorization as well as forward and backward substitution are presented. On a NEC SX-8 vector system, runtime could be
+decreased between 35% and 54% for block sizes varying from 20 to 85
+compared to the original code with BLAS and LAPACK routines.
+Keywords: Thomas algorithm, vector architecture.
+
+1
+
+Introduction
+
+Neutrino transport and neutrino interactions in dense matter play a crucial
+role in stellar core collapse, supernova explosions and neutron star formation.
+The multidimensional neutrino radiation hydrodynamics code PROMETHEUS /
+VERTEX [1] discretizes the angular moment equations of the Boltzmann equation giving rise to a non-linear algebraic system. It is solved by a Newton
+Raphson procedure, which in turn requires the solution of multiple block-pentadiagonal linear systems with small, dense matrix blocks in each step. This is
+achieved by the Thomas algorithm and takes a major part of the overall computing time. Since the code already performs well on vector computers, this kind
+of architecture has been the focus of the current work.
+The Thomas algorithm [2,3] is a simpliﬁed form of Gaussian elimination without pivoting, as originally applied to tridiagonal systems. Bieniasz [4] gives a
+comprehensive overview of the numerous adaptations for special cases and mutations of tridiagonal systems, the extensions to cyclic tridiagonal systems and
+the transfer to block tridiagonal matrices. However, an eﬃcient implementation
+for block penta-diagonal systems has not yet been considered in the literature.
+An additional challenge consists in solving systems with relatively small matrices
+Y. Shi et al. (Eds.): ICCS 2007, Part I, LNCS 4487, pp. 144–151, 2007.
+c Springer-Verlag Berlin Heidelberg 2007
+
+An Eﬃcient Implementation of the Thomas-Algorithm
+
+145
+
+as used in the Thomas algorithm. Optimizations of LAPACK routines usually
+target large matrices as necessitated for example for the HPL benchmark [5].
+The remainder of the paper is organized as follows: after introducing the
+Thomas algorithm and the concept of vector architectures, section 2 presents
+the compact multiplication scheme. Section 3 explains implementation issues for
+the newly introduced scheme and the LU decomposition and states the results
+obtained, followed by the summary of the paper in section 4.
+1.1
+
+Thomas Algorithm
+
+Consider a linear system of equations consisting of a block penta-diagonal (BPD)
+matrix with n blocks of size k × k in each column resp. row, a solution vector
+x and a right hand side (RHS) f . The vectors x = (xT1 xT2 . . . xTn )T and f =
+(f T1 f T2 . . . f Tn )T are each of dimension k · n. The BPD system is deﬁned by
+Ai xi−2 + Bi xi−1 + Ci xi + Di xi+1 + Ei xi+2 = f i ,
+
+1 ≤ i ≤ n,
+
+(1)
+
+by setting, for ease of notation, A1 = B1 = A2 = En−1 = Dn = En = 0, and
+implementing x and f as (xT−1 xT0 . . . xTn )T and (f T−1 f T0 . . . f Tn )T .
+Eliminating the sub-diagonal matrix blocks Ai and Bi and inverting the diagonal matrix blocks Ci would result in the following system:
+1 ≤ i ≤ n − 2,
+xi + Yi xi+1 + Zi xi+2 = r i ,
+xn−1 + Yn−1 xn = r n−1 ,
+xn = r n .
+
+(2)
+
+In the Thomas algorithm, the new components Yi , Zi and r i are computed
+by substituting xi−2 and xi−1 in (1) using the appropriate equations of (2) and
+comparing coeﬃcients. This results in
+⎫
+Yi = G−1
+(Di − Ki Zi−1 )
+⎬
+i
+Zi = G−1
+E
+i = 1, n,
+(3)
+i
+i
+⎭
+ri = G−1
+(f
+−
+A
+r
+−
+K
+r
+)
+i i−2
+i i−1
+i
+i
+where
+
+Ki = Bi − Ai Yi−2
+Gi = Ci − Ki Yi−1 − Ai Zi−2
+
+i = 1, n,
+
+(4)
+
+assuming again, for ease of notation, Y−1 = Z−1 = Y0 = Z0 = 0. Then the
+solution is computed using backward substitution, i.e.
+xn = r n ,
+xn−1 = r n−1 − Yn−1 xn ,
+= ri
+− Yi xi+1 −Zi xi+2 ,
+xi
+
+(5)
+i = n − 2, −1, 1.
+
+Since in practice, the inversion of Gi in (3) is replaced by a LU-decomposition
+Gi = Li Ui , it’s crucial to understand that solving a BPD system includes two
+levels of Gaussian elimination (GE) and backward substitution (BS): one for the
+
+146
+
+K. Benkert and R. Fischer
+
+whole system and one for each block row. The GE of the whole system (GE S)
+requires the calculation of Ki and Gi shown in (4). GE and BS are then applied to
+each block row (GE R / BS R) computing Yi , Zi and r i in (3). Finally, backward
+substitution (5) is applied to the whole system (BS S) to obtain the solution x.
+1.2
+
+Vector Architecture
+
+Two diﬀerent kinds of computer architectures are available today: scalar and
+vector. They use diﬀerent approaches to tackle the common problem, memory
+latencies and memory bandwidth. Vector architectures [6,7] use SIMD instructions in particular also for memory access to hide memory latencies. This requires large, independent data sets for eﬃcient calculation. The connection to
+main memory is considerably faster than for scalar architectures. Since there are
+no caches, data are directly transfered to and from main memory. Temporary
+results are stored in vector registers (VRs) of hardware vector length VL, which
+is 256 on the NEC SX-8 [8,9]. As not all instructions are vectorizable, scalar
+ones are integrated into vector architectures. Because of their slow execution
+compared with commodity processors their use should be avoided by improving
+the vectorization ratio of the code.
+
+2
+
+Reordering the Computational Steps
+
+For operations on small matrix blocks, memory traﬃc is the limiting factor for
+total performance. Our approach involves reordering the steps in (3) and (4) as
+Ki = Bi − Ai Yi−2
+Gi = Ci − Ai Zi−2
+r i = f i − Ai ri−2
+
+Gi = Gi − Ki Yi−1
+Hi = Di − Ki Zi−1
+ri = r i − Ki r i−1
+
+Yi = G−1
+· Hi
+i
+Zi = G−1
+·
+Ei
+i
+r i = G−1
+·
+ri ,
+i
+
+(6)
+
+where the following spaces can be shared: Bi and Ki ; Ci , Gi and Gi ; Di , Hi and Yi ;
+Ei and Zi , as well as f i , r i , ri and r i . The improvements of this rearrangement
+are valuable for the GE of the whole system as well as for the solution of the block
+rows. First, during GE S, Ai and Ki are loaded only k times from main memory
+instead of 3k times as is the case with a straight forward implementation. Second, by storing Hi , Ei and ri contiguously in memory, the inverse of G is applied
+simultaneously to a combined matrix of size k × (2k + 1) during GE R / BS R.
+Third, by supplying a speciﬁcally adapted own version of LAPACK’s xGETRF
+(factorization) and xGETRS (forward and backward substitution) routines [10],
+memory traﬃc is further reduced. By combining factorization and forward substitution, Li is applied to the RHS vectors during the elimination process and
+therefore not reloaded from main memory.
+
+3
+
+Implementation Details and Numerical Results
+
+In this section, the performance of our new approach presented in section 2
+is compared to the standard approach which uses LAPACK’s xGETRF and
+
+An Eﬃcient Implementation of the Thomas-Algorithm
+
+147
+
+xGETRS routines to compute the LU-factorization and apply forward / backward substitution and the BLAS routines xGEMM and xGEMV [11,12] for
+matrix-matrix products and matrix-vector products, respectively. All computations were carried out on a NEC SX-8 vector computer using the proprietary
+Fortran90 compiler version 2.0 / Rev. 340 [13].
+After presenting the results for the compact multiplication scheme used for
+GE S, diﬀerent implementations of GE R and BS R are analyzed. Since the
+number of RHS vectors is 2k + 1 and therefore depends on the block size k, a
+small, a medium and a large test case with block sizes of k = 20, 55 and 85 are
+selected representatively. After that, the performance of the solution process for
+one block row as well as for the whole system (1) is described.
+3.1
+
+Applying Gaussian Elimination to the Whole System
+
+The ﬁrst two systems of (6) are of the form
+D = B + A · C,
+G = E + A · F,
+z = v + A · w.
+
+(7)
+
+Using BLAS, each line is split into two operations, one copy operation, e.g.
+D = B, and one call to xGEMM or xGEMV. Instead, if A should only ”once” be
+loaded from main memory, the system (7) has to be treated as a single entity
+and xGEMM or xGEMV can not be used any longer since neither the matrices
+nor the vectors are stored contiguously in memory.
+Our implementation listed below is a compact multiplication scheme. It contains two parts, the ﬁrst one calculating the ﬁrst column of D and G as well as
+the whole vector z, the second computing the remaining columns of D and G.
+The loop in i is stripmined to work on vectors smaller or equal to the hardware
+vector length VL.
+do is = 1, k, VL
+ie = min( is+VL-1, k )
+! start with vector z and first columns of D and G
+save v(is:ie), B(is:ie,1) and E(is:ie,1) to VRs vx, vm1 and vm2
+do l = 1, k
+store w(l), C(l,1) and F(l,1) to scalars val1, val2 and val3
+multiply A(is:ie,l) with val1, val2 and val3 and save
+results to VRs vxt, vm1t and vm2t
+add VRs vxt(is:ie), vm1t(is:ie) and vm2t(is:ie) to VRs
+vx(is:ie), vm1(is:ie) and vm2(is:ie)
+end do
+store VRs vx, vm1 and vm2 to z(is:ie), D(is:ie,1) and G(is:ie,1)
+! do rest of columns of D and G
+do j = 2, k
+
+148
+
+K. Benkert and R. Fischer
+
+save B(is:ie,j) and E(is:ie,j) to VRs vm1 and vm2
+do l = 1, k
+store C(l,j) and F(l,j) to scalars val1 and val2
+multiply A(is:ie,l) with val1 and val2 and save results
+to VRs vm1t and vm2t
+add VRs vm1t(is:ie) and vm2t(is:ie) to VRs vm1(is:ie) and
+vm2(is:ie)
+end do
+store VRs vm1 and vm2 to D(is:ie,j) and G(is:ie,j)
+end do
+end do
+Tbl. 1 compares the performance of the BLAS code to the introduced compact multiplication scheme. The latter leads to an average decrease of 11 − 31%
+in execution time. It is considerably faster for small and medium block sizes,
+whereas for large block sizes, its performance is approached by BLAS.
+Table 1. Execution time of diﬀerent implementations solving (7) for 150000 calls
+k=
+LAPACK [s]
+comp. mult. [s]
+decr. in runtime [%]
+
+3.2
+
+20
+
+30
+
+40
+
+50
+
+60
+
+70
+
+80
+
+90
+
+2.23
+1.54
+31.1
+
+4.65
+3.25
+30.1
+
+7.68
+5.93
+22.9
+
+11.97
+9.07
+24.2
+
+16.92
+13.19
+22.1
+
+22.49
+18.49
+17.8
+
+28.44
+25.28
+11.1
+
+37.99
+33.71
+11.3
+
+Applying Gaussian Elimination and Backward Substitution to
+One Block Row
+
+Gaussian Elimination. The search of the pivot element and exchange of matrix rows is not very costly. Measurements on the NEC SX-8 indicated that the
+search for the maximum value in the pivot column using Fortran’s intrinsic function maxval and then looping until the correct index has been found is generally
+faster than a search over the whole pivot column.
+The performance of the diﬀerent versions of GE is depicted in ﬁgure 1, 2 and 3.
+The simplest implementation of row-oriented GE with immediate update [14] for
+a given step j consists of just two loops in i (column index) and l (row index)
+updating the remaining parts of the matrix and RHS vectors. The loop in l over
+the remaining rows is the longer one and therefore the innermost. This loop
+order is switched by the compiler which naturally degrades performance. The
+next variant ”val + UR(4)”, introducing a temporary scalar for elements of the
+pivot row, still with the compiler’s switching of loops, leads to an unrolling of
+depth 4 in l causing strided memory access. The compiler directive select(vector)
+on the SX-8, normally used for parallel constructs, provides a simple means to
+
+An Eﬃcient Implementation of the Thomas-Algorithm
+
+Fig. 1. Performance for GE R for k = 20
+
+149
+
+Fig. 2. Performance for GE R for k = 55
+
+enforce the correct order of the loops. This version ”val + OUR(4)” with a
+temporary scalar now has a compiler-generated outer unrolling in i with depth
+4. The remaining two variants ”val + vreg + OUR(4)” and ”val + vreg +
+OUR(8)” use VRs for the pivot row, a temporary scalar for elements of the
+pivot column as well as outer unrolling in i with depths 4 or 8. As can be seen
+from these ﬁgures, the correct loop order is essential for good performance. Using
+temporary scalars for elements of the pivot column, a VR for elements of the
+pivot row and outer unrolling in i of depth 8 leads essentially to the highest
+MFlop rates on the tested vector system.
+Backward Substitution. The results for the diﬀerent versions of row-wise
+backward substitution explained below are shown in ﬁgure 4, 5 and 6. The
+simplest version for a given step j also consists of just two loops. The obvious
+ﬁrst improvement, introducing a temporary scalar for elements of the ”pivot row”
+leads to compiler-generated inner unrolling with depth 9993 and is therefore not
+shown. The second variant ”val + OUR(4)” imposes outer unrolling with depth 4.
+The remaining variants ”val + vreg + OUR(8)”, ”val + vreg + OUR(16)” and
+”val + vreg + OUR(4/16)” use one VR for elements of the pivot row, temporary
+scalars for elements of the pivot column as well as outer unrolling of diﬀerent
+depths. Apparently, the fastest version uses a VR for elements of the pivot row,
+temporary scalars for elements of the pivot column and explicitly coded, yet
+compiler-generated, outer unrolling of depth 16 as long as possible and of depth
+4 for the remaining columns.
+Performance Results. Using the optimal implementation for GE R / BS R,
+runtimes on the NEC SX-8 may be reduced by the following factors (for 50000
+calls) compared to the LAPACK version: by 61.5% from 5.04s to 1.94s for k = 20,
+by 43.3% from 23.98s to 13.59s for k = 55 and by 41.2% from 54.54s to 32.08s
+for k = 85.
+
+150
+
+K. Benkert and R. Fischer
+
+Fig. 3. Performance for GE R for k = 85
+
+Fig. 4. Performance for BS R for k = 20
+
+Fig. 5. Performance for BS R for k = 55
+
+Fig. 6. Performance for BS R for k = 85
+
+3.3
+
+Solution of a Sample BPD System
+
+The compact multiplication scheme and the improvements of the solution of
+the block rows are integrated into a new BPD solver. Its execution times are
+compared to a traditional BLAS/LAPACK solver in table 2 for 100 systems
+with block sizes k = 20, 55 and 85 and n = 500.
+Except for the ﬁrst version using bandwise storage, the diagonals are stored
+as ﬁve separate vectors of matrix blocks. If Hi , Zi and r i in (6) are stored
+contiguously in memory, only one call to xGETRS is needed instead of three.
+Table 2. Execution times for BPD solver
+k=
+BLAS/LAPACK + bandw. stor. [s]
+BLAS + 3 LAPACK calls [s]
+BLAS + 1 LAPACK call ( ) [s]
+comp. mult. + new solver ( ) [s]
+decr. in runtime between ( ) and ( ) [%]
+
+20
+
+55
+
+85
+
+11.63
+8.33
+6.43
+3.79
+54.5
+
+36.79
+40.22
+33.80
+23.10
+42.6
+
+79.70
+85.26
+76.51
+55.10
+35.4
+
+An Eﬃcient Implementation of the Thomas-Algorithm
+
+4
+
+151
+
+Summary
+
+The solution of a linear system of equations with a BPD matrix with block
+sizes ranging from 20 to 85 was investigated. A substitute for xGEMM and
+xGEMV based on a restructured version of the Thomas algorithm as well as
+speciﬁcally adapted versions of LAPACK’s xGETRF and xGETRS routines were
+implemented. Best results were obtained with a compact multiplication routine
+for the global system and a combined factorization and forward substitution
+scheme for each block row. The latter uses temporary scalars for elements of the
+pivot column, a vector register for elements of the pivot row and outer unrolling
+of depth 8 during Gaussian elimination and of depth 16 and 4 during backward
+substitution. For a NEC SX-8 vector system a decrease in total runtime between
+35% and 54% for test cases of block size 20, 55 and 85 compared to the original
+code using BLAS and LAPACK was achieved.
+An eﬃcient implementation for scalar architectures will be the subject of
+further research.
+
+References
+1. Rampp, M., Janka, H.T.: Radiation hydrodynamics with neutrinos. Astron. Astrophys. 396 (2002) 361–392
+2. Thomas, L.H.: Elliptic problems in linear diﬀerence equations over a network.
+Watson Sci. Comput. Lab. Rept., Columbia University, New York (1949)
+3. Bruce, G.H., Peaceman, D.W., Jr. Rachford, H.H., Rice, J.D.: Calculations of
+unsteady-state gas ﬂow through porous media. Petrol. Trans. AIME 198 (1953)
+79–92
+4. Bieniasz, L.K.: Extension of the Thomas algorithm to a class of algebraic linear
+equation systems involving quasi-block-tridiagonal matrices with isolated blockpentadiagonal rows, assuming variable block dimensions. Computing 67 (2001)
+269–284
+5. Dongarra, J.: Performance of various computers using standard linear equations
+software. Technical Report CS-89-85, University of Tennessee (1989)
+6. Kitagawa, K., Tagaya, S., Hagihara, Y., Kanoh, Y.: A hardware overview of SX-6
+and SX-7 supercomputer. NEC Res. & Develop. 44 (2003) 2–7
+7. Haan, O.: Vektorrechner: Architektur - Programmierung - Anwendung. Saur,
+M¨
+unchen (1993)
+8. Joseph, E., Snell, A., Willard, C.G.: NEC launches next-generation vector supercomputer: The SX-8. IDC # 4290 (2004) 1–15 White Paper.
+9. HLRS. http://www.hlrs.de/hw-access/platforms/sx8/ (2006)
+10. Anderson, E., Blackford, L.S., Sorensen, D., eds.: LAPACK User’s Guide. Society
+for Industrial & Applied Mathematics (2000)
+11. Dongarra, J.J., Croz, J.D., Hammarling, S., Hanson, R.J.: An extended set of Fortran basic linear algebra subprograms. ACM Trans. Math. Soft. 14 (1988) 1–17
+12. Dongarra, J.J., Croz, J.D., Hammarling, S., Duﬀ, I.S.: A set of level 3 basic linear
+algebra subprograms. ACM Trans. Math. Soft. 16 (1990) 1–17
+13. NEC Corporation: SUPER-UX Fortran90/SX Programmer’s Guide. Revision 1.2.
+(2005)
+14. Ortega, J.M.: Introduction to parallel and vector solution of linear systems. Frontiers of computer science. Plenum Press, New York (1988)
+
+

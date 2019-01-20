@@ -1,0 +1,862 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 37 – 46
+
+International Conference on Computational Science, ICCS 2012
+
+One-sided dense matrix factorizations on a multicore
+with multiple GPU accelerators1
+Ichitaro Yamazaki, Stanimire Tomov, and Jack Dongarra
+University of Tennessee, Knoxville, TN37996, USA
+{iyamazak, tomov, dongarra}@cs.utk.edu
+
+Abstract
+One-sided dense matrix factorizations are important computational kernels in many scientiﬁc and engineering
+simulations. In this paper, we propose two extensions of both right-looking (LU and QR) and left-looking (Cholesky)
+one-sided factorization algorithms to utilize the computing power of current heterogeneous architectures. We ﬁrst
+describe a new class of non-GPU-resident algorithms that factorize only a submatrix of a coeﬃcient matrix on a
+GPU at a time. We then extend the algorithms to use multiple GPUs attached to a multicore. These extensions
+not only enable the factorization of a matrix that does not ﬁt in the aggregated memory of the multiple GPUs at
+once, but also provide potential of fully utilizing the computing power of the architectures. Since data movement
+is expensive on the current architectures, these algorithms are designed to minimize the data movement at multiple
+levels. To demonstrate the eﬀectiveness of these algorithms, we present their performance on a single compute node
+of the Keeneland system, which consists of twelve Intel Xeon processors and three NVIDIA GPUs. The performance
+results show both negligible overheads and scalable performance of our non-GPU-resident and multi-GPU algorithms,
+respectively. These extensions are now parts of the MAGMA software package, a set of the state-of-the-art dense
+linear algebra routines for a multicore with GPUs.
+Keywords: dense linear algebra; one-sided factorization; GPU accelerators;
+
+1. Introduction
+Moore’s law predicted that the number of transistors on a chip would double every 18 months. This trend has
+continued for more than half a century and is expected to continue through the end of the next decade. However, to
+continue this trend under physical constraints (e.g., power constraint), emerging computers are based on heterogeneous
+multicore architectures consisting of diﬀerent types of computational units like a homogeneous x86-based multicore
+CPU, an NVIDIA GPU, an AMD Fusion APU, and an Intel MIC. These diﬀerent types of computational units are
+adapted for particular types of tasks. For instance, GPUs are designed to maximize the throughput of multiple tasks,
+and they are particularly adapted to handle tasks that exhibits high data or thread-level parallelism. On the other
+1 This research was supported by DoE DE-SC0003852, DoE DE-SC0004983, and Georgia Institute of Technology RA241-G1 grants. We used
+resources of the Keeneland Computing Facility at the Georgia Institute of Technology, which is supported by the National Science Foundation
+under Contract OCI-0910735. We also thank NVIDIA and MATLAB for supporting our research eﬀorts.
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.005
+
+38
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+hand, a CPU is designed to minimize the latency of a single task using deep memory-hierarchy and instruction-level
+parallelism. To fully utilize the computing power of such architectures, software must be re-designed to exploit the
+diﬀerent performance strengths of diﬀerent computational units. Such needs for software re-design is exacerbated by
+the fact that leading high-performance computers are based on such heterogeneous architectures. For example, each
+compute node of the Keeneland system [11] has two six-core Intel Xeon processors and three NVIDIA GPUs.
+Linear Algebra PACKage (LAPACK) [1] is a set of dense linear algebra routines for shared-memory vector and
+parallel processors, and is extensively used in many scientiﬁc and engineering simulations. LAPACK performs most
+of its computation using Basic Linear Algebra Subroutines (BLAS) [2], which implements basic vector-vector, matrixvector, and matrix-matrix operations, which are respectively classiﬁed as BLAS-1, BLAS-2, and BLAS-3 operations.
+LAPACK obtains portable high-performance over diﬀerent multicore architectures by taking advantage of BLAS that
+are optimized for speciﬁc architectures.
+To utilize the computing power of heterogeneous architectures (e.g., a multicore with a GPU), Matrix Algebra on
+GPU and Multicore Architectures (MAGMA) [3] uses a hybrid programming paradigm to extend LAPACK routines.
+One important set of such routines implement one-sided dense matrix factorization algorithms (like LU, Cholesky,
+and QR factorizations), which are the focus of this paper. These factorization algorithms consist of sequences of two
+distinct phases: a panel factorization and submatrix update. The panel factorization is mainly based on BLAS-1 and
+BLAS-2, while most of the computation in the submatrix update is performed using BLAS-3. Since BLAS-3 exhibits
+more data parallelism than BLAS-1 or BLAS-2, it is ideal for running on GPUs, while BLAS-1 is often faster on a
+CPU [4, 5]. Hence, the current version of MAGMA stores the whole coeﬃcient matrix on a GPU and uses the single
+GPU for the submatrix updates, while a multicore CPU is used for the panel factorizations. Signiﬁcant speedups have
+been obtained using MAGMA over a vendor-optimized LAPACK [6]. However, the whole matrix must be stored
+on the GPU, and the size of the matrix that can be factorized by MAGMA is limited by the amount of the memory
+available on the GPU.
+In this paper, we extend the LU, Cholesky, and QR factorization algorithms of MAGMA. We ﬁrst describe our
+non-GPU-resident factorization algorithms that store only a part of the matrix on the GPU at a time. We then extend
+the algorithms to use multiple GPUs attached to the multicore. These extensions not only enable the factorization of
+a matrix that does not ﬁt in the aggregated memory of the multiple GPUs at once, but also provide potential of fully
+utilizing the computing power of the architecture. Since data movement is expensive on the current architecture, these
+algorithms are designed to minimize the data movement at multiple levels. To demonstrate the eﬀectiveness of these
+algorithms, we show their performance on a single compute node of the Keeneland system.
+The rest of the paper is organized as follows: In Sections 2 and 3, we ﬁrst describe the one-sided factorization
+algorithms of LAPACK and MAGMA, respectively. Then, in Sections 4 and 5, we respectively present our non-GPUresident and multi-GPU factorization algorithms, and analyze the amount of communication between the CPU and
+GPUs. Finally, we show the performance results in Section 6 and conclude with ﬁnal remarks in Section 7.
+2. Block-based factorization algorithms of LAPACK on a multicore
+Right-looking LU and QR. An LU factorization of an m-by-n matrix A with partial pivoting is of the form PA = LU,
+where P is an m-by-m permutation matrix, L is an m-by-n unit lower-triangular matrix, and U is an n-by-n uppertriangular matrix. The LAPACK routine xGETRF computes this LU factorization, where x can be either S, D, C, or
+Z denoting either single, double, single-complex, or double-complex precision used for computing the factorization.
+LAPACK stores all the matrices in column-major.
+The ﬁrst step of xGETRF computes the factorization
+P1 A = P1
+
+a1,1
+a2:mb ,1
+
+a1,2:nb
+a2:mb ,2:nb
+
+=
+
+I
+
+1,1
+2:mb ,1
+
+I
+
+u1,1
+A
+
+u1,2:nb
+I
+
+,
+
+(1)
+
+where P1 is an m-by-m matrix and represents the pivoting for the ﬁrst b columns of A; a1,1 , 1,1 , and u1,1 are the leading
+b-by-b blocks of A, L, and U, respectively; and mb and nb are the respective numbers of block rows and columns of
+A (i.e., mb = mb and nb = nb ).2 This factorization (1) is computed by the following two-stage algorithm, where the
+corresponding LAPACK and BLAS routines are shown in bold case:
+2 We
+
+assume that m and n are multiples of b.
+
+39
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+1. Panel factorization. xGETRF2 computes an LU factorization of the leading m-by-b block column a:,1 of A:
+a1,1
+a2:nb ,1
+
+P1
+
+=
+
+1,1
+
+u1,1 ,
+
+2:nb ,1
+
+2. Submatrix update. The transformation computed by xGETRF2 is applied to the m-by-(n − b) trailing submatrix a:,2:nb of A:
+(a) xLASWP applies the pivoting P1 to the trailing submatrix:
+(a:,2:nb ) := P1 (a:,2:nb ).
+(b) xTRSM computes the oﬀ-diagonal blocks u1,2:nb of U:
+(u1,2:nb ) := (
+
+11 )
+
+−1
+
+(a1,2:nb ).
+
+(c) xGEMM updates the trailing submatrix a2:mb ,2:nb :
+A := (a2:mb ,2:nb ) − (
+
+2:mb ,1 )(u1,2:nb ).
+
+To compute LU factors of A, the transformation (1) is recursively applied to the (n − b)-by-(n − b) submatrix A.
+After the factorization of the j-th panel a j:nb , j , the pivoting P j must be applied to both a j:nb ,1:( j−1) and a j:nb ,( j+1):nb . The
+above algorithm is referred to as a right-looking algorithm since at each step, the panel is used to update the trailing
+submatrix, which is on the right of the panel. The upper-triangular part of U and the strictly lower-triangular part of L
+are stored in the corresponding parts of A. An additional min(n, m)-length vector is required to store the pivots P.
+The QR factorization of an m-by-n matrix A is of the form A = QR, where Q is an m-by-m orthonormal matrix, and
+R is an m-by-n upper-triangular matrix. The LAPACK routine xGEQRF implements a right-looking QR factorization
+algorithm, whose ﬁrst step consists of the following two stages:
+1. Panel factorization. The 1-st panel a:,1 is transformed into a upper-triangular matrix.
+(a) xGEQR2 computes an m-by-m Householder matrix H1 such that
+H1T (a:,1 ) =
+
+r1,1
+0
+
+,
+
+and r1,1 is a b-by-b upper-triangular matrix.
+(b) xLARFT computes a block representation of the transformation H1 , i.e.,
+H1 = I − V1 T 1 V1H ,
+where V1 is an m-by-b matrix and T 1 is a b-by-b upper-triangular matrix.
+2. Submatrix update. xLARFB applies the transformation computed by xLARFT to the trailing submatrix a:,2:nb :
+r1,2:nb
+A
+
+:= (I − V1 T 1 V1H )
+
+a1,2:nb
+a2:mb ,2:nb
+
+.
+
+(2)
+
+Then, the QR factorization of A is computed by recursively applying the same transformation to the submatrix A.
+The column reﬂectors V j are stored in the lower-triangular part of A, while R is stored in the upper-triangular part.
+Additional m-by-b storage is required to store T j .
+Left-looking Cholesky. The Cholesky factorization of a Hermitian positive-deﬁnite matrix A is of the form A = RRH ,
+where R is an n-by-n lower-triangular matrix with positive real diagonals. The LAPACK routine xPOTRF computes
+the Cholesky factor R, whose j-th step computes the j-th block column r j:nb , j of R by updating and factorizing the j-th
+panel a j:nb , j as follows:
+1. Panel update. The j-th panel a j:nb , j is updated using the previously-computed columns r:,1 , r:,2 , . . . , r:, j−1 of R,
+
+40
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+(a) xSYRK updates the diagonal block a j, j based on a symmetric low-rank updates,
+(a j, j ) := (a j, j ) − (r j,1:( j−1) )(r j,1:( j−1) )H .
+(b) xGEMM updates the oﬀ-diagonal blocks a( j+1):nb , j of a:, j ,
+(a( j+1):nb , j ) := (a( j+1):nb , j ) − (r( j+1):nb ,1:( j−1) )(r j,1:( j−1) )H .
+2. Diagonal factorization. xPOTRF2 computes the Cholesky factor r j, j of the diagonal block a j, j ,
+(a j, j ) = (r j, j )(r j, j )H .
+3. Oﬀ-diagonal computation. xTRSM computes the oﬀ-diagonal blocks r( j+1):nb , j ,
+(r( j+1):nb , j ) := (r j, j )−1 (a( j+1):nb , j ).
+This is known as a left-looking algorithm since at each step, the panel is updated using the previous columns, which
+are on the left of the panel. If a right-looking algorithm is used, at each j-th step, the lower-triangular part of the
+trailing matrix a j:nb , j:nb is updated using xSYRK (in Section 5, using multiple GPUs, xSYRK and xGEMM is called
+on each block column of a j:nb , j:nb ). On the other hand, the left-looking algorithm accumulates all the updates to the
+panel into single calls to xSYRK and xGEMM, and exhibits more regular, and hence eﬃcient, data access. The
+Cholesky algorithm above references only the lower-triangular part of A, which is overwritten by R. Alternatively,
+given the upper-triangular part of A, xPOTRF can compute RH by block rows.
+To optimize the data access on a speciﬁc multicore architecture, these LAPACK routines consist of block operations which can be performed using highly-tuned BLAS. In particular, the panel factorizations are based on BLAS-1
+or BLAS-2, while most of the computation in the submatrix or panel updates is performed using BLAS-3.
+3. One-sided factorizations of MAGMA on a multicore with a GPU
+MAGMA extends the LAPACK routines to utilize the computing power of modern heterogeneous architectures.
+It is based on a hybrid programming paradigm and exploits the diﬀerent performance strengths of a CPU and a GPU.
+For instance, during one-sided factorizations, the submatrix updates based on BLAS-3 exhibit high data parallelism
+and are ideal for performing on a GPU. On the other hand, panel and diagonal factorizations are based on BLAS-1 and
+BLAS-2, and they are often faster on a CPU. Hence, MAGMA stores the whole matrix A and updates its submatrix on
+the GPU while the panels and diagonal blocks are copied to and factorized on the CPU. To be concrete, in this section,
+we outline the one-sided factorization algorithms of MAGMA. The name of the MAGMA routine appends magma
+in front of the corresponding LAPACK or BLAS routine name (e.g., magma xGETRF). Because MAGMA uses the
+same matrix storage as LAPACK on the CPU, in most cases, a user can switch from LAPACK to MAGMA routines
+by adding magma to their routine names. Since communication between the CPU and GPU can be expensive on the
+current architecture, here, we analyze the amount of the communication required by each algorithm.
+Right-looking LU and QR. magma xGETRF computes LU factors of A, and its pseudocode is shown in Figure 1(a).
+This algorithm ﬁrst copies the matrix A from the CPU to the GPU (step 1 of Algorithm 3.1). Then, at the beginning
+of each step, the current panel is factorized on the CPU (step 2.a) and copied to the GPU (step 2.b) for updating the
+trailing submatrix (steps 2.d and 2.e). Once the whole A is factorized, the LU factors are copied back to the CPU
+(step 3). As in LAPACK, A is overwritten by its LU factors on both CPU and GPU. The algorithm communicates
+total of 4mn − (n2 − nb) matrix elements between the GPU and CPU.
+Since panels are factorized on the CPU, if the whole panel a:, j is copied to the CPU at step 2.f of Algorithm 3.1,
+then the ﬁnal copying of LU factors to the CPU (step 3) can be avoided. The reason for having step 3 in Algorithm 3.1
+is that the GPU is used to apply the pivoting to the previously-computed columns of L (step 2.c). To improve the
+data access in step 2.c, the matrix is stored in row-major on the GPU, and each GPU thread swaps an element of a
+row in parallel. On the other hand, the matrix is stored in column-major on the CPU to call xGETRF. Hence, the
+matrix must be transposed every time the matrix is copied between the GPU and CPU, but the overall performance is
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+Algorithm 3.1
+1. copy A from CPU to GPU.
+2. for j = 1, 2, . . . , nb do
+a. use xGETRF to factorize panel
+on CPU.
+b. copy the panel from CPU to GPU.
+c. apply pivoting to L on GPU.
+d. use magma xGETRF to
+compute u j,( j+1):nb on GPU.
+e. use magma xGEMM to
+update trailing submatrix on GPU.
+f. copy next panel from GPU to CPU.
+end for
+3. copy LU factors from GPU to CPU.
+
+(a) LU factorization.
+
+Algorithm 3.2
+1. copy A from CPU to GPU.
+2. for j = 1, 2, . . . , nb do
+a. copy r1:( j−1), j from GPU to CPU.
+b. copy panel a j:nb , j from CPU to GPU.
+c. use xGEQRF to factorize the panel
+on CPU.
+d. use xLARFT to compute T j and V j .
+e. copy T j and V j from CPU to GPU.
+f. use magma xLARFB to
+apply the transformation on GPU.
+end for
+3. synchronize copying of R from step 2.a.
+
+(b) QR factorization.
+
+41
+
+Algorithm 3.3
+1. copy A from CPU to GPU.
+2. for j = 1, 2, . . . , nb do
+a. copy r1:( j−1), j from GPU to CPU.
+b. use magma xSYRK to
+update a j, j on GPU.
+c. copy a j, j from GPU to CPU.
+d. use magma xGEMM to
+update a( j+1):nb , j on GPU.
+e. use xPOTRF to compute r j, j
+on CPU.
+f. copy r j, j from CPU to GPU.
+g. use magma xTRSM to
+compute r( j+1):nb ,r on GPU.
+end for
+3. synchronize copying of R from step 2.b.
+(c) Cholesky factorization.
+
+Figure 1: MAGMA one-sided factorization algorithms.
+
+improved [7]. To hide the time needed to apply the pivots, the application of pivoting is overlapped with the copying
+of the panel to the GPU. Finally, to overlap the submatrix update with the transfer and factorization of the panel, a
+look-ahead of depth one is implemented, i.e., the GPU asynchronously sends the ( j + 1)-th panel to the CPU as soon
+as it is updated with the j-th panel, then it continues updating the remaining trailing submatrix, while the CPU waits,
+factorizes, and sends the ( j + 1)-th panel back to the GPU.
+Figure 1(b) shows the pseudocode of magma xGEQRF that computes the QR factors of A. In comparison to
+magma xGETRF, magma xGEQRF copies the additional nb elements of T j from the CPU to the GPU, which is
+used to apply the transformation (2) on the GPU (step 2.f). On the other hand, since the panels are not updated after
+being factorized on the CPU (step 2.c), they do not need to be copied back to the CPU at the end, which are needed by
+2
+magma xGETRF (step 3 of Algorithm 3.1). As a result, magma xGEQRF copies the total of 3mn − n −3nb
+matrix
+2
+elements between the CPU and GPU. Furthermore, the algorithm overlaps the copying of the j-th column r1:( j−1), j ,
+which is contiguous in memory, (step 2.a) with the remaining computation of the submatrix r( j+1):nb ,( j+1):nb .
+Left-looking Cholesky. Figure 1(c) shows the pseudocode of magma xPOTRF that computes the Cholesky factor R
+of A. The algorithm ﬁrst copies the lower-triangular part of A from the CPU to the GPU (step 1). Then, at the beginning
+of the j-th step, the j-th diagonal block a j j is updated on the GPU and copied to the CPU (steps 2.b and 2.c). When
+the CPU receives a j, j , it computes its Cholesky factor r j, j (step 2.e) and copies it back to the GPU (step 2.f). While
+a j, j is being copied to and factorized on the CPU, and then being copied back to GPU (steps 2.c, 2.e, and 2.f), the
+GPU updates the oﬀ-diagonal blocks a( j+1):nb , j (step 2.d). Finally, the GPU uses r j, j to compute r( j+1):nb ,r (step 2.g). To
+avoid explicit synchronization, r( j+1):nb ,r is computed on the same GPU stream as that is used to copy r j, j . Furthermore,
+similarly to magma xGEQRF, to hide the time required to copy R to the CPU, at the j-th step, magma xPOTRF
+copies the already-computed oﬀ-diagonal blocks r j,1:( j−1) of R to the CPU through a designated stream (step 2.a). Only
+when the whole A is factorized, the stream is synchronized (step 3). The total of n2 + 2nb matrix elements are copied
+between the CPU and GPU.
+In comparison to magma xGETRF, the j-th step of magma xPOTRF updates only the j-th panel and has much
+less parallelism to be exploited on the GPU. However, the CPU is used only to factorize the diagonal block, and the
+ratio of the computation performed on the CPU over that on the GPU is smaller in magma xPOTRF. Even though
+magma xGETRF overlaps the panel factorization with the submatrix update, in some cases, the GPU is idle waiting
+for the CPU to complete the panel factorization. As a result, the panel factorization often becomes the bottleneck.
+This is especially true at a later step of the factorization and with more GPUs used for the factorization.
+MAGMA performs most of its operations using LAPACK on the CPU and MAGMA BLAS [8] on the GPU,
+which optimize the data access on the speciﬁc CPU and GPU architectures. However, MAGMA utilizes the memory
+and computing power of only one GPU. To overcome this limitation, in the next two sections, we describe our nonGPU-resident and multi-GPU factorization algorithms.
+
+42
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+Algorithm 4.1
+for J = 1, 2, . . . , nB do
+1. copy A:,J from CPU to GPU, and transpose it.
+2. update A:,J with previous columns (left-looking).
+for k = 1, 2, . . . , (J − 1)Bb do
+a. copy previous columns k:nb ,k
+b. apply pivoting Pk to a(J)
+.
+k:nb ,:
+from CPU to GPU.
+c. use magma xTRSM to compute u(J)
+k,:
+−1 a(J) ).
+on GPU (u(J)
+:= k,k
+k,:
+k,:
+d. use magma xGEMM to update a(J)
+k+1:n ,:
+b
+
+on GPU (a(J)
+:= a(J)
+− k+1:nb ,: u(J)
+).
+k+1:nb ,:
+k+1:nb ,:
+k,:
+end for
+3. use magma xGETRF gpu to factorize A J:nB ,J :
+P J A J:nB ,J = L J:nB ,J U J,J (right-looking).
+4. copy the LU factors of A J:nB ,J from GPU to CPU.
+end for
+(a) LU factorization.
+
+Algorithm 4.2
+for J = 1, 2, . . . , nB do
+1. copy A J:nB ,J from CPU to GPU.
+2. update A J:nB ,J with previous columns (left-looking).
+for k = 1, 2, . . . , (J − 1)Bb do
+a. copy previous columns r(J−1)Bb :nb ,k
+from CPU to GPU.
+b. update A:,J with r(J−1)Bb :nb ,k on GPU:
+for = 1, 2, . . . Bb do
+use magma xSYRK to update a(J)
+,
+and xGEMM to update a(J)
++1:nb ,
+end for
+end for
+3. use magma xPOTRF gpu to factorize A J:nB :,J :
+A J:nB ,J = R J:nB ,1:J RH
+(left-looking).
+J,J
+4. copy A J:nB ,J from GPU to CPU.
+end for
+(b) Cholesky factorization.
+
+Figure 2: non-GPU-resident factorization algorithms.
+
+4. Non-GPU-resident factorization algorithms
+In this section, we describe our non-GPU-resident factorization algorithms which factorize a part of a matrix A on
+the GPU at a time and enable the factorization of A that is too large to ﬁt in the GPU’s memory at once. The J-th step
+of the algorithm consists of the following four stages: 1) copy from the CPU to the GPU the m-by-B submatrix A:,J
+consisting of the ((J − 1)B + 1)-th through the ( jB)-th column of A, 2) update A:,J using the previously-factorized
+columns of A, 3) use the standard MAGMA algorithms in Section 3 to factorize A:,J , and 4) copy A:,J back to the
+CPU. To minimize the amount of copies from the GPU to the CPU, we use a left-looking algorithm (stage 2). In our
+current implementation, the algorithms dynamically select B as the maximum number of columns of A that can ﬁt in
+the GPU’s memory, but B can be a user-speciﬁed parameter.
+LU and QR factorization. The new MAGMA routine magma xGETRF ngr implements our non-GPU-resident LU
+factorization algorithm. The pseudocode of the algorithm is shown in Figure 2(a), where nB is the number of submatrices in A and Bb is the number of block columns in the submatrix (i.e., nB = Bn and Bb = Bb ).3 To copy and
+transpose A:,J onto the GPU at step 1, two GPU streams and two buﬀers of size m-by-b are alternately used such that
+transposing the ﬁrst block column on the GPU is overlapped with copying the second block column to the GPU. In
+comparison to copying the entire A:,J to the GPU and then transposing it, our incremental copy-and-transpose algorithm reduces the size of the buﬀer, allowing a larger value of B, and is shown to be more eﬃcient. Then, at step 2,
+the submatrix A:,J is updated using the previous submatrices, where a(J)
+i, j is the (i, j)-th block of the J-th submatrix A:,J
+(i.e., a(J)
+i, j = ai,(J−1)Bb + j ). Finally, at step 3, the routine magma xGETRF gpu uses the algorithm in Section 3 and
+computes LU factors of A J:nB ,J which is already stored in row-major on the GPU.
+Algorithm 4.1 does not apply the pivoting P J to the previously-computed submatrices L:,1 , L:,2 , . . . , L:,J−1 of L. We
+implemented two approaches to apply the pivoting. The ﬁrst approach applies P J to the previous submatrices on the
+CPU. This computes LU factors equivalent to the ones computed by LAPACK, and the LAPACK routine xGETRS
+can be used for the forward and backward substitutions. The second approach applies the pivoting to the right-handsides (RHSs) during the forward substitution. This is the approach used in software packages like LINPACK [9] and
+PLASMA [10]. When the number of RHSs is relatively small, the second approach may be more eﬃcient than the
+ﬁrst approach. However, LAPACK does not provide a routine that alternately applies the pivoting and substitution
+to RHSs, and a new routine must be included in MAGMA. Finally, as discussed in Section 2, if the whole panel is
+copied to the CPU at each step of magma xGETRF gpu (step 2.f of Algorithm 3.1), then the ﬁnal copying of LU
+3 Our
+
+analysis assumes that n is a multiple of B and B is a multiple of b.
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+factors to the CPU (step 4 of Algorithm 4.1) can be avoided. However, the pivoting for each block column of L:,J
+must be applied to the previously-computed columns of L:,J on the CPU. At the j-th step of magma xGETRF gpu,
+the application of the j-th pivoting to the previous columns of L:,J on the CPU might be overlapped with the trailing
+submatrix update on the GPU. However, as j increases, the pivoting must be applied to more block columns, while the
+submatrix update requires less computation. Hence, especially when multiple GPUs are used to update the submatrix,
+it becomes diﬃcult to hide the time to apply the pivoting on the CPU.
+Since only the block lower triangular part of the previous submatrices are reloaded to GPU (step 2.a of Algorithm 4.1), the total number of matrix elements copied between the CPU and GPU is
+nB −1 JBb −1
+
+4mn − (n2 − nb) +
+
+b(m − jb) =
+J=0
+
+j=0
+
+9 + 2nB
+nB + 3
+B
+7 + nB
+mn −
+n−
+b+
+n.
+2
+12
+4
+12
+
+If the ﬁnal copying of the LU factors to the CPU is avoided, then the number of copied elements is reduced by
+2
+mn − n −nb
+2 . The communication volume decreases with a smaller n B or equivalently with a larger B. Hence, the
+communication volume is minimized by setting B to be the maximum number of columns of A, which can ﬁt in the
+GPU’s memory.4
+The routine magma xGEQRF ngr implements our non-GPU-resident QR factorization algorithm. Since both
+magma xGEQRF ngr and magma xGETRF ngr are right-looking algorithms, magma xGEQRF ngr follows the
+same algorithmic ﬂow as Algorithm 4.1. In comparison to magma xGETRF ngr, magma xGEQRF ngr copies
+from the CPU to the GPU extra matrix elements of triangular factors T j of the previous submatrices, which are then
+used to update the current submatrix. Hence, the total number of matrix elements copied between the CPU and GPU
+by is given by
+⎛
+⎞
+JBb −1
+nB −1 ⎜
+⎟⎟⎟
+⎜⎜⎜
+n2 − 3nb
+3 + 2nB
+3 + 3nB
+B
+5 + nB
+⎜⎝⎜ JBb +
+3mn −
++
+mn −
+n−
+b+
+n.
+b(m − jb)⎟⎟⎠⎟ =
+2
+2
+12
+4
+12
+J=0
+j=0
+In order to reduce the memory requirement, the triangular factors T j of the previous block reﬂectors are recomputed
+on the CPU at each J-th step of the algorithm.
+Cholesky factorization. Figure 2(b) shows the pseudocode of our non-GPU-resident Cholesky algorithm implemented
+in magma xPOTRF ngr. To update only the lower-triangular part of A, each block column of the current submatrix A J:nB ,J is updated by a previously-computed block column of R at a time (step 2.b of Algorithm 4.2), where a(J)
+i, j is
+the (i, j)-th block of the J-th submatrix A J:nB ,J (i.e., a(J)
+i, j = a(J−1)Bb +i,(J−1)Bb + j ). Then, the routine magma xPOTRF gpu
+uses the algorithm in Section 3 to compute the Cholesky factor of the submatrix A J:nB ,J which is already on the GPU.
+At step 1 of Algorithm 4.2, a single stream is used to asynchronously copy the lower-triangular part of A J:nB ,J to
+the GPU one block column at a time. After all the columns are sent, the stream is synchronized before the submatrix
+update (step 2.b). Since at the J-th step, only the (1 + (J − 1)Bb )-th through the nb -th block rows of L:,1:(J−1) are copied
+to the GPU, the total number of matrix elements copied between the CPU and GPU is given by
+nB −1
+
+n2 + 2nb +
+
+JB(n − JB) =
+J=0
+
+nB + 6 2 12b − B
+n +
+n.
+6
+6
+
+5. Multi-GPU factorization algorithms
+We now describe our multi-GPU factorization algorithms that exploits multiple GPUs attached to a multicore. As
+before, the panel is factorized on the CPU, but the submatrix is now updated using multiple GPUs. For the discussion,
+here, we use A¯ to denote the matrix that is factorized. The non-GPU-resident algorithms of Section 4 use these
+multi-GPU algorithms to factorize the submatrix A J:nB ,J ; i.e., A¯ = A J:nB ,J .
+4 If n is not a multiple of B, then in our implementation, the ﬁrst n − 1 submatrices have B columns, and the last submatrix contains the
+B
+remaining n − (nB − 1)B columns. However, the communication volume may be reduced if the ﬁrst submatrix contains these remaining columns
+instead of the last submatrix.
+
+43
+
+44
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+1) _xTRSM
+
+1) _xGEMM
+
+1) xGETRF
+
+2) _xSYRK
+
+2) _xTRSM
+
+2) _xGEMM
+
+1) xSYRK
+3) _xGEMM
+
+2) xPOTRF
+3) _xGEMM
+
+(a) LU factorization.
+
+3) xGEMM
+
+4) xTRSM
+
+(b) Cholesky factorization.
+
+Figure 3: multi-GPU factorization in non-GPU-resident algorithm. For each ﬁgure (a) or (b), the left ﬁgure shows the updates with the previous
+columns, and the right ﬁgure shows the factorization of the submatrix. MAGMA routines are identiﬁed by the underscore, , in front of their names.
+
+Right-looking LU and QR. magma xGETRF mgpu implements our multi-GPU LU factorization algorithm that
+distributes the matrix A¯ in a column-wise 1D block-cyclic layout. Figure 3(a) illustrates this algorithm. At the j-th
+step, the GPU owning the ( j + 1)-th panel performs the look-ahead and asynchronously copies the next panel to the
+CPU for the factorization (steps 2.e and 2.f of Algorithm 3.1). After the panel factorization on the CPU, the panel is
+sent to all the GPUs (steps 2.a and 2.b). Then, each GPU applies the pivoting and updates their local trailing submatrix
+independently from each other (steps 2.c, 2.d, and 2.e). Only the GPU owning the ( j + 1)-th block column of A¯ can
+¯ and the other GPUs store the panel in their local buﬀers. We alternately use
+store the panel in its local storage of A,
+two buﬀers to store the panels on each GPU so that the next panel can be factorized on the CPU and sent back to the
+GPUs before the completion of the submatrix update using the current panel. We also use GPU streams to maximize
+the parallelism and to overlap communication and computation. For instance, during the look-ahead, one stream is
+used to update and copy the next panel to CPU, and another is used to update the remaining trailing submatrix. If g is
+the number of GPUs being used, then the total number of matrix elements copied between the CPU and one GPU is
+about
+n2 − nb
+n2 − nb 1
++
+3nm −
+,
+nm −
+2
+g
+2
+corresponds to the copying of the panels from the CPU to the GPU.
+where the ﬁrst nm − n −nb
+2
+To update the current submatrix with the previous submatrices on multiple GPUs (step 2 of Algorithm 4.1), our
+non-GPU-resident LU algorithm ﬁrst copies each block column of the previously-computed L-factor to all the GPUs
+(step 2.a). Then, using this previous block column, the GPUs update their local submatrices in parallel (steps 2.b, 2.c,
+and 2.d). The copying of previous block to the GPU is overlapped with the application of the pivoting (see (3) for the
+communication volume). As before, our multi-GPU QR factorization algorithm follows the same algorithmic ﬂow as
+our multi-GPU LU factorization algorithm.
+2
+
+Left-looking Cholesky. Since only one block column is updated and factorized at each step of the right-looking algorithm, our multi-GPU Cholesky algorithm distributes the matrix A¯ among GPUs in a row-wise 1D block-cyclic layout
+(see Figure 3(b)). At the beginning of the j-th step, the GPU owning the j-th diagonal block updates the diagonal
+block (step 2.b of Algorithm 3.3). Since all the blocks required for the diagonal update (i.e., those in the j-th block
+row) are on this GPU, this step does not require any communication. Then, the updated diagonal block is sent to the
+CPU for the factorization (steps 2.c and then 2.e). After the completion of the factorization, the resulting Cholesky
+factor is asynchronously sent to all the GPUs (step 2.f).
+To update the oﬀ-diagonal blocks r( j+1):nb , j of the j-th block column (step 2.d), each GPU requires the j-th block
+row r j,1:( j−1) . Hence, as soon as the block r j, j−1 is computed at the ( j − 1)-th step (step 2.g), the block row r j,1:( j−1)
+is sent to the CPU. Then, at the beginning of the j-th step, the CPU waits for this j-th block row and broadcasts to
+all the GPUs (except to the one owning the j-th row). This copying of the block row to the CPU and to the GPUs
+is overlapped with the computation of the remaining oﬀ-diagonal blocks r( j+1):nb , j−1 (step 2.g) and with the update of
+the diagonal block a j, j (step 2.b), respectively. Once a GPU receives the Cholesky factor, it independently computes
+
+45
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+DGETRF
+
+DPOTRF
+
+900
+35840
+
+800
+
+700
+
+800
+
+36352
+
+700
+
+600
+
+30720
+
+27136
+
+500
+400
+18176
+
+300
+
+15360 13568
+
+11776
+
+600
+
+31232 27136 24320
+
+500
+400
+18176 15616 13568 12032
+
+300
+
+500
+400
+
+200
+
+200
+
+100
+
+100
+
+100
+
+1
+
+2
+
+3
+Matrix Size
+
+4
+
+5
+4
+
+x 10
+
+0
+0
+
+1
+
+2
+
+3
+Matrix Size
+
+18688
+
+300
+
+200
+
+0
+0
+
+1 GPU
+2 GPUs
+3 GPUs
+
+700
+
+600
+
+23808
+
+Gflop/s
+
+Gflop/s
+
+900
+1 GPU
+2 GPUs
+3 GPUs
+
+Gflop/s
+
+800
+
+DGEQRF
+
+900
+1 GPU
+2 GPUs
+3 GPUs
+
+4
+
+5
+4
+
+x 10
+
+0
+0
+
+0.5
+
+1
+
+1.5
+2
+Matrix Size
+
+2.5
+
+3
+4
+
+x 10
+
+Figure 4: Performance of non-GPU resident factorization algorithms on multiple GPUs. The number above a marker shows nB (the numbers of the
+columns in the submatrices A:,J ). For the markers without the numbers, the whole matrix A ﬁts in the GPUs’ memory.
+
+the oﬀ-diagonal blocks of r( j+1):nb , j (step 2.g). The total number of matrix elements copied between the CPU and one
+GPU is about
+1
+n2 − nb
++ (n2 + nb),
+nb + (1 − δg,0 )
+2
+g
+is
+where the ﬁrst nb is to copy the Cholesky factors of the diagonal blocks from the CPU to the GPU, the term n −nb
+2
+for each GPU to copy the j-th local rows of R to the CPU and then to receive the non-local rows from the CPU, and
+δg,0 = 1 if g = 0 and δg,0 = 0 otherwise.
+To update the J-th submatrix A J:nB ,J using the previous submatrices on multiple GPUs, our non-GPU-resident
+Cholesky algorithm ﬁrst updates each block row of the diagonal submatrix A J,J at a time; i.e., the i-th row a(J)
+i,1:i
+is updated using magma xGEMM on the oﬀ-diagonal blocks a(J)
+and
+using
+magma
+xSYRK
+on
+the
+diagonal
+i,1:(i−1)
+2
+
+block a(J)
+i,i (step 2.b of Algorithm 4.2). Then, each GPU updates the local part of the oﬀ-diagonal submatrix A(J+1):nB ,J
+by a single call to magma xGEMM.
+6. Performance results
+We now study the performance of the proposed algorithms on the Keeneland system [11]. For our experiments,
+we used all of the twelve Intel Xeon 5660 processors and three Tesla M2070 GPUs on a single compute node. Even
+though each GPU has only 6GB of memory, our non-GPU-resident algorithms enable the factorization of the matrix
+that does not ﬁt in the aggregated 18GB of the GPUs’ memory. However, total page-cache available on a CPU, which
+can be allocated using CudaHostAlloc, is also 18GB, and the dimension of the largest matrix that can be stored in
+the cache-page was about 4500. Figure 4 shows the Gﬂop/s obtained by our algorithms in double precision, where the
+user has provided the matrix A stored on the CPU and allocated the memory to store A on the GPUs. We see that in
+comparison to using one GPU (equivalent to the current version of MAGMA), our multi-GPU algorithms obtained the
+speedups of up to 2.0, 2.0, and 1.9 using two GPUs for LU, QR, and Cholesky, respectively, and the speedups of up
+to 2.9, 2.9, and 2.6 using three GPUs. Furthermore, our non-GPU-resident algorithms placed only a small overhead
+over the standard algorithms.
+Figure 5 shows the traces of our multi-GPU LU and Cholesky algorithms. The pink trace represents the panel
+factorization on the CPU (step 2.a of Algorithm 3.1). The remaining three pairs of traces represent the submatrix
+updates using two streams on each of the three GPUs (one for look-aheads and the other for remaining submatrix
+updates). Green, red, and orange traces represent magma DTRSM, DGEMM, and DSYRK, respectively, while
+the black trace is the data copying between the CPU and GPUs. Initially, for LU and Cholesky, respectively, the
+panel factorization and data copying could be hidden behind the submatrix updates, while at a later step, they became
+greater. For a larger matrix, they can be hidden behind the submatrix updates for a greater number of steps.
+
+46
+
+Ichitaro Yamazaki et al. / Procedia Computer Science 9 (2012) 37 – 46
+
+(a) LU factorization.
+
+(b) Cholesky factorization.
+Figure 5: Trace of multi-GPU factorization algorithms (n = 10, 000).
+
+7. Conclusion
+In this paper, we presented non-GPU-resident and multi-GPU extensions of right-looking LU and QR and leftlooking Cholesky factorization algorithms of MAGMA. Our performance results demonstrated both the negligible
+overheads of our non-GPU-resident algorithms and the scalable performance of our multi-GPU algorithms. We are
+currently studying several techniques to further optimize the performance of the algorithms. For instance, in many
+cases, especially when multiple GPUs are used, panel factorization on the CPU can be the bottleneck. To overcome
+this, we are investigating the integration of panel factorization algorithms (e.g., [12, 13]), which are shown to be
+more scalable than LAPACK on a multicore. Other optimization techniques include look-ahead of depth greater
+than one on the CPU to reduce the idling time of both CPU and GPUs, and usage of GPU streams to eliminate
+explicit synchronizations. We are also extending two-sided factorization algorithms (i.e., xGEHRD, xSYTRD, and
+xGEBRD) of MAGMA to use multiple GPUs.
+References
+[1] E. Anderson, Z. Bai, C. Bischof, S. Blackford, J. Demmel, J. Dongarra, J. D. Croz, A. Greenbaum, S. Hammarling, A. McKenney,
+D. Sorensen, LAPACK Users’ guide, 3rd Edition, Society for Industrial and Applied Mathematics, 1999.
+[2] C. L. Lawson, R. J. Hanson, D. Kincaid, F. T. Krogh, Basic Linear Algebra Subprograms for FORTRAN usage, ACM Trans. Math. Soft. 5
+(1979) 308–323.
+[3] S. Tomov, R. Nath, P. Du, J. Dongarra, MAGMA version Users’ guide, available at http://icl.eecs.utk.edu/magma/ (2009).
+[4] M. Baboulin, J. Dongarra, S. Tomov, Some issues in dense linear algebra for multicore and special purpose architectures, Tech. Rep. UT-CS08-200, University of Tennessee (2008).
+[5] S. Barrachina, M. Castillo, F. D. Igual, R. Mayo, E. S. Quintana-Orti, Solving dense linear systems on graphics processors, in: Euro-Par 2008
+Parallel Processing, Vol. 5168 of Lecture Notes in Computer Science, Springer Berlin / Heidelberg, 2008, pp. 739–748.
+[6] S. Tomov, R. Nath, H. Ltaief, J. Dongarra, Dense linear algebra solvers for multicore with GPU accelerators, in: Proceedings of IEEE
+International Parallel and Distributed Processing Symposium (IPDPS), 2010.
+[7] E. Agullo, C. Augonnet, J. Dongarra, M. Faverge, J. Langou, H. Ltaief, S. Tomov, LU factorization for accelerator-based systems, in: 9th
+ACS/IEEE International Conference on Computer Systems and Applications (AICCSA 11), 2011.
+[8] R. Nath, S. Tomov, J. Dongarra, An improved magma gemm for fermi graphics processing units, Int. J. High Perform. Comput. Appl. 24
+(2010) 511–515.
+[9] J. Dongarra, J. Bunch, C. Moler, G. Stewart, LINPACK Users’ Guide, Society for Industrial and Applied Mathematics, 1979.
+[10] E. Agullo, J. Dongarra, B. Hadri, J. Kurzak, J. Langou, J. Langou, H. Ltaief, P. Luszczek, A. YarKhan, PLASMA version Users’ guide,
+available at http://icl.eecs.utk.edu/plasma/.
+[11] J. Vetter, R. Glassbrook, J. Dongarra, K. Schwan, B. Loftis, S. McNally, J. Meredith, J. Rogers, P. Roth, K. Spaﬀord, S. Yalamanchili,
+Keeneland: Bringing heterogeneous gpu computing to the computational science community, IEEE Computing in Science and Engineering
+13 (2011) 90–5, available also at http://dx.doi.org/10.1109/MCSE.2011.83.
+[12] M. Horton, S. Tomov, J. Dongarra, A class of hybrid lapack algorithms for multicore and gpu architectures, in: Proceedings of Symposium
+for Application Accelerators in High Performance Computing (SAAHPC), 2011.
+[13] J. Dongarra, M. Faverge, H. Ltaief, P. Luszczek, Achieving numerical accuracy and high performance using recursive tile LU factorization,
+Tech. rep., Innovative Computing Laboratory, University of Tennessee (2011).
+
+

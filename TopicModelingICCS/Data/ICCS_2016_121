@@ -1,0 +1,664 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 74–85
+ICCS 2016. The International Conference on Computational
+Science
+
+Faster cloud Star Joins with reduced
+disk spill and network communication
+Jaqueline Joice Brito1 , Thiago Mosqueiro2 , Ricardo Rodrigues Ciferri3 , and
+Cristina Dutra de Aguiar Ciferri1
+1
+
+Department of Computer Science, University of S˜
+ao Paulo at S˜
+ao Carlos, Brazil
+{jjbrito, cdac}@icmc.usp.br
+2
+BioCircuits Institute, University of California San Diego, United States
+thiago.mosqueiro@usp.br
+3
+Department of Computer Science, Federal University of S˜
+ao Carlos, Brazil
+ricardo@dc.ufscar.br
+
+Abstract
+Combining powerful parallel frameworks and on-demand commodity hardware, cloud computing has made both analytics and decision support systems canonical to enterprises of all
+sizes. Associated with unprecedented volumes of data stacked by such companies, ltering
+and retrieving them are pressing challenges. This data is often organized in star schemas, in
+which Star Joins are ubiquitous and expensive operations. In particular, excessive disk spill
+and network communication are tight bottlenecks for all current MapReduce or Spark solutions.
+Here, we propose two e cient solutions that drop the computation time by at least 60%: the
+Spark Bloom-Filtered Cascade Join (SBFCJ) and the Spark Broadcast Join (SBJ). Conversely,
+a direct Spark implementation of a sequence of joins renders poor performance, showcasing the
+importance of further ltering for minimal disk spill and network communication. Finally, while
+SBJ is twice faster when memory per executor is large enough, SBFCJ is remarkably resilient
+to low memory scenarios. Both algorithms pose very competitive solutions to Star Joins in the
+cloud.
+Keywords: Star join; Spark; MapReduce; Bloom ﬁlter; Data warehouse.
+
+1
+
+Introduction
+
+For the past decade, data-centric trends emerged to aid decision-making processes [21, 6]. Due to
+high costs of maintaining updated computational resources, a new model was proposed based
+on commodity hardware and non-local infrastructures: cloud computing [9]. Consequently,
+there is an increasing demand for exible and scalable solutions to store and e ciently lter
+large datasets [8]. Aligned to these needs, MapReduce [7] has gained attention in the last years,
+74
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.299
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Brito et al.
+
+delivering fast batch processing in the cloud. More recently, Spark [26] was proposed based on
+slightly di erent premises, and has been shown to suit machine learning tasks well [14].
+In the context of decision support systems, databases are often organized in star schemas
+[6], where information is conveyed by a central table linked to several satellite tables (see
+Figure 1). This is especially common in Data Warehouses [24, 13]. Star Joins are typical
+and remarkably expensive operations in star schemas, required for most applications. Many
+MapReduce strategies were proposed [1, 12, 18, 27], yet it is challenging to avoid excessive disk
+access and cross-communication among di erent jobs. In particular, unnecessary disk access is
+often the result of disk spill, i.e., when data is spilled into the disk due to over owing memory
+bu er. Also, transmitting records discarded in the join wastes cross-communication, blocking
+further data transmission in the network. A naive Spark implementation also fails at the same
+points (see Section 5.2). Therefore, our goal is to propose better strategies to reduce disk spill
+and network communication.
+To achieve this, we must choose how to lter and coordinate data from dimension and fact
+tables prior to computing the join. In this paper, we investigated two di erent approaches
+based on orthogonal premises: (i) we rst lter the dimensions and then broadcast them to
+all nodes, assuming enough memory; (ii) we use Bloom lters to select records from the fact
+table, assuming low false-positive rate. Thus, we propose two e cient algorithms that optimize
+disk spill, network communication and query performance of Star Joins: Spark Broadcast Join
+(SBJ) and Spark Bloom-Filtered Cascade Join (SBFCJ). Comparing our solutions with some
+of the most prominent approaches, both SBFCJ and SBJ reduce computation time at least by
+60% against the best options available. We show both strategies present outstanding less disk
+spill and network communication. In fact, implementing a simple cascade of joins in Spark is far
+from being among the best options, which showcases the importance of the use of Bloom lter or
+broadcasting technique. Given that each of our strategies was built upon di erent hypotheses,
+we investigated their performance di erences and found that they are complementary: while
+SBJ is considerably faster when memory per executor is large enough bigger than 512MB, in
+our test case , SBFCJ seems greatly resilient to lack of memory. This de nes an application
+guideline for each of our solution. Lastly, SBFCJ and SBJ scale linearly with the database
+size, a necessary feature to any solution devoted to larger databases. Both solutions contribute
+as e cient and competitive tools to lter and retrieve data from, for instance, Cloud Data
+Warehouses.
+This paper is organized as follows. We start in Section 2 reviewing the main topics of our
+study: Star Join (Section 2.1), and MapReduce and Spark (Section 2.3). Then, in Section 3 we
+present related works. In section 4 we propose SBJ and SBFCJ in detail. Finally, we show our
+performance analyses in section 5, and our concluding remarks in section 6.
+
+2
+2.1
+
+Background
+Star Joins
+
+A star schema consists of a central table, namely fact table, referencing several satellite dimension tables, thus resembling a star [20]. This organization o ers several advantages over
+normalized transactional schemas, as fast aggregations and simpli ed business-reporting logic.
+For this reason, star schemas are used in online analytical processing (OLAP) systems. We
+show in Figure 1(a) an example of a star schema with one fact table F and four dimensions.
+Queries issued over this schema often involve joins between fact and dimensions tables. This
+operation is also called Star Join. In Figure 1(b), we show an example of a Star Join accessing
+75
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+D1
+
+D3
+
+pk1
+a1,1
+a1,2
+...
+
+pk3
+a3,1
+a3,2
+...
+
+D2
+pk2
+a2,1
+a2,2
+...
+
+F
+pkF
+fk1
+fk2
+fk3
+fk4
+m1
+m2
+
+D4
+pk4
+a4,1
+a4,2
+...
+
+(a)
+
+Brito et al.
+
+SELECT a2,1 , a3,2 , SUM(m1 )
+FROM F, D1 , D2 ,D3
+WHERE pk1 = fk1
+AND pk2 = fk2
+AND pk3 = fk3
+AND a1,1 < 100
+AND a3,1 BETWEEN 5 AND 10
+GROUP BY a2,1 , a3,2
+ORDER BY a2,1 , a3,2
+
+(b)
+
+Figure 1: Running example: star schema (a) and an example query Q (b).
+three dimension tables. Real-life applications usually have a large fact table, rendering such
+operations very expensive. A considerable share of this operation complexity dwells on the
+substantial number of cross-table comparisons. Even in non-distributed systems, it induces
+massive readouts from a wide range of points in the hard drive.
+
+2.2
+
+Bloom Filters
+
+Bloom lters are compact data structures built over elements of a data set, and then used on
+membership queries [23]. For instance, Bloom lters have been used to process star-join query
+predicates to discard unnecessary tuples from the fact table [27]. Several variations exist, but
+the most basic implementation consists of a bit array of m positions associated with n hash
+functions. Insertions of elements are made through the evaluation of the hash functions, which
+generates n values indicating positions set to 1.
+Checking whether an element is in the represented data set is performed evaluating the n
+hash functions, and, if all corresponding positions are 1, then the element may belong to the
+data set. Collisions may happen due to the limited number of positions in the bit array. If
+the number of inserted elements is known a priori, the ratio of false positives can be controlled
+setting the appropriate number of hash functions and array positions.
+
+2.3
+
+MapReduce and Spark
+
+The Apache Hadoop framework has successfully been employed to process star-join queries
+(see Section 3). Its processing framework (Hadoop MapReduce) is based on the MapReduce
+programming model [7]: jobs are composed of map and reduce procedures that manipulate
+key-value pairs. While mappers lter and sort the data, reducers summarize them. Especially
+for Star Joins, its processing schedule often results in several sequential jobs and excessive
+disk access, defeating the initial purpose of concurrent computation. Thus, it hinders the
+performance of even the simpler star-join queries.
+Conversely, the Apache Spark initiative provides a exible framework based on in-memory
+computation. Its Resilient Distributed Dataset (RDD) [15] abstraction represents collections
+of data spread across machines. Data manipulation is performed with prede ned operations
+over the RDDs, which are also able to work with key-value pairs. Applications are managed
+by a driver program which gets computation resources from a cluster manager (e.g., YARN).
+76
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Brito et al.
+
+RDD operations are translated into directed acyclic graphs (DAGs) that represents RDD dependencies. The DAG scheduler gets a graph and transforms it into sets of smaller tasks called
+stages, then sent to executors. The RDD abstraction of Spark has been presenting remarkable
+advantages. In special, Spark demonstrated to excel for machine learning tasks [29], as opposed
+to batch processing as the original Hadoop MapReduce s design. However, to the best of our
+knowledge, the star-join processing in Spark has not been addressed in the literature, which is
+the goal of this paper.
+
+3
+
+Related work
+
+Star schemas are notably important in decision support systems to solve business-report sort of
+queries [4], given volume of data in such applications [6]. OLAP operations applied on e cient
+data organizations are combined with state-of-art data mining techniques to produce accurate
+predictions and trends. For instance, OLAP over spatial data has gained much attention with
+the increasing access to GPSs in day-to-day life, and many solutions have been proposed using
+(Geographical) Data Warehouses [22, 13]. More recently, NoSQL solutions were also proposed
+to extend to more non-conventional data architectures [10].
+With on-demand hardware and the advent of convenient parallel frameworks, cloud computing has extensibly been applied to implement decision support systems [3, 2]. Cloud versions of
+star-schema based systems have been proposed in the last years. Hive, for instance, is a MapReduce solution to easily query distributed Data Warehouses using SQL [11]. Particularly, several
+algorithms were recently proposed to solve Star Joins using MapReduce. Some of them are
+designed for column-oriented data organizations [30, 28], while others were proposed for roworiented data (the context of the present paper) [18, 12, 27]. However, they all present high
+network communication and several sequential jobs, motivating new approaches [1]. These are
+challenging bottlenecks in distributed systems. In fact, some attempts to optimize (star) joins
+even propose changes on the MapReduce framework [25, 19]. Our approach to minimize disk
+spill and network communication (see section 4) is based on two algorithms studied by Blanas
+et al. [17], described below. More details on the row-oriented approaches will be discussed
+elsewhere.
+The MapReduce Broadcast Join (MRBJ, for short) rst applies predicates on dimensions,
+and then broadcasts the results to all nodes, where joins operations are solved locally. It is
+important to note that it requires all ltered dimension tables to t into the nodes memory,
+which may not be the case. A second strategy is the Repartition Join: it maps tuples from
+two tables according to their join keys, and performs the join operation on the reducers. This
+algorithm can be applied multiple times on sequential jobs to process star joins. We shall refer
+to this solution as MapReduce Cascade Join (MRCJ for short). Probably, a heavy downside of
+this approach is requiring N − 1 jobs to solve a join involving N dimensions. Thus, especially
+due to MapReduce s latency, its performance is likely to drop considerably in high-dimensional
+star schemas.
+
+4
+
+Star-Join Algorithms in Spark
+
+In this section, we present our algorithms to solve Star Joins: Spark Bloom-Filtered Cascade
+Join (SBFCJ) and Spark Broadcast Join (SBJ). In the following sections, we discuss each
+approach in detail. For short, fact RDD stands for the RDD related to fact table as dimension
+RDD, for a dimension table. Both algorithms solve query Q as de ned in Figure 1(b).
+77
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Brito et al.
+
+Algorithm 1 SBFCJ for Q
+input: F, D1 , D2 and D3
+output: result of Q
+1: RDD1 = D1
+2: RDD1 .ﬁlter( a1,1 < 100 ).mapToPair( pk1 , null )
+3: BF1 = broadcast( RDD1 .collect( ) )
+4: RDD2 = D2
+5: RDD2 .mapToPair(pk2 , a2,1 )
+6: BF2 = broadcast( RDD2 .collect( ) )
+7: RDD3 = D3
+8: RDD3 .ﬁlter( 5 ≤ a3,1 ≤ 10).mapToPair( pk3 , a3,2 )
+9: BF3 = broadcast( RDD3 .collect( ) )
+10: RDDF = F
+11: RDDF .ﬁlter( BF1 .contains(f k1 ) and BF2 .contains(f k2 ) and BF3 .contains(f k3 ) )
+12: RDDF .mapToPair( f k1 , [f k2 , f k3 , m1 ] )
+13: RDDresult = RDDF .join( RDD1 ).mapToPair( f k2 , [f k3 , m1 ] )
+14: RDDresult = RDDresult .join( RDD2 ).mapToPair( f k3 , [a2,1 , m1 ] )
+15: RDDresult = RDDresult .join( RDD3 ).mapToPair( [a2,1 , a3,2 ], m1 )
+16: F inalResult = RDDresult .reduceByKey( v1 + v2 ).sortByKey( )
+
+4.1
+
+Bloom-Filtered Cascade Join
+
+Cascade Join is the most straightforward approach to solve Star Joins. Spark framework performs binary joins through join operator using the key-value abstraction. Fact and dimension
+RDDs are lists of key-value pairs containing attributes of interest. Thus, the Star Join can be
+computed as a sequence of binary joins between these RDDs. For simplicity, we shall refer to
+this approach as Spark Cascade Join (SCJ).
+Based on the Cascade Join, we now add Bloom lters. This optimization avoids the transmission of unnecessary data from fact RDD through the cascade of join operations. These
+lters are built for each dimension RDD, containing their primary keys that meet the query
+predicates. Therefore, the fact RDD is ltered based on the containment of its foreign keys on
+these Bloom lters. We refer to this approach as Spark Bloom-Filtered Cascade Join (SBFCJ).
+Algorithm 1 exempli es SBFCJ for solving query Q. RDDs for each table are created in
+lines 1, 4, 7 and 10. Then, the ﬁlter operator solves predicates of Q in place (lines 2 and 8). For
+each RDD, attributes of interest are mapped into key-value pairs by the mapToPair operator.
+Dimension RDD keys are also inserted in Bloom lters broadcast to every executor (lines 3, 6
+and 9). The ﬁlter operator uses these Bloom lters over the fact RDD, discarding unnecessary
+key-value pairs in line 11. This is where SBFCJ should gain in performance compared to SCJ.
+Then, the fact RDD joins with resulting dimension RDDs in lines 13 15. Finally, reduceByKey
+and sortByKey performs, respectively, aggregation and sorting of the results (see line 16).
+
+4.2
+
+Broadcast Join
+
+Spark Broadcast Join (SBJ for short) assumes that all dimension RDDs t into the executor
+memory. Note that each node may have much more than one executor running, which may
+constrain the application of SBJ depending on the dataset speci cs. Dimension RDDs are
+broadcast to all executors, where their data are kept in separate hash maps. Then, all joins are
+performed locally in parallel. Since no explicit join operation is needed, SBJ is certain to deliver
+the faster query times. Note that, in general, Bloom lters are much smaller data structures
+78
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Brito et al.
+
+Algorithm 2 SBJ for Q
+input: F, D1 , D2 and D3
+output: result of Q
+1: RDD1 = D1
+2: RDD1 .ﬁlter( a1,1 < 100 ).mapToPair( pk1 , null )
+3: H1 = broadcast( RDD1 .collect( ) )
+4: RDD2 = D2
+5: RDD2 .mapToPair(pk2 , a2,1 )
+6: H2 = broadcast( RDD2 .collect( ) )
+7: RDD3 = D3
+8: RDD3 .ﬁlter( 5 ≤ a3,1 ≤ 10).mapToPair( pk3 , a3,2 )
+9: H3 = broadcast( RDD3 .collect( ) )
+10: RDDresult = F
+11: RDDresult .ﬁlter( H1 .hasKey(f k1 ) and H2 .hasKey(f k2 ) and H3 .hasKey(f k3 ) )
+12: RDDresult .mapToPair( [H1 .get(a2,1 ), H1 .get(a3,2 )], m1 )
+13: F inalResult = RDDresult .reduceByKey( v1 + v2 ).sortByKey( )
+
+than hash maps. Thus, memory-wise there probably is a balance between cases when SBJ and
+SBFCJ performs optimally - which will be veri ed in the experiments section. This approach
+is the Spark counterpart of the MRBJ, introduced in Section 3.
+Algorithm 2 details this approach applied on query Q. Hash maps are broadcast variables
+created for each dimension RDD in lines 3, 6 and 9, corresponding to lists of key-value pairs. It
+is important to note that these hash maps contain not only the dimension primary keys, but all
+the needed attributes. These hash maps are kept in the executor primary memory. Then, the
+ﬁlter operator access the hash maps to select data that should be joined in line 11. Since all the
+necessary dimension data are replicated over all executors, in line 12 the mapToPair operator
+solves the select clause of Q. As a consequence, there is no need to use the join operator at all,
+saving a considerable amount of computation.
+
+5
+
+Performance Analyses
+
+Next, we present performance analyses of our Spark solutions Spark Bloom-Filtered Cascade
+Join (SBFCJ) and Spark Broadcast Join (SBJ).
+
+5.1
+
+Methodology and Experimental Setup
+
+We used a cluster of 21 (1 master and 20 slaves) identical, commercial computers running
+Hadoop 2.6.0 and Apache Spark 1.4.1 over a GNU/Linux installation (CentOS 5.7), each node
+with two 2GHz AMD CPUs and 8GB of memory. To more intensive tests (i.e., Section 5.3), we
+used Microsoft Azure with 21 A4 instances (1 master and 20 slaves), each with eight 2.4GHz
+Intel CPUs and 14GB of memory. In both clusters, we have used YARN as our cluster manager.
+We have used the Star Schema Benchmark (SSB) [16] to generate datasets with volume
+controlled by the scale factor SF (see Table 1). The workload was composed of four star-join
+queries, namely Q3.1, Q3.4, Q4.1 and Q4.3. Queries of class Q3 deals with three dimensions,
+while class Q4 manipulates four dimensions. These queries also have di erent selectivities: 3.4%
+for Q3.1, 0.76 × 10−4 % for Q3.4, 1.6% for Q4.1 and 0.91 × 10−2 % for Q4.3.
+Unless stated otherwise, each result represents average and standard deviation over 5 runs,
+empirically determined to guarantee the mean con dence interval ±100s. All Spark implemen79
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Table 1: Dataset characteristics used in the experiments. We show
+the number of tuples in the fact table (# Tuples) and its disk size.
+SF
+# Tuples
+50
+300 millions
+600 millions
+100
+1.2 billions
+200
+2.1 billions
+350
+3 billions
+500
+3.9 billions
+650
+
+Brito et al.
+
+for each scaling factor SF
+Size (GB)
+30
+60
+130
+210
+300
+390
+
+tations used in the following sections are available at GitHub [5].
+
+5.2
+
+Disk spill, network communication and performance
+
+We show in Figure 2 how our approaches compare to MapReduce strategies (see Section 2.3)
+in terms of disk spill and network communication. To simplify the notation, every MapReduce
+based solution starts with MR, and the respective references are cited in the gures legend.
+Notice that all points referring to MapReduce de ne a trend correlating time performance to
+network communication and disk spill (orange line in Figure 2). Although Spark is known to
+outperform MapReduce in a wide range of applications, a direct implementation of sequences
+of joins (referred to as SCJ) delivers poor performances and follows the same trends as the
+MapReduce approaches. SBFCJ and SBJ, however, are complete outliers (more than 3-σ) and
+present remarkably higher performances. This highlights the need for additional optimizations
+applied on top/instead of the cascades of joins. In special, notice that both our strategies are
+closely followed by MapReduce Broadcast Join (MRBJ in the gure) and a MapReduce approach proposed by Zhang et al., which processes Star Joins in two jobs using Bloom Filters
+[27]. Next, we investigate in more detail each of these strategies.
+In Figure 2(a) SBFCJ and SBJ both optimize network communication and computation time
+using query Q4.1 with SF 100. As mentioned, excessive cross communication among di erent
+nodes is one of the major drawbacks in MapReduce algorithms. When compared to the best
+MapReduce approaches, SBJ presents 200 times lower data shu ing than MRBJ method and
+SBFCJ, a reduction of almost 96% against MRCJ. Finally, although the solution proposed by
+Zhang et al. does deliver ≈ 25% less shu ed data than SBFCJ, it still delivers a performance
+nearly 40% slower. Moreover, test in Figure 2(b) demonstrates one of the main advantages
+of Spark s in-memory methodology: although both best options in MapReduce have low spills
+(4GB for MRCJ and 0.5GB for MRBJ), both SBFCJ and SBJ show no disk spill at all. In
+this test, we have set Spark with 20 executors (on average, 1 per node) and 3GB of memory
+per executor. If we lower the memory, than we start seeing some disk spill from Spark and its
+performance drops. We study more on this e ect in Section 5.4.
+Yet, SCJ, which simply implements a sequence of joins, presents considerable higher disk
+spill and computation time when compared to SBJ and SBFCJ. Speci cally, not only SCJ has
+non-null disk spill, it is bigger than MapReduce best options, although 18% lower than its
+counterpart, MRCJ. SBFCJ and SBJ shu es, respectively, 23 and over 104 times less data
+than SCJ. Therefore, the reduced disk spill and time observed with SBJ and SBFCJ strategies
+are not only due to Spark internal structure to minimize nodes cross talk and disk spill. The
+bottom line is: application of additional techniques (Bloom lters or broadcasting) is essential
+indeed.
+80
+
+Faster cloud Star Joins with reduced disk spill and network communication
+18
+
+1
+17
+17
+
+27
+12
+
+(a)
+
+Brito et al.
+
+(b)
+
+Figure 2: Time performance in terms of (a) shuﬄed data and (b) disk spill. We present Map
+Reduce (red dots, legend with references to original papers) and Spark (blue dots) approaches,
+with the orange line showing the general trend of MapReduce approaches. We used SSB query
+Q4.1 with SF 100. Our approaches SBJ and SBFCJ require half data spill and about one third
+of the computation time of the best MapReduce available.
+It is important to note that this analysis assumed best performance of the MapReduce
+approaches. No scenario was observed where either of SBJ or SBFCJ trailed the other strategies.
+More details on MapReduce approaches to star-join processing will be discussed elsewhere.
+
+5.3
+
+Scaling the dataset
+
+In this section, we investigate the eﬀect of the dataset volume in the performance times of SBFCJ
+and SBJ. Methods in general must be somewhat resilient and scale well with the database size.
+Especially in the context of larger datasets, where solutions such as MapReduce and Spark
+really make sense, having a linear scaling is simply essential.
+In Figure 3 we show the eﬀect of the scale factor SF in the computation time considering
+three diﬀerent queries of SSB. To test both strategies, we have selected queries with considerable
+diﬀerent workloads. Especially in low SFs, as shown in Figure 3(b), a constant baseline was
+observed: from SF 50 to 200 the elapsed time simply does not change, revealing other possible
+bottlenecks. However, such datasets are rather small, and do not reﬂect the applications in
+which cloud approaches excel. SBFCJ and SBJ performances grow linearly with SF in all
+larger scale factors tested.
+
+5.4
+
+Impact of Memory per Executor
+
+As mentioned in Section 4.2, broadcast methods usually demand memory to allocate dimension
+tables. While SBJ has outperformed any other solution so far, scenarios with low memory per
+executor might compromise its performance. Next, we study how the available memory to each
+executor impacts both SBFCJ and SBJ. We have tested query Q4.1 with SF 200.
+81
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+(a) Query Q3.1.
+
+(b) Query Q3.4.
+
+Brito et al.
+
+(c) Query Q4.3.
+
+Figure 3: Impact of the Scale Factor SF in the performance of SCJ, SBFCJ and SBJ.
+
+(a) Executor memory of 1GB.
+
+(b) Executor memory of 512MB.
+
+Figure 4: Comparing SBJ and SBFCJ performances with (a) 512MB and (b) 1GB of memory
+per executor. SBJ seems reasonably sensitive to low memory cases.
+
+Parallelization in Spark is carried by executors. For a ﬁxed executor memory we studied how
+the number of executors change SBFCJ and SBJ performance. If enough memory is provided,
+performance usually follows trends shown in Figure 4(a), where 1GB was used. However, as
+the memory decreases, SBJ may be severely impacted while SBFCJ seems to be quite resilient.
+In our cluster, with this particular dataset, 512MB was a turning point: Figure 4(b) shows
+SBJ losing performance gradually. Below 512MB the diﬀerence becomes more pronounced. It
+is important to note that the speciﬁc value of this turning point (512MB in our tests) likely
+changes depending on the cluster, nodes’ conﬁguration and, possibly, dataset.
+To explore this eﬀect in detail, we tested the performance using 20 executors while decreasing
+their memory. Results in Figure 5(a) show SBJ drops in performance until a point where SBFCJ
+actually outperforms it (again, around 512MB). Furthermore, in Figure 5(a), from 450 to 400MB
+there is a stunning increase in computation time: it suddenly becomes more than three times
+slower. To make sure that this increase in time was not an artifact of a speciﬁc executor or
+node, we analyzed the average time elapsed by all tasks run by all executors. Figure 5(b)
+clearly shows that the elapsed time becomes approximately ﬁve times larger in this transition,
+suggesting that tasks are in general requiring more computation time. For 256MB, there was
+no enough memory to broadcast all dimensions. Comparatively, however, SBFCJ seems more
+resilient to the amount of memory per executor than SBJ, a feature that could be exploited
+82
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+(a)
+
+Brito et al.
+
+(b)
+
+Figure 5: Comparing SBJ and SBFCJ performances with 20 executors and variable memory. In
+special, panel (a) shows that SBJ’s performance is impaired with a decreasing memory, being
+outperformed by BCFJ eventually.
+
+(a) Total executors memory of 82GB.
+
+(b) Total executors memory of 30GB.
+
+Figure 6: Comparing SBJ and SBFCJ performances with ﬁxed total memory while increasing
+the number of executors. Only when the total available memory is lower (panel a) SBJ’s
+performance is impaired.
+
+depending on the resources available and application.
+Finally, in Figure 6 we investigated a slightly more realistic scenario: while ﬁxing the total
+memory, the number of executors increase and share memory equally. Thus, although the
+memory per executor is decreasing, all memory resources are always in use. As expected, with
+enough memory for each executor performance of both SBJ and SBFCJ increase (see Figure
+6(b)). Yet, similarly to Figure 4(b), if the number of executors is blindly increased without
+increasing resources, SBJ is severely impaired while SBFCJ’s performance remarkably remains.
+In conclusion, all results in this section point towards a trade oﬀ between these two approaches, and deﬁnes a clear guideline on how to choose depending on the cluster resources
+and dataset. Regardless of the number of executors, if their memory is enough to ﬁt dimension
+RDDs, SBJ may deliver twice faster query times; however, if memory is not enough, SBFCJ is
+the best solution available. It is important to stress that all results presented in this section
+would scale up with the SF. Thus, in larger SFs this turning point where SBJ slows down should
+be larger than 512MB.
+83
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+6
+
+Brito et al.
+
+Concluding remarks
+
+In this paper, we have proposed two approaches to e ciently process Star Join queries, reducing
+excessive data spill and network communication: Spark Bloom-Filtered Cascade Join (SBFCJ)
+and Spark Broadcast Join (SBJ). All tested MapReduce options trail both of these algorithms
+by at least 60% in terms of query execution time. It is important to stress that simply implementing a cascade of joins in Spark, namely, Spark Cascade Join (SCJ), was not enough to
+beat MapReduce options, showcasing the importance of using of Bloom lter or broadcasting
+techniques. We have also shown that both SBFCJ and SBJ scale linearly with the database
+volume, which poses them as competitive solutions for Star Joins in the cloud. While SBJ is
+usually faster (between 20-50%) when memory resources are abundant, SBFCJ was remarkably
+resilient in scenarios with scarce memory. In fact, with enough resources available, SBJ has no
+disk spill at all. To summarize, all of our results point towards a simple guideline: regardless
+of the number of executors, if their memory is enough to t dimension RDDs, SBJ may deliver
+twice faster query times; however, if memory is an issue, SBFCJ is the best solution and remarkably robust to low-memory infrastructures. Therefore, SBFCJ and SBJ both were shown
+competitive tting candidates to solve Star Joins in the cloud.
+Acknowledgments. Authors thank Dr. Hermes Senger for allowing us to use his laboratory cluster infrastructure. This work was supported by FAPESP, CAPES, CNPq, INEP, and
+FINEP. JJ Brito acknowledges FAPESP grant #2012/13158-9. T Mosqueiro acknowledges support from CNPq 234817/2014-3. JJ Brito, T Mosqueiro and CDA Ciferri acknowledge Microsoft
+Azure Research Award MS-AZR-0036P.
+
+References
+[1] F. N. Afrati and J. D. Ullman. Optimizing joins in a map-reduce environment. In EDBT 2010,
+pages 99–110, 2010.
+[2] V. S. Agneeswaran. Big Data Analytics Beyond Hadoop: Real-Time Applications with Storm,
+Spark, and More Hadoop Alternatives. Pearson FT Press, 2014.
+[3] Mehdi Bahrami and Mukesh Singhal. The role of cloud computing architecture in big data.
+In Witold Pedrycz and Shyi-Ming Chen, editors, Information Granularity, Big Data, and Computational Intelligence, volume 8 of Studies in Big Data, pages 275–295. Springer International
+Publishing, 2015.
+[4] Michael J. Berry and Gordon Linoﬀ. Data Mining Techniques: For Marketing, Sales, and Customer
+Support. John Wiley & Sons, Inc., New York, NY, USA, 1997.
+[5] J. J. Brito. Star joins in Spark. https://github.com/jaquejbrito/star-join-spark, 2015. [Online;
+accessed April 04, 2016].
+[6] S. Chaudhuri, U. Dayal, and V. Ganti. Database technology for decision support systems. IEEE
+Computer, 34(12):48–55, 2001.
+[7] J. Dean and S. Ghemawat. Mapreduce: simpliﬁed data processing on large clusters. Communications of the ACM, 51(1):107–113, 2008.
+[8] H. Demirkan and D. Delen. Leveraging the capabilities of service-oriented decision support systems:
+Putting analytics and big data in cloud. Decision Support Systems, 55(1):412–421, 2013.
+[9] A. Khajeh-Hosseini et al. Decision support tools for cloud migration in the enterprise. In IEEE
+CLOUD 2011, pages 541–548, 2011.
+[10] A. Sch¨
+atzle et al. Cascading map-side joins over hbase for scalable join processing. In Joint
+Workshop on Scalable and High-Performance Semantic Web Systems, page 59, 2012.
+
+84
+
+Faster cloud Star Joins with reduced disk spill and network communication
+
+Brito et al.
+
+[11] A. Thusoo et al. Hive - a petabyte scale data warehouse using hadoop. In ICDE 2010, pages
+996–1005, 2010.
+[12] H. Han et al. Scatter-gather-merge: An eﬃcient star-join query processing algorithm for dataparallel frameworks. Cluster Computing, 14(2):183–197, 2011.
+[13] J. J. Brito et al. Eﬃcient processing of drill-across queries over geographic data warehouses. In
+DaWak 2011, pages 152–166, 2011.
+[14] M. Li et al. Sparkbench: a comprehensive benchmarking suite for in memory data analytic platform
+spark. In Conf. Computing Frontiers 2015, pages 53:1–53:8, 2015.
+[15] M. Zaharia et al. Resilient distributed datasets: A fault-tolerant abstraction for in-memory cluster
+computing. In NSDI 2012, pages 15–28, 2012.
+[16] P. E. O’Neil et al. The star schema benchmark and augmented fact table indexing. In TPCTC
+2009, pages 237–252, 2009.
+[17] S. Blanas et al. A comparison of join algorithms for log processing in mapreduce. In SIGMOD
+2010, pages 975–986, 2010.
+[18] Y. Tao et al. Optimizing multi-join in cloud environment. In HPCC/EUC 2013, pages 956–963,
+2013.
+[19] David Jiang, Anthony K. H. Tung, and Gang Chen. MAP-JOIN-REDUCE: toward scalable and
+eﬃcient data analysis on large clusters. IEEE Transactions on Knowledge and Data Engineering,
+23(9):1299–1311, 2011.
+[20] R. Kimball and M. Ross. The Data Warehouse Toolkit: The Complete Guide to Dimensional
+Modeling. Wiley Computer Publishing, 2 edition, 2002.
+[21] J. P. Shim, M. Warkentin, J. F. Courtney, D. J. Power, R. Sharda, and C. Carlsson. Past, present,
+and future of decision support technology. Decision Support Systems, 33(2):111 – 126, 2002.
+[22] Thiago Lu´ıs Lopes Siqueira, Ricardo Rodrigues Ciferri, Val´eria Ces´
+ario Times, and Cristina Dutra
+de Aguiar Ciferri. Benchmarking spatial data warehouses. In 12th International Conference on
+Data Warehousing and Knowledge Discovery, pages 40–51, 2010.
+[23] S. Tarkoma, C. E. Rothenberg, and E. Lagerspetz. Theory and practice of bloom ﬁlters for
+distributed systems. IEEE Communications Surveys and Tutorials, 14(1):131–155, 2012.
+[24] Hugh J. Watson and Paul Gray. Decision Support in the Data Warehouse. Prentice Hall Professional Technical Reference, 1997.
+[25] Hung-chih Yang, Ali Dasdan, Ruey-Lung Hsiao, and Douglas Stott Parker Jr. Map-reduce-merge:
+simpliﬁed relational data processing on large clusters. In ACM SIGMOD International Conference
+on Management of Data, pages 1029–1040, 2007.
+[26] M. Zaharia, M. Chowdhury, M. J. Franklin, S. Shenker, and I. Stoica. Spark: Cluster computing
+with working sets. In 2nd USENIX Workshop on Hot Topics in Cloud Computing, 2010.
+[27] C. Zhang, L. Wu, and J. Li. Eﬃcient processing distributed joins with bloomﬁlter using mapreduce.
+Int. Journal of Grid and Distributed Computing, 6(3):43–58, 2013.
+[28] Guoliang Zhou, Yongli Zhu, and Guilan Wang. Cache conscious star-join in mapreduce environments. In 2nd International Workshop on Cloud Intelligence, pages 1–7, 2013.
+[29] B. Zhu, A. Mara, and A. Mozo. CLUS: parallel subspace clustering algorithm on spark. In ADBIS
+(Short Papers and Workshops) 2015, pages 175–185, 2015.
+[30] Haitong Zhu, Minqi Zhou, Fan Xia, and Aoying Zhou. Eﬃcient star join for column-oriented
+data store in the mapreduce environment. In 8th Conference on Web Information Systems and
+Applications, pages 13–18, 2011.
+
+85
+
+

@@ -1,0 +1,660 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 166–177
+ICCS 2016. The International Conference on Computational
+Science
+
+CUDA Optimization of Non-Local Means Extended to
+Wrapped Gaussian Distributions for Interferometric
+Phase Denoising
+Aaron Zimmer1 and Parwant Ghuman1
+1
+
+3vGeomatics Inc., Vancouver, Canada
+azimmer@3vgeomatics.com, parwant@3vgeomatics.com
+
+Abstract
+Interferometric Synthetic Aperture Radar (InSAR) captures hundreds of millions of phase
+measurements with a single image, which can be differenced with a subsequent matching image to
+measure the Earth’s physical properties such as atmosphere, topography, and ground instability. Each
+pixel in an InSAR image lies somewhere between perfect information and complete noise; deriving
+useful measurements from InSAR is therefore predicated upon estimating the quality (coherence) of
+each pixel, while also enhancing the information-bearing pixels through filtering. Rejecting noisy
+pixels at the outset and filtering the available information without introducing artifacts is crucial for
+generating accurate and spatially dense measurements. A capable filtering strategy must accommodate
+the diversity of manmade and natural ground cover exhibiting noise spawned by vegetation and water
+interwoven with useable signals echoed by infrastructure, rocks, and bare ground. Traditional filtering
+strategies assuming spatial homogeneity have lately been replaced by filters that honor discontinuities
+in ground cover, but two key improvements are needed: a) techniques must be adapted to enhance
+phase rather than amplitude, and b) runtime needs to be reduced to support deployment for operational
+land-information products. We present a new algorithm for wrapped phase filtering based on the nonlocal means algorithm (NLM) of Baudes et al. (2005) and the non-local InSAR (NL-InSAR) algorithm
+of Deledalle et al. (2011). The new filter, wrapped-NLM (WNLM), extends NLM to wrapped phase
+data that is inherently lossy due to an unknown integer number of phase ambiguities per pixel. The
+filter is similar to that of NL-InSAR in that we adopt their procedure of iteratively improving the
+filtered phase estimates by updating the Bayesian prior based on the previously filtered data (2009).
+Our filter differs from NL-INSAR in that it does not assume the Goodman model (1963) nor that of
+speckle noise (Goodman J. W., 2007) which were found to suffer in some areas due to having too
+many degrees of freedom; instead we use a more general assumption that the phase noise distribution
+is additive wrapped Gaussian, making the filter more robust to a larger variety of input data. This also
+simplifies the algorithm making it possible to implement an efficient parallel algorithm on the GPU
+using CUDA.
+Keywords: Non-local Means, Filtering, InSAR, Interferometry, CUDA, Phase Unwrapping, GPU Acceleration
+
+166
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.307
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+1 Introduction
+In Interferometric Synthetic Aperture Radar (InSAR) processing, we are interested in extracting
+unwrapped displacement signals from wrapped phase measurements. Most forms of analysis (e.g.
+model fitting or time series extraction) require that the phase be unwrapped as a first step. InSAR is a
+coherent imaging technique (Rosen, 2000), very similar to laser interferometry, but noisier due to
+temporal de-correlation resulting from many factors including atmospheric changes and seasonal
+changes in the dielectric properties of the Earth’s surface (Bamler, 1998); like other types of
+interferometry, it is subject to speckle noise and therefore filtering prior to unwrapping is necessary.
+Many wrapped phase filtering methods exist in the literature. The most well-known perhaps is the
+fringe accentuating adaptive spectral filter of (GWF) Goldstein and Werner (1998) for which many
+variants have been proposed; for instance, the combined low-pass and adaptive phase filter (CLAP) by
+(Hooper, 2007) and the Baran filter (2003). The problem with these types of filters is that they deform
+the phase in addition to making it smoother (an example is shown in Figure 1). Additionally, there are
+other filters that take either a directional
+window or local unwrapping approach; e.g.
+the Lee filter (Lee, 1998).
+Lately, the Non-Local InSAR algorithm
+(NL-InSAR) has become popular within the
+InSAR community because of its ability to
+jointly estimate all three of the relevant
+measurements in an interferometric image,
+amplitude, coherence, and phase. It does this
+by computing the weighted maximum
+likelihood estimates (WMLE) for each of
+these as derived by Seymour and Cumming
+(1994) for constant phase. The weights are
+meant to act as fuzzy joint indicators of how
+similar the underlying models are to that of
+the center pixels. However, in regions where
+the similarity measure has to choose between
+a neighbor with similar amplitude or slightly
+Figure 1 Simulated phase without noise (a),
+less similar phase it will choose to follow
+noiseless
+phase after filtering with WNLM (b) and
+along the similar amplitude lines and in some
+GWF (c), and a cross section showing the fringe
+cases even perpendicular to fringes, which
+deformation caused by GWF (d)
+causes blurring. Figure 2 shows what
+happens when a high amplitude line runs perpendicular to dense fringes.
+NL-InSAR seems to be significantly better at filtering the amplitude (see Figure 10), but most
+InSAR applications are primarily interested in the phase because the phase contains the precise
+displacement signal that can be used to monitor infrastructure in large cities, as one example. In
+practice, it is very difficult to infer anything about the phase or its quality from the amplitude
+measurements; for instance, in areas of layover the amplitude is high but the phase signal does not
+contain usable information.
+
+2 Theory
+The idea is to extend the probabilistic patch based approach for Gaussian noise reduction described
+by (Deledalle C.-A. , 2009) to wrapped Gaussian noise. We use the probability that the two patches
+are the same as the weights in a weighted maximum likelihood estimate (WMLE) for the mean phase
+
+167
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+of a wrapped Gaussian. Similar to Deledalle et al. we define the weights between two pixels (confined
+to be within a certain neighborhood) based on the likeness of their patches using Bayes rule:
+෢ ෢
+ሬሬሬሬሬԦ
+ሬሬሬሬሬሬԦ
+ሬሬሬሬሬԦ ሬሬሬሬሬሬԦ
+൫௜ǡ௝ ǡ ௫ǡ௬ ൯ ൌ Ȭ൫
+పǡఫ ǡ ௫ǡ௬ หߠ௜ǡ௝ ൌ ߠ௫ǡ௬ ሻ ‫ ڄ‬Ȭሺߠ௜ǡ௝ ൌ ߠ௫ǡ௬ ȁߠపǡఫ ǡ ߠ௫ǡ௬ ሻ ‫ ן‬Ȭ൫ߠ௜ǡ௝ ൌ ߠ௫ǡ௬ หపǡఫ ǡ ௫ǡ௬ ሻ
+
+(1)
+
+ሬሬሬሬሬԦ
+Where ௜ǡ௝ is the normalized complex pixel value at location ሺǡ ሻ in the image, 
+పǡఫ is a patch of
+෢
+pixels surrounding ௜ǡ௝ , ߠ௜ǡ௝ is the true denoised pixel value, and ߠపǡఫ is a previous estimate of this value
+(allowing us to refine the weights iteratively). Note that in non-local means, the assumption is that the
+probability that two pixels are the same is equivalent to the probability that all the pixels in a patch
+
+Figure 2 Simulated interferogram with second order speckle noise (top left) and the two
+corresponding intensity images (top middle and right); ground truth (bottom left), and filtered with
+NL-InSAR (bottom middle, amplitude causes streaking in the filtered phase), and filtered with
+WNLM (bottom right)
+
+surrounding them are the same. The prior term is a decaying exponential function of the KullbackLeibler divergence of the models estimated during the previous filtering steps and the likelihood term
+is the probability that the two patches are sampled from the same model; this requires marginalizing
+over all possible models, which can only be computed up to a constant factor in the exponent.
+Deledalle et al. derive the following equation for the Gaussian case
+
+൫௜ǡ௝ ǡ ௫ǡ௬ ൯ ൌ ݁
+
+೛ೌ೟೎೓భ ቀು೔శ೗ǡೕశ೘ షುೣశ೗ǡ೤శ೘ ቁ
+೓
+ర഑మ
+
+ି σ೗ǡ೘
+
+మ
+
+‫݁ڄ‬
+
+෣
+෣
+೛ೌ೟೎೓ భ ቀഇഢశ೗ǡണశ೘ షഇೣశ೗ǡ೤శ೘ ቁ
+೅
+഑మ
+
+ି σ೗ǡ೘
+
+మ
+
+(2)
+
+Where (l,m) are indices of pixels in a patch referenced to the center. We suggest replacing this with
+coherence weights for wrapped Gaussian distributed data based on the following observation. First we
+define the estimator for coherence between two patches as:
+
+168
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+ሬሬሬሬሬԦ
+ሬሬሬሬሬሬԦ
+หߛො൫
+పǡఫ ǡ ௫ǡ௬ ൯ห ൌ อ
+
+σ௣௔௧௖௛
+ܲ௫ା௟ǡ௬ା௠
+ܲ௜ା௟ǡ௝ା௠ തതതതതതതതതതത
+௟ǡ௠
+ܰ
+
+อ
+
+(3)
+
+Where N is the number of pixels in the patch. Then it can be derived that the expectation value for the
+ଶ
+ሻ, is:
+coherence, assuming that the phase noise of the pixels in patch (i,j) have distribution ܰሺߤ௜ǡ௝ ǡ ߪ௜ǡ௝
+మ
+഑మ
+೔ǡೕ శ഑ೣǡ೤
+
+ି
+ሬሬሬሬሬԦ
+ሬሬሬሬሬሬԦ
+‫ܧ‬ൣหߛො൫
+పǡఫ ǡ ௫ǡ௬ ൯ห൧ ൌ ݁
+
+మ
+
+ൌ݁
+
+೛ೌ೟೎೓ቀ‫ס‬ು೔శ೗ǡೕశ೘ ష‫ס‬ುೣశ೗ǡ೤శ೘ షഋቁ
+ಿ
+
+ି σ೗ǡ೘
+
+మ
+
+(4)
+
+Where we are defining ߤ to be the mean phase difference between the patches. Therefore, the expected
+value of the coherence is very similar to the likelihood term from equation (2) and so we interpret it as
+the probability that the two patches are the same - aside from a mean phase offset between each pixel
+that we will have to estimate, meaning that we’ve accrued some additional estimator variance due to
+the increased degrees of freedom.
+Defining the prior in the same way we get that the weights for the wrapped Gaussian case are:
+ሬሬሬሬሬԦ
+ሬሬሬሬሬሬԦ
+൫௜ǡ௝ ǡ ௫ǡ௬ ൯ ൌ หߛො൫
+పǡఫ ǡ ௫ǡ௬ ൯ห
+
+ఒభ
+
+ሬሬሬሬሬԦ
+ሬሬሬሬሬԦ
+෢
+෢
+‫ ڄ‬ቚߛොሺߠ
+పǡఫ ǡ ߠపǡఫ ሻቚ
+
+ఒమ
+
+(5)
+
+ሬሬሬሬሬԦ
+ሬሬሬሬሬԦ
+෢
+෢
+Where ߣଵ and ߣଶ are filtering parameters and ቚߛොሺߠ
+పǡఫ ǡ ߠపǡఫ ሻቚ is the coherence estimate between the
+previously filtered patches. The Cramer Rao lower bound on the estimator variance for the filtered
+phase is known to depend on the coherence and the window support (Touzi, 1999). Therefore we use
+the scaling parameters ߣଵ and ߣଶ to control the sum of the weights to add up to a specific value to
+ensure that the minimum estimator variance for every pixel is always the same (like risk
+minimization). We choose ߣଵ and ߣଶ such that:
+ሺͳ െ ߛ ଶ ሻଶ
+ଶ
+ʹߪ‫ס‬ఏ
+෡
+
+௡௘௜௚௛௕௢௥௛௢௢ௗ
+
+ൌ ‫ ݐݎ݋݌݌ݑݏݓ݋݀݊݅ݓ‬ൌ
+
+෍
+
+൫௜ǡ௝ ǡ ௫ǡ௬ ൯
+
+(6)
+
+௡ǡ௢
+
+Updating the support based on the previous coherence estimate helps prevent over smoothing and
+ensures that that coherence estimator is still accurate. Deledalle et al. take a different approach in that
+they recommend enforcing a minimum support and adapting that support based on indicators of
+isolated coherent pixels (i.e. persistent scatterers).
+
+Figure 3 Flow chart of the iterative WNLM algorithm (red indicates an optional step, rectangles
+represent data, and ellipses represent computations)
+
+169
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+3 Algorithm Description
+For ordinary NLM a simple optimization has been proposed (Condat, 2010), which converts the
+problem into a convolution. It turns out that using coherence to compute the similarity measure results
+in an even simpler formulation because the computation to compute the coherences for all the
+neighbor patches is exactly the convolution of the conjugate transpose of the middle patch with the
+surrounding neighborhood:
+ା௥௔ௗ
+
+ߛ௜ǡ௝ ሺ‫ݔ‬ǡ ‫ݕ‬ሻ ൌ ෍
+
+ା௥௔ௗ
+ற
+
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ሬሬሬሬሬԦ
+෍ തതതതതതതതതത
+ܲపା௟ǡఫା௠ ܲ௫ା௟ǡ௬ା௠ ൌ ቀܲ
+ቁ ሾ‫ݔ‬ǡ ‫ݕ‬ሿ
+పǡఫ ‫ܲ כ‬పǡఫ
+
+(7)
+
+௟ୀି௥௔ௗ ௠ୀି௥௔ௗ
+
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦis the matrix of pixels in the larger neighborhood around ܲ (the neighborhood
+Where ܲ
+௜ǡ௝
+పǡఫ
+defines how far away a pixel can look for similar neighbors) and rad is the radius of the patch.
+Equation (7) gives the weights for the first iteration of the algorithm. And the estimate of the phase
+defined in terms of this convolution is:
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ฬߛపǡఫ
+඀
+തതതതതതതതതതതതതതതതതതതത
+ߛపǡఫ ሺଓ ൅ ݊ǡ ଔ ൅ ‫݋‬ሻ ή ܲ௜ା௡ǡ௝ା௢ ർܲపǡఫ
+ൌ
+෍
+෍
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+݊‫݊݋݅ݐܽݖ݈݅ܽ݉ݎ݋‬
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ർߛ
+ฬߛపǡఫ
+඀
+௡ୀି௡௥௔ௗ ௢ୀି௡௥௔ௗ
+పǡఫ
+ା௡௥௔ௗ
+
+ߠ෢
+పǡఫ ൌ
+
+ା௡௥௔ௗ
+
+(8)
+
+Where nrad is the radius of the neighborhood. Therefore, the algorithm is equivalent to averaging a
+large number of pixels that have been projected onto the center patch. After the first iteration of the
+filter, we recompute the convolution using the previously filtered phase. We do this by multiplying the
+initial neighbor coherences with the neighbor coherences computed on the already filtered phase:
+ற
+
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+ሬሬሬሬሬԦ
+ᇱ
+෠పǡఫ ‫ כ‬ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ሺ‫ݔ‬ǡ ‫ݕ‬ሻ ൌ ߛ௜ǡ௝ ሺ‫ݔ‬ǡ ‫ݕ‬ሻ ή ฯ൬ߠ
+ߛ௜ǡ௝
+ߠ෠పǡఫ
+൰ ሾ‫ݔ‬ǡ ‫ݕ‬ሿฯ
+
+(9)
+
+Then the updated filter estimate is:
+
+ᇱ
+
+ߠ෢
+పǡఫ ൌ
+
+௡௘ప௚௛௕௢௢௥௛௢௢ௗ ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ᇱǡ௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ർܲ
+ฬߛపǡఫ
+඀
+పǡఫ
+
+(10)
+
+ᇱǡ௡௘ప௚௛௕௢௢௥௛௢௢ௗ ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ᇱǡ௡௘ప௚௛௕௢௢௥௛௢௢ௗ
+ሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬሬԦ
+ർߛ
+ฬߛపǡఫ
+඀
+పǡఫ
+
+The whole process is then iterated by feeding the
+newly filtered pixel values back into equation (9) (as
+shown in Figure 3). In practice it converges much
+faster than the NL-InSAR filter (3 iterations instead
+of 10).
+Finally, to compute the exponents in equation (5)
+we use a quasi–newton method to minimize equation
+(6) by locally approximating the relationship between
+the support and exponent as an exponential. This step
+is considered optional as it does add significant
+processing time to the algorithm and for the default
+neighborhood and patch sizes the effects of over- and
+
+170
+
+Figure 4 Runtime in seconds of the
+program for three iterations with varying
+number of pixels processed
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+under-filtering are mostly mitigated. Additionally, it is finicky and does not always converge;
+however, considerations such as always maintaining a large enough patch size (even along edges) and
+assuming that the exponents do not change very much between adjacent pixels can make it behave
+better. We refer to this version of the code as adaptive-WNLM (AWNLM) and are currently looking
+into ways of making it faster.
+
+4 Implementation
+NLM is a notoriously computationally expensive algorithm (Liu, 2008) (Coupé, 2006), and we
+therefore chose to implement it with CUDA. CUDA is easy to use and offers orders of magnitude
+increase in speed over multi-CPU implementations (Reza, 2015) (Yang, 2008) (Harish, 2007)
+(Sanders, 2010). Our program was implemented using CUDA version 5.5 and tested on a single
+GeForce GTX TITAN X with 12 GB of DRAM and compiled with compute capability 3.5.
+Our program comprises two kernels. The first computes the weights by doing a convolution in a
+neighborhood around each pixel location and the second uses the weights to compute the WMLE for
+the pixel. We chose to parallelize over the convolution kernel because this allows us to store the full
+neighborhood weights in memory and post-process to account for differences in the extent of support
+available to each pixel as discussed previously. The WMLE kernel was implemented as a sequence of
+parallel reductions based on Mark Harris’s code given in (2007) but modified so that multiple
+neighborhood reductions could be done in parallel. This accounts for only 12% of the total runtime.
+The main bottleneck of WNLM is the per pixel convolution, which accounts for 88% of the total
+
+Figure 5 For every additional block in the z-dimension, an additional 4 pixels are processed in
+parallel so that each of the 21x21 neighborhoods are split up evenly amongst the 42x42 grid of threads
+in the x- and y-dimensions
+
+171
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+runtime. Some literature exists for optimizing convolutions, focusing mainly on separable kernels
+(Podlozhnyuk, Image convolution with CUDA, 2007) or FFTs (Podlozhnyuk, FFT-based 2D
+convolution, 2007) to improve runtime. These optimizations were not useful for our specific task
+where we have to perform a large number of non-separable convolutions between very small images,
+7x7 and 21x21. We found that these patch sizes and neighborhood sizes respectively were optimal,
+which is in agreement with the literature (Buades, 2005); essentially trading off under-filtering patches
+with unique signals and over-filtering high coherence patches. Additionally, coherence is biased so
+that for a given patch size there is a minimum coherence (Touzi, 1999) such that if ߛ ൌ Ͳ then
+‫ܧ‬ሾȁߛොȁሿ ؆ ට
+
+గ
+
+ସே
+
+(for 7x7 it is around 0.13), which means that the larger the search window
+
+(neighborhood) the more weight this bias carries in the mean pixel summation. The Bayesian prior
+update helps to reduce the bias as well since completely incoherent patches will now have a bias
+
+Figure 6 Each convolution is split amongst the 7x7 thread blocks in the x- and y-dimension (A) so
+that each individual patch-wise dot product is computed by a unique set of seven threads along the zdimension by a combination of sequential/parallel (B) and parallel (C) reductions, then the full output
+of the convolution is stored in memory for post processing
+
+weight of 0.017=0.13*0.13 instead and effectively results in a minimum support of approximately
+21*21*0.017=7.45 (note that a 41x41 neighborhood would result in a minimum support of 28).
+Additionally, for such small windows an FFT based convolution yields no runtime benefits. Therefore,
+we decided to implement our own convolution kernel that performs multiple convolutions in parallel
+and is optimized for these specific patch and neighborhood sizes.
+Figure 4 shows the total runtime of our implementation of WNLM with 3 iterations for a number
+of image sizes. It varies linearly with the number of pixels such that for a 1 GB image (typical size) it
+takes roughly 8.5 minutes to perform three iterations (2 mins for a single iteration). Additionally, it
+varies linearly with the number of iterations (the first iteration is 1.56x faster than subsequent
+iterations). Given that orbital periods are every 11 days for TerraSAR-X data and every 24 days for
+RADARSAT-2 data and that typical turn around for processing is on the order of a day, this is an
+acceptable amount of time. Several optimizations were incorporated to achieve this performance.
+The first optimization was to use shared memory to store the center patch and the rest of the
+neighborhood. The kernel uses 3-dimensional thread blocks; the first two dimensions keep track of the
+
+172
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+Figure 7 Runtime on image with 1,776,000 pixels for varying number of blocks in the z-dimension
+and number of serial kernels per kernel (left), with graphs showing the same data projected onto the
+number of serial kernels axis (middle), and onto the number of blocks (z-dim) axis (right)
+
+(i,j) indices for four of the 21x21 neighborhoods as in Figure 5 (resulting in seven threads per block
+and 6 blocks in both the x- and y-dimension) and the z-dimension thread indices are used to parallelize
+over the columns of each individual patch (assuming row major storage order). This allows for a
+parallel reduction operation to be performed for each individual dot product in the convolution (see
+Figure 6) requiring more threads to be launched but increasing the number of parallel operations.
+The second optimization was to increase the occupancy by launching additional thread blocks in
+the z-dimension so that each of these additional thread blocks results in 4 additional pixels being
+processed in parallel (this number is bounded by shared memory between 1 and 11 in the current
+implementation, but could also be made independent). The effect this has can be seen in Figure 7.
+Interestingly, the peak performance occurs for 7 blocks resulting in a speedup of 2.42x over the single
+block version.
+The third optimization was simply to switch from double precision to single precision. Because all
+the reductions are performed in parallel this reduces the need for higher precision data types,
+especially considering that estimator variance (based on equation (6)) is around 0.05 for high
+coherence pixels), which is orders of magnitude larger than floating point rounding error. Therefore
+we compile our code with all available floating-point optimization flags (i.e. –use-fast-math). For one
+such test image we observed a max discrepancy from double precision of less than 10e-7. This
+resulted in another 2x speed up over the first and second optimization. This is likely due to the higher
+bandwidth of the single precision global memory accesses.
+The fourth optimization was spurred by the realization that for subsequent iterations of the
+algorithm, the convolution needs to be performed twice (once on the original image and a second time
+on the previous filter estimate); we realized this by not launching two kernels but instead launching a
+single kernel but repeating the same calculation twice inside the same kernel and found that the kernel
+speed was not 2x slower, instead it ran at nearly the same speed as the kernel from the first iteration.
+So we decided to take advantage of this effect by placing multiple serial kernel computations inside
+each of our CUDA kernels to gain additional speedups by reducing the latency of launching kernels.
+The effect of launching more serial kernels within a kernel can be seen in Figure 7. Optimizing both
+the number of blocks in the z-dimension and the number of serial kernels decreases the processing
+time from a maximum of 34.8 seconds to 6.72 seconds (>4x speedup, without accounting for latency
+due to memory transfers and IO operations).
+Another optimization strategy that we tried was to increase the ‘step size’ whereby we use the
+same weights for each WMLE in a 3x3 window, which theoretically should give a 9x speedup, but it
+turned out that the output was unusable because of block artifacts. Additional optimizations could be
+performed, for instance another 2x speedup can be achieved in theory by keeping track of a large
+sliding window of previously computed weights so as not to perform any repeated weight calculations.
+
+173
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+Also, another possible optimization is to compute multiple iterations per pixel in the same kernel
+launch using the ‘ghost zone’. But, probably the simplest optimization to try next would be to reduce
+redundant global memory reads by better utilizing shared memory and making use of the overlap
+between neighborhoods.
+
+5 Analysis
+The obvious property of NLM is that it relies heavily on the presence of similar pixels in close
+proximity, thus it works well in places with repeating patterns but poorly for isolated pixels. So the
+quality of the filtering changes throughout the entire image. However, it works remarkably well in
+most areas because redundancy in ground cover is ubiquitous regardless of geographic location and
+land use.
+The WNLM algorithm is conceptually similar to GWF prompting us to use GWF as a baseline
+comparison for WNLM result quality. WNLM almost always does better than GWF except near areas
+of aliasing where WNLM produces halo artifacts.
+For this analysis, multiple filters were applied to two different data sets to gauge WNLMs output
+quality. The first interferogram shown in Figure 8 is a 44-day TerraSAR-X interferogram with a
+perpendicular baseline of 2229 m imaging over an open pit mine. The WNLM outperforms both GWF
+and NL-InSAR on this data set in terms of overall noise reduction and fringe enhancement, perhaps at
+the cost of over-filtering some of the fine structures. NL-InSAR appears to have better resolution, but
+once again it produces streaky artifacts that appear to be correlated with amplitude more so than with
+the visible phase trend.
+
+Figure 8 Inteferogram over an open pit mine (TerraSAR-X) (a)(b) with a zoomed in look over a
+stockpile for 3 different filters, WNLM (note that it produces dense nearly aliased fringes on the left side
+of the stock pile where the other two filters open up) (c), GWF (d), and NL-InSAR (h=10,T=12) (e)
+
+174
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+Figure 9 InSAR image of the Lions Gate Bridge in Vancouver (top left, RADARSAT-2), filtered with
+AWNLM (top middle), GWF (top right), WMLE with weights computed temporally (bottom left), NLInSAR (bottom middle), and WNLM (bottom right)
+
+The second data set is over the Lions Gate Bridge in Vancouver (RADARSAT-2). It provides an
+actual dataset resembling the simulated example in Figure 2 due to the high amplitude bridge
+overlying the low amplitude water; therefore, we don’t expect NL-InSAR to do very well along the
+bridge. WNLM produces the best result on the bridge by ably capturing the fringe pattern; however,
+along the shoreline NL-InSAR appears to capture the coherence slightly better as can be seen in the
+coherence images of Figure 10. Furthermore, Figure 10 shows the filtered intensity of NL-InSAR,
+which is a remarkable result for speckle noise reduction. AWNLM was also run on this data set with a
+support set to a constant value of 6. It is a very conservative filter and therefore results in less noise
+reduction. However, it has very high coherence estimation resolution as isolated blips in phase noise
+are recorded as having low coherence, whereas the other filters bias this coherence upwards based on
+the surroundings.
+
+175
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+Figure 10 Intensity images from the two scenes comprising the interferogram in Figure 9 (top left
+and middle), intensity filtered by NL-InSAR (top right), and coherences computed with WNLM
+(bottom left), AWNLM (bottom middle), and NL-InSAR (bottom right)
+
+6 Conclusion
+We have created a new filter (WNLM) for denoising interferometric images by applying the
+framework described by Deledalle in his seminal work (2009) to wrapped Gaussian noise. We gave a
+theoretical justification for using the patch-wise coherence estimate as the similarity measure for
+WNLM. We outlined an implementation strategy using the CUDA programming language that led to
+efficient execution times (2 minutes per iteration for 1 GB images). We have also highlighted future
+work that can be undertaken to improve runtime. We introduced another filter, AWNLM, which we
+also plan to optimize further in the future. Finally, we demonstrated that WNLM’s interferometric
+filtering quality has high noise reduction while preserving fringe patterns and small features, without
+the artifacts generated by GWF and NL-InSAR. Filtering methods that compute weights temporally
+for WMLE are the standard for deep InSAR stacks comprising 15+ images. However, reliable
+temporal weights can neither be computed for stacks containing only a few images, and nor for terrain
+where neighbors are being continuously reset due to manmade surface disturbance (e.g. open pit
+mining). The WNLM filter thus fills an important gap that previously existed for small InSAR stacks,
+and for monitoring applications with rapid changes to ground cover. Acceleration of WNLM through a
+CUDA implementation on GPUs has been instrumental in enabling deployment in InSAR processing
+chains for operational applications. Currently, the two filters—temporal WMLE and WNLM—
+compute weights by utilizing either the temporal or the spatial dimension respectively. Forthcoming
+work will explore strategies for joint spatiotemporal estimation of weights with the intention of uniting
+these two powerful filters.
+
+176
+
+CUDA Optimization of Non-Local Means Extended to Wrapped Gaussian Distributions for
+Interferometric Phase Denoising
+Aaron Zimmer and Parwant Ghuman
+
+References
+Bamler, R. &. (1998). Synthetic aperture radar interferometry. 14(4), R1.
+Baran, I. S. (2003). A modification to the Goldstein radar interferogram filter. IEEE Transactions
+on Geoscience and Remote Sensing , 41(9), 2114-2118.
+Buades, A. C. (2005). A non-local algorithm for image denoising. 2, 60-65.
+Buades, A. C. (2005). A non-local algorithm for image denoising. In Computer Vision and Pattern
+Recognition (CVPR) , 2, 60-65.
+Condat, L. (2010). A simple trick to speed up and improve the non-local means.
+Coupé, P. Y. (2006). Fast non local means denoising for 3D MR images. In Medical Image
+Computing and Computer-Assisted Intervention–MICCAI 2006 , 33-40.
+Deledalle, C. A. (2011). NL-InSAR: Nonlocal interferogram estimation. 1441-1452.
+Deledalle, C.-A. (2009). Iterative Weighted Maximum Likelihood Denoising with Probabilisic
+Patch-Based Weights. 18.
+Goldstein, R. M. (1998). Radar interferogram filtering for geophysical applications. 25(21), 40354038.
+Goodman, J. W. (2007). Speckle phenomena in optics: theory and applications. Roberts and
+Company Publishers.
+Goodman, N. R. (1963). Statistical analysis based on a certain multivariate complex Gaussian
+distribution (an introduction). 152-177.
+Harish, P. &. (2007). Accelerating large graph algorithms on the GPU using CUDA . In High
+performance computing–HiPC , 197-208.
+Harris, M. (2007). Optimizing parallel reduction in CUDA. NVIDIA Developer Technology.
+Hooper, A. S. (2007). Persistent scatterer interferometric synthetic aperture radar for crustal
+deformation analysis, with application to Volcán Alcedo, Galápagos. 112(B7).
+Lee, J. S. (1998). A new technique for noise filtering of SAR interferometric phase images.
+Geoscience and Remote Sensing, IEEE Transactions on , 36(5), 1456-1465.
+Liu, Y. L. (2008). A robust and fast non-local means algorithm for image denoising. Journal of
+Computer Science and Technology , 23(2), 270-279.
+Podlozhnyuk, V. (2007). FFT-based 2D convolution. NVIDIA white paper.
+Podlozhnyuk, V. (2007). Image convolution with CUDA. NVIDIA Corporation white paper.
+Reza, T. Z. (2015). Accelerating persistent scatterer pixel selection for InSAR processing. IEEE
+26th International Conference on Application-specific Systems, Architectures and Processors (ASAP)
+(pp. 49-56). Toronto: IEEE.
+Rosen, P. H. (2000). Synthetic aperture radar interferometry. 88(3), 333-382.
+Sanders, J. &. (2010). CUDA by example: an introduction to general-purpose GPU programming.
+Chicago: Addison-Wesley Professional.
+Seymour, M. S. (1994). Maximum likelihood estimation for SAR interferometry. In Geoscience
+and Remote Sensing Symposium, IGARSS'94. Surface and Atmospheric Remote Sensing:
+Technologies, Data Analysis and Interpretation., International , 4, 2272-2275.
+Touzi, R. L. (1999). Coherence estimation for SAR imagery . IEEE Transactions on Geoscience
+and Remote Sensing , 37(1), 135-149.
+Yang, Z. Z. (2008). Parallel image processing based on CUDA. International Conference on
+Computer Science and Software Engineering. 3, pp. 198-201. IEEE.
+
+177
+
+

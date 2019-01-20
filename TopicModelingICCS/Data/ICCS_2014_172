@@ -1,0 +1,873 @@
+Procedia Computer Science
+Volume 29, 2014, Pages 910–923
+ICCS 2014. 14th International Conference on Computational Science
+
+Application-specific I/O Optimizations on
+Petascale Supercomputers
+Efecan Poyraz, Heming Xu, and Yifeng Cui
+University of California, San Diego, CA, U.S.A.
+{epoyraz, h1xu, yfcui}@ucsd.edu
+
+Abstract
+Data-intensive science frontiers and challenges are emerg ing as computer technology has evolved
+substantially. Large-scale simu lations demand significant I/ O workload, and as a result the I/O
+performance often becomes a bottleneck preventing high performance in scientific applications. In this
+paper we introduce a variety of I/ O optimization techniques developed and implemented when scaling
+a seismic application to petascale. These techniques include file system striping, data aggreg ation,
+reader/writer limit ing and less interleaving of data, collective MPI-IO, and data staging. The
+optimizations result in nearly perfect scalability of the target applicat ion on some of the most advanced
+petascale systems. The techniques introduced in this paper are applicab le to other scientific
+applications facing similar petascale I/O challenges.
+Keywords: Earthquake simulations, io optimizations, lustre striping, petascale io
+
+1 Introduction
+Advances in large-scale scientific co mputing have been driven by ever-imp roving highperformance computing architectures. Significant challenges are emerged in run -time I/O on
+heterogeneous systems when scaling data-intensive applications to petascale. Stencil-based 3D
+applications may require co mputation of billions of mesh points. While massive and optimized
+parallelization greatly accelerate large-scale calculations on thousands of computing cores, often the
+poor I/O operations drag down the throughput o f scientific applications. Imp roving the I/ O
+performance thus becomes essential in achieving highly scalable and efficient performance for large scale scientific applications.
+In this paper we introduce a variety of techniques developed and implemented to improve the I/O
+performance of an earthquake simu lation applicat ion, AWP-ODC (Cui et al., 2010, 2013). Th is code is
+used by the computational seismology community for large-scale ground motion simu lations that
+provide useful informat ion in the seismic hazard assessment. The I/ O optimizat ion techniques
+developed in this study are applicable to other scientific applications.
+
+910
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2014
+c The Authors. Published by Elsevier B.V.
+doi:10.1016/j.procs.2014.05.082
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+Several parallel I/O libraries are used in this study. The fundamental I/O library is the standard
+MPI-IO library (Argonne Nat ional Laboratory, 2014). Bu ilt on top of it co me A DIOS (Liu et al.,
+2013), Parallel-netCDF (Trac, 2014) and Parallel-HDF (HDF5 Group, 2014) lib raries. These libraries
+introduce self-descriptive header info rmation and efficient functionalities to handle I/O data, adding
+the implementation convenience to the raw MPI -IO library. The performance of these higher-level I/ O
+lib raries is, however, comparab le to the raw MPI -IO library. In this study, our primary focus is on
+MPI-IO and ADIOS lib raries. The techniques introduced can be applied to other high-level lib raries
+such as Parallel-netCDF and PHDF5 as well. We provide details of a variety of I/ O optimization
+techniques developed, with a discussion of pros and cons of each technique used, along with a
+summary of experimental results.
+The rest of the paper is organized as follows. Section 2 reviews related work in handing I/O in
+petascale. Section 3 introduces the application code AWP-ODC and its I/O requirements. Section 4
+discusses the optimizat ion techniques we have imp lemented, the tradeoffs among optimization
+techniques, and experimental results in detail. Finally Sect ion 5 concludes the paper including the
+overlook of future work.
+
+2 Related Work
+Petascale scientific applications often handle terabytes of input and ou tput data. A natural
+extension from s mall to large -scale simu lations is to have each Message Passing Interface (MPI) task
+to handle its own I/O operations. However each task accessing the file system individually through
+limited bandwidth may result in performance degradation. The MPI-2 standard defines a set of
+routines for accessing the file system, MPI-IO, which optimizes the I/O operations of the tasks.
+ROMIO (Argonne National Laboratory, 2014) is a popular imp lementation of MPI-IO that is available
+on numerous platforms. Recent versions of ROM IO are included within MPICH2 M PI co mp iler
+(MPICH, 2014) and supported in M VAPICH2 (Panda et al., 2013) and OpenMPI (Indiana University,
+2014), but not as a standalone release.
+Alternatively parallel I/ O lib raries can be used for collaboration between MPI tasks for imp roved
+I/O performance. These high-level libraries are Adaptable I/O System (ADIOS) (Liu et al., 2013),
+Parallel Hierarchical Data Format (PHDF) (HDF5 Group, 2014), and Parallel -netCDF (Trac, 2014,
+hereafter abbreviated as PnetCDF) etc.
+Open source Adaptable I/O System (ADIOS), developed by Oak Ridge Nat ional Laboratory,
+emp loys MPI-IO as its lo w level library for parallel file access. It supports file system operations using
+netCDF and HDF5 libraries as well. ADIOS files are self-descriptive, dynamic in terms o f merging
+files, and include metadata.
+With the need for the increased volume of data handled by scientific applications and changes of
+the compute and network architectures, more and more applications choose the high level I/O lib raries
+mentioned above to improve I/O performance. For instance Latham et al. (2012) improve I/ O
+performance of astrophysics code FLASH, using a different output file format for more efficient
+collective output writ ing together with PnetCDF library. Fu et al. (2010) experiment on different I/ O
+strategies on Blue Gene/L with computational fluid dynamics solver PHASTA, and they demonstrate
+significant 6.6GB/s read performance using synchronized collective I/O. Thakur et al. (1999) d iscuss
+the implementation of MPI-IO in ROM IO and show significant performance imp rovements that can
+be achieved with collective MPI-IO. Nisar et al. (2008) propose I/O delegate and caching system
+implemented in ROMIO for M PI-IO. Th is caching system, called data staging, allo ws applications to
+hand off I/O operations to a set of dedicated I/O nodes for cach ing and optimizations. Later Abbasi et
+al. (2010) introduce this concept into ADIOS.
+
+911
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+3 Anelastic Wave Propagation (AWP)
+Anelastic Wave Propagation (AWP-ODC, hereafter abbreviated as AWP) is a seismic wave
+propagation equation solver that has been optimized for d ifferent high performance co mputing
+systems for high-scalability and I/O performance (Cui et al., 2010). It has been used by Southern
+California Earthquake Center (SCEC) to support large-scale wave propagation simu lations. Recently
+AWP has been ported to C/CUDA for use on hybrid co mputing systems with GPUs (Cui et al., 2013).
+Three input files are involved in AWP:
+1) The parameter input file that lists the parameters of the simu lation includ ing input and output file
+paths, dimensions of the domain, deco mposition of the problem, length of the simulat ion and
+other parameters. It is read by only one MPI task and distributed to other tasks.
+2) The media input file that defines the structural properties of the 3D mesh. It is in binary format
+involving 3-8 static variables per mesh point. The simulat ion domain is deco mposed in 3D to
+create sub-domains, each of wh ich is computed by a single distinct MPI task. Each MPI task
+requires the parts of the media file that are relevant to its own sub -domain. The file size is in the
+order of MB up to TB.
+3) The source input file that contains the mo ment rate time histories of kinematic source description
+at a fin ite nu mber of po ints called sub-faults. It represents the driving forces of the physical events
+simu lated. The file defines the values to be added to some variab les in the simulation at some
+specific time instances at a specific set of mesh points. These kinematic sources are often
+converted from a 2D dynamic source produced by a separate 3D dynamic rupture simu lation,
+either using AWP-ODC or a separate solver. Only the MPI tasks that include the related mesh
+points need to access the data in the file. Th is results in an uneven distribution of the input data.
+The file size is in the order of KB up to TB.
+There are mu ltip le output files each of which contains a single variable fro m a set of time instances
+and a set of mesh points. In other words, the mesh points are samp led in space and time to buffer the
+variables to be written out. Depending on the chosen set of mesh points, the write load of MPI tasks
+may not be evenly distributed.
+Checkpointing involves fifteen 3D internal state variables at all times that are relevan t to the
+calculation. In AWP, only the latest checkpoint written is required for restarting the simulat ion. In
+general, checkpointing d istributes the I/O workload evenly among MPI tasks in regular structured grid
+computation. AWP checkpointing creates a nu mber of independent checkpoint files per MPI task.
+Hence to restart the simulation from a checkpoint, the same number of MPI tasks is required.
+
+4 Optimization Techniques and Experiments
+In this section we provide details of I/O optimization techniques we imp lemented along with some
+experimental results performed on Cray XE6 nodes of NCSA Blue Waters supercomputer. Blue
+Waters (NCSA, 2014) is a Cray XE6/ XK7 hybrid system with 22,500 XE6 nodes and 4,200 XK7
+nodes. Each XE6 node has 2 AMD Interlagos model 6276 CPUs with 2.3 GHz clock speed and 64GB
+memo ry. The interconnect is Cray Gemini with 3D torus topology. The scratch space of the file
+system implements Lustre v1.8.6 with a total size of more than 21 PB.
+
+4.1 Lustre Striping
+I/O optimizat ion is closely related to the underlying file system. Here our discussion is focused on
+the Lustre parallel file system (OpenSFS, 2014), which is widely used on Department of Energy
+(DOE) and Nat ional Science Foundation (NSF) supercomputers in cluding but not limited to OLCF
+Titan, NCSA Blue Waters, XSEDE Kraken, and TACC Stampede. An alternative to Lustre parallel
+
+912
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+file system is IBM’s General Parallel File System (GPFS) (IBM, 2014), which is used, for instance, in
+the NCAR-Wyoming Yello wstone. The striping property, however, is specific to Lustre. GPFS
+automatically takes care of striping.
+Lustre consists of metadata servers and targets (MDS and MDT), and object storage servers and
+targets (OSS and OST). The actual data is stored in OSTs. The fi les are divided into chunks, each of
+which may be stored in a different OST. Striping controls the number of OSTs that a file is stored in
+and the size of the chunks that the file is split into. There are two important variables of Lustre
+striping, called the stripe count and the stripe size.
+Stripe count defines the number of OSTs that the file chunks will be distributed over. In most of
+the Lustre systems, the largest number of OSTs available for a given file is 160 (e.g. Blue Waters and
+Titan). The default stripe count depends on the system, but typically either 1 or 4. If the stripe count is
+4, for instance, then the file is striped and distributed to at most 4 OSTs.
+Stripe size defines the maximu m size of a chunk of the file, 1 MB by default. If the file size is less
+than the stripe size, then there is only one chunk with size equal to the file size. However if the file
+size is larger, then mult iple chunks are created with the stripe size. After a file is divided into chunks,
+if the stripe count is larger than 1, then each consecutive chunk is stored in a different OST. The actual
+physical placement o f the chunks depends on the Lustre imp lementation and the current state of the
+file system.
+The stripe count and size are tuned according to the file size an d the number of MPI tasks that
+access the file. For instance, if there is only one MPI task accessing the file, the stripe count for that
+file needs to be one. On the other hand in a large simulation, if there are hundreds or thousands of MPI
+tasks that access the same file at the same time (with co llect ive read/write), the stripe count should be
+set to the maximu m (setting it to -1 ensures the maximu m OST usage).
+14
+No aggrega on
+Aggregate 10
+
+I/O performance (GB/s)
+
+12
+
+Aggregate 100
+10
+8
+6
+4
+2
+256
+
+512
+
+1024
+2048
+Stripe size (KB)
+
+4096
+
+8192
+
+Figure 1: I/O performance achieved for different structures of interleaved data with respect to different stripe
+sizes. Tests include 100 nodes each of which has 32 M PI tasks. Each M PI task writes out 128x128x128xT 4D
+data where T is the amount of aggregation in time. T=1 represents no aggregation, whereas T=10 represents
+aggregation of time dimension for 10 times. The file format is in fast-x, i.e. in the order of X, Y, Z, T; hence
+making X dimension the fastest. The total file sizes are 25GB, 250GB, and 2.5TB for T=1, 10, and 100
+respectively. Stripe count is set to -1.
+
+913
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+If the input/output file sizes are large, special attention needs to be paid to Lustre striping as Figure
+1 shows. The tests summarized in Figure 1 are done using 100 nodes with 32 MPI tasks each, resulting
+in 3,200 MPI tasks in total, on XE6 nodes of NCSA Blue Waters. The v irtual topology of the MPI
+tasks is 20×16×10. Each MPI task is responsible fro m a sub-domain of d imensions 128-cubic. We
+assume each MPI task creates 1, 10 and 100 values in time dimension for each mesh point it handles;
+T=1, 10, and 100 respectively. In this case each MPI task writes 1, 10 and 100 copies of 128×128×128
+floating-point numbers into their corresponding positions using collective MPI-IO calls by producing
+25GB, 250GB and 2.5TB files respectively. The file format follows the dimensions X, Y, Z and time in
+this order. In other words, two consecutive values are saved at the same time, and co rrespond to mesh
+points that are neighbors in X dimension. 128 KB is the s mallest stripe size Lustre accepts on Blue
+Waters. In all of the tests the stripe count was set to -1, indicating the maximu m stripe count of 160.
+Each MPI task writes 128*4=512 bytes of contiguous bytes since the size of a floating -point number is
+set as 4 bytes.
+In the case of stripe size 128 KB, the collect ive writing cannot be comp leted within 90 minutes.
+The fastest setting is for stripe size of 256 KB for all three test cases. As the stripe size increases, the
+I/O becomes less efficient in general. Figure 1 indicates that a bad choice of stripe size ca n affect the
+I/O performance significantly. For instance choosing a stripe size of 5 M B instead of 256 KB in the
+case of aggregating 100 times (Figure 1, green line) and writ ing out 2.5 TB of typical interleaved data
+can double the time spent from 6.5 to 13.6 minutes.
+22
+
+I/O performance (GB/s)
+
+21
+Average
+
+20
+
+Maximum
+
+19
+18
+17
+16
+15
+14
+13
+12
+128
+
+256
+
+512
+
+1024
+2048
+Stripe Size (KB)
+
+4096
+
+8192
+
+16384
+
+Figure 2: Output writing performance with respect to stripe size, when the number of writers is 3,200 M PI
+tasks, each of which write 262144×100×1 floating points in fast-x format. For each M PI task, each contiguous
+data chunk is 1M B. Each M PI task’s output data is split into 100 blocks in the file, contributing 100 M B into a
+total of 3200*100M B=312.5 GB output file. The circles represent the individual test results.
+
+Figure 2 shows the performance results fro m a similar test. In this test, 100 nodes write
+262144×100×1 floating-point numbers into a file. Note that in X d imension each MPI task writes
+262144*4=1 MB of contiguous data in fast-x format since the size of a floating-point number is 4
+bytes. This setting allo ws output writing o f less interleaved data with larger contiguous chunks, which
+requires larger stripe size. As can be seen, the optimal chunk size is 5M B (Figure 2), co mpared to
+256KB in Figure 1.
+Co mparing Figure 1 and 2, we can see that large-chunked and less-interleaved data achieve more
+than 21 GB/s, whereas more interleaved data achieve at most 12 GB/s. That says, about 75% more
+efficiency can be achieved by writing less interleaved larger contiguous blocks of data.
+
+914
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+Note that the circles in Figure 2 show the performance of indiv idual runs. Depending on the in itial
+position of the compute nodes in the system, the traffic in the network and the file system load, the I/ O
+performance may vary more than 20%.
+
+4.2 Single Serial Reading of Small Inputs
+For the small input file sizes, it is more efficient to read the input file by only one MPI task, and
+then distribute the data to other MPI tasks. This is because in general, the network around object
+storage target (OSTs) is busier since there may be other applicatio ns using the file system at the same
+time. A lso, the scheduler tries to allocate the compute nodes that are close to each other to the
+applications. Hence the network between the co mpute nodes is likely to have a higher bandwidth
+available to the application. Instead of competing with other applications for the limited bandwidth
+around OSTs, the application utilizes the availab le bandwidth in the network around the co mpute
+nodes.
+This method is efficient as long as the number of nodes and the input file size are s mall. Otherwise,
+the master MPI task must copy a large input data fro m the OST, and then distribute it to slave compute
+nodes that may be far away fro m each other. Sect ion 4.4 will discuss the experimental results in mo re
+details.
+A common mistake for scientific applicat ions with small inputs is to arrange all MPI tasks to read
+the same input file. This method can stretch the file system significantly, in part icular when using
+more than tens of thousands of processor cores.
+
+4.3 Multiple Serial Readings of Partitioned Large Inputs
+With the large input file sizes, it is no longer efficient to read the input files serially. In a
+simu lation with tens of thousands of MPI tasks with input file sizes in the order of terabytes, the first
+immed iate extension of serial reading is pre-p rocessing the input files, so that each MPI task still reads
+in an input file serially. The pros and cons of this method are summarized in Table 1. Note that stripe
+count is required to be set as 1 in this method as each file is acces sed by single MPI task.
+Table 1: Pros and cons of multiple serial readings of partitioned large inputs method.
+Pros
+Cons
+x Easy to implement
+x Too many access requests to OSTs
+x Parallel, independent, asynchronous accesses
+x Requires pre-processing to partition large
+to OSTs
+input file (doubles the disk space usage)
+x After setting stripe count to 1, file system
+x Once partitioned, application’s virtual
+handles load-balancing over OSTs
+topology has to match the pre-determined
+setting
+x Large number of small files is not efficient
+to maintain from file system’s perspective
+When the number of M PI tasks that contribute to reading is more than tens of thousands, file
+system may easily crash because of the inefficient metadata handling of the Lustre file system. One
+additional control is to use limited number of readers at a given t ime. This method requires
+synchronization among the tasks, however allows mu ltiple independent streams of I/O operations.
+Figure 3 co mpares the unlimited readers to limited readers approach. AWP imp lements limited readers
+control method in checkpointing. On the left, all MPI tasks are shown to access their own file chunks
+at the same time. On the right, we introduce synchronization, allowing only a g iven number of tasks to
+access the file system. After the current reader tasks are completed, the next group of tasks will be
+
+915
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+allo wed to access the file system. A lthough this approach requires additional synchronization, in large scale simulations it is more efficient and favored by the file system.
+Simultaneous usage of the network by all MPI tasks
+
+Rank 0
+Rank 0
+
+Rank 1
+Rank 1
+
+Rank 2
+Rank 2
+
+…
+
+Network
+
+Rank N
+
+Time shared network access control
+
+Rank 0
+Rank 0
+
+Rank 1
+Rank 1
+
+Rank 2
+Rank 2
+
+…
+
+Rank N
+
+Network
+
+…
+
+…
+
+Figure 3: M ultiple parallel file accesses versus time shared limited network access control. The left figure
+shows the MPI tasks accessing individual file chunks on all OSTs. The right figure shows the limit ed number of
+M PI tasks that are allowed to access the file system through additional synchronization.
+
+4.4 Collective Reading of Large Inputs using MPI-IO
+We use MPI-IO fo r collect ive large input reading and output writing in AWP. MPI-IO allows a
+detailed control on the access to the data in the file system. Figure 4 shows the access to the data using
+MPI-IO. On the top, the logical view of the file is shown. Different colors represent that the data is
+required by a different MPI task. For instance Rank 0 requires the data that is represented by blue in
+the figure. The input file is interleaved regularly because of the regular deco mposition of the problem.
+The colored groups of data are stored in OSTs as file chunks. The distribution of the chunks is
+optimized according to the load balancing, stripe count and size, etc. Then each MPI task accesses the
+OSTs to copy the data to their memo ry through collective MPI-IO calls. After the necessary MPI data
+types, file views and displacements are set, there is no room for optimization. To our experience, it is
+more efficient to use collective MPI-IO calls rather than many asynchronous read calls mentioned in
+Section 4.3.
+In the past, MPI-IO and Lustre were not able to handle h ighly interleaved read requests. Prepartitioning was an effective approach to avoid the MPI -IO performance issues specific to architecture
+configurations. Time shared network access control method could also be added so that file system is
+not loaded too much. However on advanced supercomputers, the newer version of MPI-IO and Lustre
+configurations now generate stable and scalable results for large nu mber of MPI tasks to access the
+specific port ions of the file. We assume that it is globally known which portions of the file will be
+required by wh ich MPI tasks. This applies to the computation domain structure input file (media file in
+AWP).
+When it is unknown wh ich MPI tasks need to read which parts of the file without opening the file,
+then it is not possible to use collective MPI -IO calls, neither other high-performance I/ O lib raries, to
+read the input file. The input file, in this case, needs to be pre-processed so that different portions of
+
+916
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+the file are identified for specific MPI tasks. Only upon the availability of this information, we are able
+to use collective I/O libraries, e.g. MPI-IO.
+P4Q0X1H%
+@0. V %43%2E. %
+H15Q. %W. ; E%
+076F2%GH. %
+47%GH. %
+; >; 2. W%
+
+DEF79. / %
+W. ; E%/ 121%
+12%MNO; %
+
+MNO%"%
+
+MNO%&%
+
+MNO%%$
+
+7. 2V 459%
+
+DEF79. / %
+W. ; E%/ 121%
+345%.1XE%
+- J Y%21; 9%
+
+L 179%I%
+
+L 179%"%
+
+L 179%! $
+
+Figure 4: The logical representation of the collective reading of large input file. The example shows the
+media/mesh input file. Each M PI task requires accessing a certain subset of the file chunks, which are distributed
+across multiple OSTs. Collective M PI-IO call optimizes the communication and hence necessary chunks are read
+by each M PI task.
+
+Figure 5 co mpares the input reading methods discussed above. Each node has 32 MPI tasks. Each
+MPI task reads in 3 variables per mesh point they co mpute. Each variable is 4 b ytes in the file. Hence
+data for each mesh point is contiguous 12 bytes. The order of the data for each mesh point is in X, Y, Z
+dimensions respectively. The virtual topologies of the test cases for 2, 10 and 100 nodes are 4 ×4×4,
+8×8×5, and 20×16×10 respectively. The figure depicts the nu mber o f mesh point data read per second
+per node. As can be seen fro m the figure, mu ltip le serial readings method (Section 4.3) is the most
+efficient in all test cases. However if we take partit ioning costs into account, co llective MPI-IO
+becomes the most efficient method for 2 and 10 nodes cases. In 100 nodes case, multip le serial
+readings method is the most efficient method. Note that when we have 100 nodes, the total nu mber of
+MPI tasks is 3200. Hence there are 3200 individual small files on the input path. Although multip le
+serial readings may be more efficient in terms of I/O performance, we cannot use this method for
+larger cases because of the cons discussed in Table 1. Hence collective MPI-IO method is favored.
+Figure 6 focuses on smaller inputs and compares single serial read ing (Section 4.2) and collective
+MPI-IO reading in the case of small input files. One XE6 node (32-cores) is used. As the figure shows,
+when input file is very small (375 KB), single serial read in g method is more efficient than collective
+MPI-IO. However when the input file size is in the order of M B, collective MPI-IO becomes mo re
+efficient.
+
+917
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+Single serial reading
+
+Collec ve MPI-IO reading
+
+Mul ple serial readings
+
+Mul ple serial readings with par
+
+oning costs
+
+# Mesh points read per second per node
+
+1.E+08
+1.E+07
+1.E+06
+1.E+05
+1.E+04
+1.E+03
+1.E+02
+1.E+01
+1.E+00
+2
+
+10
+# Nodes
+
+100
+
+Figure 5: The performance comparison for the different input reading methods described in Sections 4.2, 4.3
+and 4.4, namely single serial reading and distributing the data, collective M PI-IO calls, and multiple serial
+readings of partitioned input file. The forth data incorporates partitioning costs to the multiple serial readings
+method.
+70
+Single serial reading
+I/O performance (MB/s)
+
+60
+
+Collec ve MPI-IO reading
+
+50
+40
+30
+20
+10
+0
+375KB
+
+3MB
+Input file size
+
+10MB
+
+Figure 6: The performance comparison of different input reading methods: single serial reading (Section 4.2),
+and collective M PI-IO reading (Section 4.4) in the case of small inputs.
+
+4.5 Trade-off of Computation to Reduced Outputs
+There is a trade-off between co mputation and the amount of output data written, in general. Our
+goal is to reduce the file system access and thus improve overall co mputation performance.
+Co mbin ing the post-processing operations with the simu lation co mputation is able to avoid
+intermediate results written to the file system (see Figure 7). This approach is efficient for I/ O
+
+918
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+performance (less data is written) as well as time -to-solution (the entire wall clock time required to
+complete the computation).
+
+Classical approach,
+i.e. post-processing
+tools produce the
+small end results
+
+Simulator
+
+Simulator
+Outputs
+
+Post
+Processor
+
+End
+Results
+
+Compute
+I/O
+
+Post-processing is
+included in the
+simulator which
+produces the small
+end results directly
+
+Intermediate results
+
+Simulator
+
+Post
+Processing
+
+End
+Results
+
+Compute
+I/O
+
+Figure 7: Post-processing is included in the simulator, so that the large intermediate results are not included
+in the I/O operations. At the end, simulator can output small end results, which improves I/O performance and
+time-to-solution.
+
+Incorporating post-processing operations during computation may be tricky because of the extra
+resources required. However once the simu lator is done with the simu lation, it can free up the
+resources it was using during the simulation (for instance memory).
+In our GPU-based solver AWP-GPU, we have introduced an application programming interface,
+which is based on small and light weighted pthread modules to allow the intermediate results to be
+processed to compute end results while the simu lator is co mputing the simulation. That way we
+minimize the amount of total output for improved I/ O performance, as well as improved time -tosolution. Details of this approach will be addressed in a future publication.
+
+4.6 Data Staging
+Staging, which refers to reading inputs or writ ing outputs in mu ltip le stages, is efficient when the
+number of MPI tasks and the amount of data are small. This method reduces the number of
+readers/writers and utilizes the availab le netwo rk between the co mpute nodes, rather than the network
+around OSTs. It also allows less interleaved data access because of the combination operation, with a
+stripe count dependent upon the contiguous data that the readers read or writers write and the amount
+of interleaving.
+Another approach is to have a set of dedicated I/O nodes to buffer and optimize I/O operations as
+discussed by Abbasi et al. (2010). This approach can be used with ADIOS in larger simu lations since
+larger memory is available to buffer the outputs. However it increases the amount of resources
+required for applications.
+In AWP we support data staging as a large input reading method. The large, highly interleaved
+med ia input data is read by a subset of MPI tasks in large contiguous chunks. Then the data is
+distributed to other MPI tasks using asynchronous point-to-point communicat ions. This two later I/ O
+method allo ws the user to optimize I/ O performance by choosing the two layer data decomposition
+specific to the g iven simulat ion setting. Moreover, it does not use any additional nodes for file system
+access.
+
+919
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+4.7 Fast-X and Fast-T File Format
+Depending on the file format chosen, the output data may be more or less interleaved, or post processing operations may be more or less efficient as discussed in Latham et al. (2012). In mu ltidimensional scientific outputs, the order of the dimensions in the data format is important. Our design
+allows the data format to be switched between fast-space (or fast-x) and fast-time (or fast-t) (Figure 8).
+Fast-time format (two consecutive values belong to the same variab le’s different values in time)
+produces less interleaved, larger chunks of output data. The reason is that the entire time dimension is
+computed in the same MPI task. Fo r time do main signal analysis, fast -time format is mo re efficient.
+On the other hand, for visualization operations, which require p lane/volume data at a specific time
+instance, fast-x format is more efficient. These file formats are designed for use with low-level MPIIO. High-level I/O libraries have their own file formats taken care of.
+
+123456$
+
+B $! "#"$%&' $( ) *$!
+
+! "#"$%&' $( ) *$+$
+! "#"$%&' $( ) *$, $
+: *;&<.#=$&%$
+) *>?$- &./ #>$
++0+0+$
+
+, 0+0+$
+
+" #$%&$%' (
+
+!"#$%&'(&
+B$
+
+7 60+0+$
+
+: *;&<.#=$&%$) *>?$- &./ #>$./ $6$"@.>$
+! "#"$%&' $) *>?$- &./ #>$./ $6$"@.>$
+
++0, 0+$
+
+, 0, 0+$
+
+B$
+
+7 607 80
++$
+
++0+0, $
+
+B$
+
+7 607 80
+7 9$
+
+: *;&<.#=$&%$) *>?$- &./ #>$./ $#?*$A' >#$68$- ;"/ *$
+
+123454$
+
+! "#"$%&' $) *>?$- &./ #>$./ $#?*$A' >#$
+89$- ;"/ *$
+
+! "#"$%&' $- &./ #$ ! "#"$%&' $- &./ #$
+! "#"$%&' $- &./ #$
+! "#"$%&' $- &./ #$
+B $ ! "#"$%&' $- &./ #$ B $ 7 607 80+$ B $ 7 607 807 9$
++0+0+$
+, 0+0+$
+7 60+0+$
+: *;&<.#=$&%$
+) *>?$- &./ #>$
+!"#$%&'(&
+4.) *$+$
+
+4.) *$, $
+
+4.) *$C$
+
+B$
+
+4.) *$! " #$%&$%' (
+
+Figure 8: Figure shows two different output file formats. Fast-x format groups output variables according to
+the time index first (slowest dimensions). Then the variables are sorted according to the location of the mesh
+points in dimensions X, Y, and Z respectively. Fast-t format groups the variables according to the mesh point
+location. For each mesh point, all the aggregated variables (in time) are sorted in time index.
+
+4.8 Serial Writings and Collective MPI-IO for Output Data
+The output data writ ing methods, including mult iple serial writings and collective M PI-IO, are
+similar to input reading methods introduced in Sections 4.3-4.4, but in reverse order.
+Multiple serial writ ings involve writer MPI tasks to write their own output data to individual files.
+As discussed before, this method increases the load on the file system due to concurrent file access
+requests. When the number of tasks is very large, file system may not be able to handle the load.
+Collective MPI-IO output writing method utilizes MPI-IO. In Lustre systems the optimal striping
+needs to be done for both methods.
+We use ADIOS for checkpointing, supported by Scott Klasky and Norbert Podhorszki of ORNL,
+each MPI task writes its own ADIOS file. The performance co mparison test is done using 87.5 billion
+mesh points using 87,500 OLCF Jaguar cores for up to 3 hours. 3.3TB of simu lation data was written
+
+920
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+out. ADIOS checkpointing imp lementation achieved 22.5GB/s performance compared to MPI -IO
+performance of around 20GB/s at that scale.
+
+4.9 Input/Output Data and Memory Optimizations
+The simu lation parameters allocate certain amount of memo ry. After that, the remain ing memory
+can be utilized to improve I/ O performance. One way to use the remaining memory is output data
+aggregation, and another way is to dynamically buffer large input.
+When a snapshot of the variables is buffered for writ ing, it may not be efficient to flush the buffers
+to the file system immed iately. Instead, a couple of more snapshots may be buffered in the memo ry,
+and then this aggregated data may be flushed to the file system. For the specific test condition
+mentioned in Sect ion 4.1, the I/O performance is at most 9.4 GB/s without data aggregation. However
+when the data is aggregated 10 t imes with a total size of 250 GB output data, the I/O performance g oes
+up to 12.3 GB/s with a performance improvement of 31%. Aggregating data further for a total of 100
+times with an output file o f size 2.5 TB reduces the I/O performance by 32% to 6.4 GB/s co mpared to
+the case without aggregation. Too much aggregation can result in performance degradation. This is
+because increased aggregation requires more interleaved data creation, hence affecting the
+performance negatively.
+
+D .#?&G#$&G#- G#$
+"KK' *K"( &/ $
+
+N ' .#*' $+$
+N ' .#*' $, $
+N ' .#*' $C$
+
+N ' .#*' $M$
+
+D .#?$&G#- G#$"KK' *K"( &/ $
+
+<&) - G#"( &/ $
+
+<&/ #' &;$>.K/ ";./ K$
+
+&G#- G#$H"#"$<&) ) G/ .<"( &/ $
+
+N ' .#*' $+$
+N ' .#*' $, $
+N ' .#*' $C$
+
+N ' .#*' $M$
+
+( ) *$
+
+Figure 9: Application timing with and without output data aggregation. In the case of no outp ut aggregation,
+every time outputs are being written there is control signaling included in M PI-IO calls. However if there is
+output aggregation, the total amount of control signaling needed is smaller. M oreover the output data
+communication requires less time because it is more efficient to communicate larger chunks of data in the
+network.
+
+Aggregation is also beneficial to reduce file system access by reducing the number of output files.
+Figure 9 illustrates the simu lation time co mparing writ ing output wit h and without output aggregation.
+The maximu m amount of aggregation is limited by the free memory available in the compute node
+while the simulation takes place.
+
+921
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+5 Conclusions
+In this paper we demonstrate mult iple efficient techniques for I/O optimizations of large-scale
+scientific applications. A data-intensive seismic application, AWP-ODC, is used as an examp le to
+illustrate the efficiency of these techniques that are applicable to other scientific applications.
+As a guideline, we discussed the I/O solutions separated in small and large cases. Single MPI task
+is recommended to collect and distribute the data interacting with the file system for small cases. For
+large cases, it is more efficient to distribute the I/O load to different portions of the network by
+increasing the OSTs as well as readers/writers.
+The experimental results indicate that smaller Lustre stripe size (256 KB) is more efficient for
+highly interleaved data with small contiguous bytes of chunks, while larger Lustre stripe size (5 MB)
+is preferred for the data with larger contiguous chunks. The data aggregation is shown to have a
+significant impact on the I/O performance and scaling. There is a trade-off for allocating memory
+between the computation and buffered I/O. Any decision given may require carefu l optimization of the
+striping on Lustre systems. The I/ O performance tuning is strongly related to the underly ing system
+(e.g., Lustre) and the I/O operations in the application.
+In particular, we discussed multip le serial data access to partitioned large files, limiting the nu mber
+of readers/writers in mult iple serial accesses, collective data access using MPI-IO, and data staging in
+MPI-IO. Each of these methods has advantages and disadvantages. Depending on the simulation
+settings, optimal choice of the I/O method and setting results in nearly optimal performance of our
+target scientific application.
+Near future work of our I/O develop ment is to optimize I/O for parallel pthread modules. Because
+of the limitation of MPI-IO, there is a limit on the maximu m nu mber of pthread modules that can
+contribute to collective MPI-IO. Hence how to optimize I/ O operations when there are mu ltip le
+modules is an open problem, in particular for simulations on the petascale heterogeneous systems.
+
+Acknowledgements
+We thank Jun Zhou for his contribution to the development of the fast -t method discussed in this
+paper, and Kwangyoon Lee for his optimizat ion to collective M PI-IO method for seismic input data.
+Blue Waters computing resource was provided by NCSA through Petascale Research in Earthquake
+System Science on Blue Waters PRAC (Petascale Co mputing Resource Allocation) und er NSF award
+number OCI-0832698. Th is work uses allocation awarded by the Extreme Science and Engineering
+Discovery Environment (XSEDE), which is supported by National Science Foundation grant number
+OCI-1053575. Testing and computations are also performed on Titan at the Oak Ridge Nat ional
+Laboratory was supported under DOE Contract No. DE-AC05-00OR22725. Th is work is supported by
+NSF So ftware Environ ment fo r Integrated Seismic Modeling (OCI-1148493), and Southern Californ ia
+Earthquake Center which is funded by NSF Cooperative Agreement EAR-0529922 and USGS
+Cooperative Agreement 07HQAG0008.
+
+922
+
+Application-speciﬁc I/O Optimizations on Petascale Supercomputers
+
+E. Poyraz, H. Xu and Y. Cui
+
+References
+Abbasi, H., Wolf, M ., Eisenhauer, G., Klasky, S., Schwan, K., and Zheng, F. (2010). DataStagger:
+scalable data staging services for petascale applications. Cluster Co mputing 2010, no. 13, pp. 277-290.
+doi:10.1007/s10586-010-0135-6
+Argonne National Laboratories. (2014). ROMIO: A high-performance, portable MPI-IO
+implementation. http://www.mcs.anl.gov/research/projects/romio/
+Cui, Y., Olsen K.B., Jordan, T.H., Lee, K., Zhou, J., Small, P., Roten, D., Ely, G., Panda, D.K.,
+Chourasia, A., Levesque, J., Day, S.M ., Maechling, P. (2010, November). Scalable earthquake
+simu lation on petascale supercomputers. High Performance Co mputing, Net working, Storage and
+Analysis (SC), 2010 International Conference for. IEEE, 2010.
+Cui, Y., Poyraz, E., Olsen, K.B., Zhou, J., Withers, K., Callaghan, S., Larkin, J., Guest, C., Choi,
+D., Chourasia, A., Sh i, Z., Day, S.M ., Maechling, P.J., Jordan, T.H. (2013, November). Physics-based
+seismic hazard analysis on petascale heterogeneous supercomputers. Proceedings of SC13:
+International Conference for High Performance Co mputing, Net working, Storage and Analysis. ACM,
+2013.
+Fu, J., Liu, N., Sahni, O., Jansen, K.E., Shephard, M.S., and Carothers, C.D. (2010). Scalable
+parallel i/o alternatives for massively parallel partitioned solver systems. IEEE International
+Symposium on Parallel and Distributed Processing, Workshops and Phd Forum 2010.
+HDF5 Group. (2014). HDF5. http://www.hdfgroup.org/HDF5/
+IBM. (2014). General parallel file system. http://www-03.ibm.co m/systems/software/gpfs/
+Indiana University. (2014). Open MPI: Open source high performance computing .
+http://www.open-mpi.org/
+Latham, R., Daley, C., Liao, W., Gao, K., Ross, R., Dubey, A., and Choudhary, A. (2012). A case
+study for scientific I/ O: improving the FLASH astrophysics code. Computational Science and
+Discovery 5. doi:10.1088/1749-4699/5/ 1/015001
+Liu, Q., Logan, J., Tian, Y., Abbasi, H., Podhorszki, N., Choi, J. Y., Klasky, S., Tchoua, R.,
+Lofstead, J., Old field, R., Parashar, M., Samatova, N., Schwan, K., Shoshani, A., Wolf, M ., Wu, K.
+and Yu, W. (2013). Hello ADIOS: the challenges and lessons of developing leadership class I/O
+frameworks. Concurrency Computation: Practice and Experience. doi: 10.1002/cpe.3125
+MPICH Group. (2014). MPICH. http://www.mpich.org/
+National Center for Supercomputing Applications (NCSA). (2014). Enabling discovery: blue
+waters. http://www.ncsa.illinois.edu/enabling/bluewaters
+Nisar, A., Liao, W., and Choudhary, A. (2008). Scaling parallel i/o performance through i/o
+delegate and caching system. Supercomputing 2008.
+Oak Ridge Leadership Computing Facility (OLCF). (2014). Titan. http://www.olcf.ornl.gov/titan/
+OpenSFS Group. (2014). Lustre Community. http://lustre.opensfs.org/
+Panda, D.K., To mko, K., Schulz, K., Maju mdar, A. (2013). The MVAPIC H Pro ject: Evolution
+and sustainability of an open source production quality MPI library for HPC . Int'l Workshop on
+Sustainable Software for Science: Practice and Experiences, held in conjunct ion with Int'l Conference
+on Supercomputing (SC '13), November 2013.
+Thakur, R., Gropp, W., and Lusk, E. (1999). On i mplementing mpi-io portably and with high
+performance. The 6th workshop on I/O in parallel and distributed systems 1999.
+Trac. (2014). Parallel netCDF: A parallel I/O library for netCDF file access.
+http://trac.mcs.anl.gov/projects/parallel-netcdf
+
+923
+
+

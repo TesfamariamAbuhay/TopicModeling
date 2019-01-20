@@ -1,0 +1,767 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 1837 – 1846
+
+International Conference on Computational Science, ICCS 2012
+
+A “minimal disruption” skeleton experiment:
+seamless map & reduce embedding in OCaml✩
+M. Daneluttoa , R. Di Cosmob
+b Univ
+
+a Dept. Computer Science, Univ. of Pisa, Largo B. Pontecorvo 3, 56127 Pisa, Italy
+Paris Diderot, Sorbonne Paris Cit´e, PPS, UMR 7126, CNRS, INRIA Paris-Rocquencourt, F-75205 Paris, France
+
+Abstract
+We discuss the implementation of a minimalist parallel library in OCaml. The library provides parallel map
+and fold (reduce) higher order functions and targets standard cache coherent shared memory multi-cores. Our
+Parmap.parmap and Parmap.parfold functions may be used to seamlessly replace OCaml List map and fold
+standard functions preserving their full functional semantics while achieving nearly optimal speedup on standard
+multi-core architectures. We discuss the design of the Parmap module, the main implementation features and we
+present some experimental results assessing the eﬃciency of the Parmap parallel functions. Overall, Parmap represents a perfect incarnation of the “propagate the concept with minimal disruption” principle introduced in Cole’s
+algorithmic skeleton manifesto.
+Keywords: structured parallel programming, algorithmic skeletons, map, reduce
+
+1. Introduction
+Multi-cores with some kind of shared memory subsystem constitute the de facto standard computing elements in a
+wide range of systems, from mobile phones and tablets to workstations and servers, up to high end parallel computer
+systems. However, the development of eﬃcient applications for these inherently parallel systems still requires a
+consistent design and programming eﬀort. Classical programming techniques exploiting threads and the associated
+cooperation and synchronization machinery represent a kind of “assembly level parallel language” for multi-cores,
+and inherit all the problems of low level languages: writing eﬃcient multithreaded code is diﬃcult and error prone,
+debugging and maintenance are even more problematic. The adoption of slightly higher level programming paradigms
+such as OpenMP improves programmer productivity with respect to plain Pthreads, but still requires a consistent
+expertise to tune all the available parameters in such a way that good eﬃciency is achieved.
+Several authors suggested to ﬁll the evident gap between programmability and available parallelism in multi-cores
+with diﬀerent kinds of structured programming models: parallel design patterns [1] as in [2, 3] or algorithmic skeletons
+[4] as in [5, 6, 7, 8, 9], just to name a few examples. Algorithmic skeletons, in particular, promise to raise the level
+of abstraction provided to parallel application programmers by making available mechanisms—language constructs,
+✩ This
+
+work has been partially supported by EU FP7 STREP Project ParaPhrase, and partially performed at IRILL, http://www.irill.org.
+Email addresses: marcod@di.unipi.it (M. Danelutto), roberto@dicosmo.org (R. Di Cosmo)
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.202
+
+1838
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+objects, components or plain library calls—that completely encapsulate and manage a parallelism exploitation pattern.
+The application programmer writing a parallel application is therefore only left with the duty of picking up and
+instantiating the proper (composition of) skeletons modelling the parallelism at hand from a library of predeﬁned,
+optimized and, possibly, portable algorithmic skeletons.
+The price to pay with algorithmic skeletons is the necessity for the programmers to “learn” new concepts—the
+algorithmic skeleton (parallel) semantics—in order to be able to write parallel applications.
+Actually, the “four principles which we believe should guide the future design and the development of skeletal programming systems” stated in Cole’s “skeleton manifesto” [4] included the principle stated as “propagate the concept
+with minimal conceptual disruption”. In other words, the principle states algorithmic skeletons should be introduced
+in such a way that programmers are not required to do things far from their normal programming activity or requiring
+brand new knowledge and competences.
+In this work, we present an experiment aiming at providing parallel algorithmic skeletons to OCaml programmers
+fully respecting Cole’s minimal disruption principle: we provide a lightweight OCaml library that presents to the
+OCaml programmer a simple replacement of the basic operations on lists provided by the standard library, namely
+List.map and List.fold right/ List.fold left that implement the now well known map and reduce paradigm1 .
+Our replacement functions implement the map and fold operations in parallel, using the existing cores of the processor
+at hand, in a very eﬃcient and clean way.
+The advantage is twofold: on the one hand, OCaml programs with heavyweight map, reduce, and map–reduce
+computations may be seamlessly improved by just changing the name of the library calls used, e.g. invoking our
+Parmap.parmap instead of the classic List.map one; on the other hand, a simple speedup model is exposed to
+the OCaml programmers–use Parmap calls any time you want to improve independent data parallel or reduce style
+computation execution times–that may be taken into account when designing new complex and time consuming
+applications with many items to be processed independently.
+The rest of this paper outlines the Parmap design issues and choices (Sec. 2), provides a detailed description of its
+current implementation (Sec. 3), reports several experimental results assessing its feasibility and eﬃciency (Sec. 4)
+and ﬁnally discusses the relevant related work (Sec. 5).
+2. Parmap design
+Suitable strategies for the parallel computation of map and reduce are well known. The computation of a map
+requires applying the same function to all the elements in a list:
+map f [x1 ; . . . ; xk ] = [ f x1 ; . . . ; f xk ]
+In a pure map, all the ( f xi ) computations are independent and therefore any partition of the result list may be computed
+in parallel. The result of a reduce ⊕ applied to a list is
+reduce ⊕ [x1 ; . . . ; xk ] = x1 ⊕ . . . ⊕ xk
+The ⊕ function is required to be associative and commutative. If we imagine the reduce computation as a tree of
+⊕ applications, any sub tree rooted at a node at level j may be computed in parallel and the partial results of the
+computations of the sub trees may be then “summed up” with a sequential application of ⊕ to compute the ﬁnal
+reduce result.
+The idea of Parmap is to exploit the cores available on modern architectures to compute in parallel maps and
+reduces (folds) using the following steps:
+Step 1 The input list is split into a number of partitions which may be speciﬁed by the programmer or default
+to the number of available cores.
+Step 2 Each partition is independently computed. In case of a map, each element xi is transformed using the
+“worker” function f into ( f xi ). In case of a reduce, the partition elements x j , . . . , x j+k are summed up using the
+worker function ⊕ into x j ⊕ . . . ⊕ x j+k .
+1 This
+
+is the reason why we’ll use the terms fold and reduce basically as synonyms from now on
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+1839
+
+Step 3 The partial results are combined into the ﬁnal result. This happens sequentially. In case of a map, the
+sub lists are appended; in case of a reduce, the partial results are summed up using again the ⊕ function.
+As far as reduce is concerned, this computing schema corresponds to ﬁrst computing in parallel all the y j deﬁned as
+y1 = x1 ⊕ . . . ⊕ xn1
+
+y2 = xn1 +1 ⊕ . . . ⊕ xn2
+
+...
+
+yk−1 = xnk +1 ⊕ . . . ⊕ xn
+
+that is the reduces computed on the k diﬀerent partitions, and then computing sequentially the ﬁnal result
+y1 ⊕ y2 ⊕ . . . ⊕ yk−1
+Therefore steps 1 and 3 should be performed as fast as possible as they represent the “serial fraction” of the algorithm
+and it is their duration that will eventually limit the ﬁnal speedup according to the well known Amdahl law. Sec. 3
+will detail the steps performed in these two phases to minimize the overheads.
+As far as the user interface of Parmap is concerned, we chose to implement the “minimal disruption” principle
+by providing a Parmap through a standard OCaml module with an interface as close as possible to that of the List
+module. The List module provides the map and fold_right functions with the following signatures:
+L i s t . map : ( ’ a −> ’ b ) −> ’ a l i s t −> ’ b l i s t
+L i s t . f o l d r i g h t : ( ’ a −> ’ b −> ’ b ) −> ’ a l i s t −> ’ b −> ’ b
+
+The signature of the corresponding Parmap functions is instead:
+type ’ a sequence = L of ’ a l i s t
+v a l parmap : ? n c o r e s
+( ’ a −>
+val parfold : ? ncores
+( ’ a −>
+
+| A of ’ a array
+
+: i n t −> ? c h u n k s i z e : i n t −>
+’ b ) −> ’ a s e q u e n c e −> ’ b l i s t
+: i n t −> ? c h u n k s i z e : i n t −>
+’ b −> ’ b ) −> ’ a s e q u e n c e −> ’ b −> ( ’ b−>’b−>’b ) −> ’ b
+
+If we disregard the optional parameters, the signature of the List.map is the same of the signature of Parmap.parmap,
+but for the fact the “collection” processed is not an ’a list but rather it is an ’a sequence. We used the ’a
+sequence to uniformly support the possibility to process both lists and arrays.
+The optional parameter ncores has been included to control the number of cores to be used, while the chunksize
+parameter has been included to control the parallelism grain. In order to get a parallel version on n cores of a program
+with a computationally expensive
+l e t r e s = L i s t . map f l
+
+it is therefore suﬃcient to change the code into
+l e t r e s = Parmap . parmap ˜ n c o r e s : n f ( Parmap . L l )
+
+This will run achieving a speedup very close to the number of cores on the target architecture2 (see Sec. 4).
+The Parmap.parfold has a signature which is the same one of the List.fold right but for: i) the optional
+parameters (that can be obviously omitted), ii) the ’a sequence used instead of the ’a list, for the very same
+reasons discussed for the map, and iii) the additional “combine” operator with type ’b -> ’b -> ’b. This last
+parameter is the only one real, signiﬁcant diﬀerence with the List.fold right. It has been introduced to be able to
+specify two diﬀerent ⊕ operators: one for the reduce computed in parallel on the diﬀerent partitions (this is the ﬁrst
+’a -> ’b -> ’b parameter) and one for the reduce operator needed to accumulate sequentially the ﬁnal parfold
+result out of the partial reduce results computed on the diﬀerent partitions (the last ’b -> ’b -> ’b) parameter).
+This may be useful in some particular cases. However, if the user wants to parallelize an expression such as
+( List . f o l d r i g h t oplus l i s t oplus zero )
+
+2 Of course, this is true if the whole computation of the program is represented by the res map. If more computations are performed, these will
+be not aﬀected by the Parmap and therefore the overall speedup will be smaller according to the Amdhal law.
+
+1840
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+it is suﬃcient to substitute it by the expression
+( Parmap . p a r f o l d o p l u s ( Parmap . L l i s t ) o p l u s z e r o o p l u s )
+
+It’s worth mentioning that when it is used without the load balancing optimization described in section 3.1,
+Parmap.parfold actually does not require that the ⊕ operator(s) be commutative: in that case, the fold computed in
+parallel on the diﬀerent partitions are internally sequential, and composed in the same order, so commutativity is not
+used (lines 25-29 of Figure 1).
+When the load balancing optimization is used, however, commutativity is required, as usual in the implementations
+of fold operations that seek to achive performance using asynchronous mechanisms that force out-of-order evaluation
+on the elements of the input data.
+3. Parmap implementation
+The ﬁrst choice we had to make when implementing Parmap was between the two main mechanisms available
+to run in parallel the workers of the second step: processes or threads. Although threads are normally the standard
+choice on multi-core architectures, we were forced to use processes because in the current implementation of OCaml,
+all threads are run concurrently on the same core, so no speedup can be achieved using threads.
+Our process-based implementation requires some additional eﬀort for step 1 and 3, but also provides an interesting
+encapsulation of side eﬀects: they are not propagated to the global state when the results are built after computing a
+map, thus enforcing the embarrassingly parallel pattern modelled by this kind of map.
+Having chosen processes as the way of implementing step 2, we moved on to implement step 1 and 3, trying to
+minimize their overhead to maximize speedup. Figure 1 shows the essential parts of the OCaml code used for the
+simplest form of implementation of our library.
+Step 1. In step 1, (lines 3 to 9 in the code) a number of processes is forked according to a user provided parameter3 .
+Step 2. After the fork, each child process (lines 11 to 16 in the code) inherits the state of the parent automatically, so
+it can determine the interval lo...hi of the data it must handle, by using the local value of the i index (lines 11 to 13).
+The computation is then performed in line 14 on the speciﬁed segments using the function compute that is built out
+of the user function according to the operation to perform (map, reduce or map/reduce). Finally, in line 15, the result
+is marshalled into a shared memory area associated to a ﬁle descriptor indexed by i.
+Step 3. After all the children have ﬁnished (line 21), the parent collects the list of the results from the children by unmarshaling the data contained in the shared memory areas associated to each child (lines 25-17), and combines them
+in line 29 using a function combine that is also built out of the user function according to the operation to perform
+(map, reduce or map/reduce).
+This schema allows to provide Parmap functions processing either lists or arrays, and this is the reason why
+in Sec. 2 the Parmap signature exports the ’a sequence type deﬁnition and all generic Parmap entries accept ’a
+sequences.
+As already stated, step 1 and step 3 represent the serial parts of our implementation, and they should be carefully
+optimized in order to be able to achieve suitable speedups. Step 1 mainly relies on the fact that the fork is very
+eﬃcient and in modern operating system manages to copy on demand the pages that are written to by the child
+process. This means that in our case–child process read their own data partition and actually only write the results
+of the computation on the input partition–the overhead paid is fairly negligible. We made some experiments aimed
+at measuring the overhead incurred in the fork phase of the child processes. The time in between the start of the
+Parmam.parmap call and the start of the activities of the forked child processes is of the order of milliseconds (5-25
+msecs). It’s worth to point out that this time includes all the setup activities needed to prepare the communication
+channels in between the forking process and the forked child processes, which includes quite a number of system calls.
+We also measured the time between the end of the parallel partition processing and the end of the Parmap.parmap
+3 In
+
+the real implementation, this defaults to the number of cores in the target architecture (derived through proper library calls).
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+1841
+
+1 l e t s i m p l e m a p p e r n c o r e s compute o p i d a l combine =
+2
+(∗ i n i t task parameters ∗)
+3
+l e t ln = Array . l e n g t h a l in
+4
+l e t chunksize = ln / ncores in
+5
+( ∗ c r e a t e d e s c r i p t o r s t o mmap ∗ )
+6
+l e t f d a r r =A r r a y . i n i t n c o r e s ( f u n
+−> t e m p f d ( ) ) i n
+7
+( ∗ spawn c h i l d r e n ∗ )
+8
+f o r i = 0 t o n c o r e s −1 do
+9
+match Unix . f o r k ( ) w i t h
+10
+0 −> ( ∗ c h i l d r e n c o d e : compute on t h e chunk ∗ )
+11
+( l e t lo=i ∗ chunksize in
+12
+l e t h i = i f i = n c o r e s −1 t h e n l n −1
+13
+e l s e ( i +1) ∗ c h u n k s i z e −1 i n
+14
+l e t v = compute a l l o h i o p i d i n
+15
+marshal f d a r r . ( i ) v ;
+16
+e x i t 0)
+17
+| −1 −> f a i l w i t h ” F o r k e r r o r ”
+18
+| p i d −> ( )
+19
+done ;
+20
+(∗ wait for a l l children ∗)
+21
+f o r i = 0 t o n c o r e s −1 do i g n o r e ( Unix . w a i t ( ) ) done ;
+22
+(∗ read in a l l data ∗)
+23
+l e t res = ref [] in
+24
+(∗ accumulate the r e s u l t s in the r i g h t order ∗)
+25
+f o r i = 0 t o n c o r e s −1 do
+26
+r e s := ( ( u n m a r s h a l f d a r r . ( ( n c o r e s −1)− i ) ) : ’ d ) : : ! r e s ;
+27
+done ;
+28
+( ∗ combine a l l r e s u l t s ∗ )
+29
+combine ! r e s ; ;
+
+Figure 1: Simple implementation of the distribution, fork, and recollection phases in Parmap
+
+call, that is the time needed to implement Step 3 in the schema detailed above. In our experiments, using the machines
+detailed in Sec. 4, we veriﬁed that Step 3 takes milliseconds to complete too (2-3 msecs). At the end of Sec. 4 we will
+comment more on the impact of such “serial fraction” times.
+3.1. Load balancing and other optimizations
+The simple implementation described above has one major drawback: it does not allow the grain of the parallel
+computation to be speciﬁed. Indeed, we can only use it with a number of chunks equal to the number of cores (the
+chunksize is computed in line 4 from the length of the sequence). If the chunks are big and their computation cost is
+non homogeneous, this can severely hinder performance.
+This is why the library also contains a more sophisticated implementation that reﬁnes simplemapper using a
+bidirectional channel between the main process and the children. Each child requests (the index of) a chunk, performs
+the computation and accumulates the result locally, and repeats this cycle until the parent signals that the computation
+is complete; at that point, it returns the result in the shared memory area, exactly as in the case of the simplemapper
+function above. This algorithm corresponds to the well known on demand schema for process farms, that achieves
+automatic load balancing [5]. It is used whenever the chunksize speciﬁed by the user forces more than one chunk on
+a core.
+The implementation of the Parmap exported functions can then be written as follows, where mapper calls either
+the simplemapper shown above, or the on-demand implementation we just described, according to the value of
+chunksize
+
+1842
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+l e t parmap ? n c o r e s ? c h u n k s i z e ( f : ’ a −> ’ b ) ( s : ’ a s e q u e n c e ) : ’ b l i s t =
+l e t a l = match s w i t h A a l −> a l | L l −> A r r a y . o f l i s t l i n
+l e t compute a l l o h i p r e v i o u s e x c h a n d l e r =
+l e t f ’ j = f ( Array . u n s a f e g e t a l ( lo+j ) ) in
+l e t r e c aux a c c =
+f u n c t i o n 0 −> ( f ’ 0 ) : : a c c
+| n −> aux ( ( f ’ n ) : : a c c ) ( n −1)
+i n aux p r e v i o u s ( h i − l o )
+in
+mapper n c o r e s ˜ c h u n k s i z e compute [ ] a l ( f u n r −> L i s t . c o n c a t r )
+
+We also considered the issue of the kernel scheduler moving some of the processes in charge of computing in
+parallel Parmap chunks from one core to another. As diﬀerent core groups usually share cache levels, if the process
+is moved to a diﬀerent group of cores cache usage turns out to be ineﬃcient. Parmap therefore implements process
+pinning. The processes created to process Parmap partitions are forced to be executed on exactly one core among
+those available. This mechanisms lowers the number of cache faults, and therefore improves the general eﬃciency of
+Parmap (see Sec. 4).
+3.2. Special optimizations for manipulating arrays of ﬂoats
+Another performance bottleneck comes from the need to perform marshaling and unmarshaling of the results
+between the parent and the children processes: when using a strongly and statically typed programming language,
+like OCaml, this operation is unavoidable unless one knows the precise type of the return data, and its exact size.
+But there is one important situation in which we actually know the size and the type of the result: the mapping of
+a ﬂoating point operation on large arrays of ﬂoats. This particular conﬁguration is common enough in numerical code
+to deserve a special treatment, and our library provides a highly optimised function array ﬂoat parmap that avoids the
+marshalling overhead completely. We highlight here these optimisations.
+To understand the eﬃciency issues involved when parallelizing a map computation on a large array of ﬂoats, it is
+useful to examine the diﬀerent steps that an implementation of a parallel map function may need to perform.
+1. create an array to hold the result of the computation. This operation involves an initialisation phase and can be
+expensive: on an Intel i7, creating an array of 10 million ﬂoats takes 50 milliseconds;
+2. create a shared memory area for returning the result;
+3. copy the result array to the shared memory area;
+4. perform the computation in the children writing the result in the shared memory area;
+5. copy the result back to the OCaml array;
+Steps 1, 2 and 4 are unavoidable: the return array and the a shared memory area for returning the result must
+be created (one might merge these two operations into one, but without a signiﬁcant cost saving), and of course one
+needs to perform the required computation. On the other side, steps 3 and/or 5 may be omitted depending on what
+the user wants to do with the result:
+• using precise knowledge on the layout of arrays of ﬂoats in OCaml, one can access the shared memory area as
+if it was an array of ﬂoats, without need to copy the result array into this area (this is what our code does);
+• it may be safe to leave the result in the shared memory area, to be reused by later calls, but for this one needs
+to give up the beneﬁt of automatic garbage collection on the result array, as the content of the shared memory
+area is not garbage collected (we decided agains this solution in our code).
+The array ﬂoat parmap function in our library performs only the steps 1, 2, 4 and 5. These optimizations allow
+to reduce the overhead of the parallel map operation quite signiﬁcantly with respect to the stock implementation of
+parmap on arrays.
+It is also possible for the user to share the steps 1, 2 among subsequent calls to array ﬂoat parmap by preallocating
+the result array and the shared memory buﬀer, and passing them as optional parameters; this may save a signiﬁcant
+amount of time if the array is very large and the operation is repeated frequently.
+
+1843
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+25
+
+25
+
+2x AMD Opteron 6186
+2x Intel Xeon E5520
+Ideal speedup
+
+20
+
+chuncksize=50
+chuncksize=100
+chuncksize=150
+chuncksize=200
+Ideal
+
+20
+
+15
+
+15
+
+10
+
+10
+
+5
+
+5
+
+0
+
+0
+0
+
+5
+
+10
+
+15
+#cores
+
+20
+
+25
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+#cores
+
+Figure 2: Sample Parmap speedup (left: Parmap with no optional parameters, right: with diﬀerent chunksize values)
+
+4. Experiments
+We run a number of experiments aimed at validating the Parmap design. Actually, these experiments contributed
+to understanding the reason of diﬀerent overheads in the ﬁrst Parmap versions and to understanding which were the
+most eﬀective ways to get rid of them. It’s worth pointing out that our Parmap library has been published quite early
+as open source: as a consequence, we received comments and suggestions from diﬀerent OCaml parallel programmers
+that helped improve the eﬃciency of Parmap.
+The experiments have been run on several diﬀerent architectures, including Intel i3 and i7 CPUs and more aggressive dual Xeon E5520 (8 cores in total) and dual AMD Opteron 6176 (24 cores in total) CPUs. All the results reported
+in this Section have been achieved using synthetic applications.
+Fig. 2 shows speedups achieved when computing a map with a simple synthetic worker function on integers in an
+application made of a single map call. The plot on the left shows speedup obtained just by changing a map f l with
+a Parmap.map f (Parmap.L l). The plot on the right shows slightly better results in the execution of the same
+application on the AMD Opteron. It is related to the very same application where we manually speciﬁed a chunksize
+for the Parmap. As evidenced by the diﬀerent curves, however, ﬁnding the correct chunksize value is not in general
+an easy task.
+Typical speedups do not change signiﬁcantly in case computations performed ﬂoating point operations are considered, although in this case hyper threading on Xeon is less eﬀective, due to the scarce duplication of ﬂoating point
+resources. Fig. 3 left shows the speedup of an application with the same structure of the one used in Fig. 2 but using
+a ﬂoating point number crunching worker function.
+The amount of computation performed on the single item is anyway signiﬁcant, as shown in Fig. 3 right: the
+higher the amount of time spent in the computation of the single element, the better the speedup, as expected. In this
+case the processing of the whole list (20K elements) requires a sequential time as shown in the legend. Therefore the
+time spent in computing the single element is in the three cases 27.5μsecs, 270.5μsecs and 2.75msecs, respectively.
+This latter value leads to almost linear speedup.
+These performance ﬁgures may be better appreciated if we take into account the overheads measured for the
+Parmap.parmap serial fraction discussed in Sec. 3. With times spent in the serial fraction of the algorithm in the
+range of milliseconds, it is clear that we can only obtain good speedups when the overall amount of time spent in the
+sequential computation makes these milliseconds negligible. Amdahl law states the maximum speedup we can achieve
+is 1f , with f representing the serial fraction of the algorithm. Therefore, to achieve a speedup of n–the parallelism
+degree of our architecture–we should have a serial fraction smaller than 1n . In our case, this means that when our
+sequential time is in the range of half a second (T seq = 0.55secs in the right plot of Fig. 3) and considered the serial
+
+1844
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+16
+
+25
+
+integer computation
+float computation
+Ideal speedup
+
+14
+
+20
+
+12
+10
+
+Tseq=0.55s
+Tseq=5.5s
+Tseq=55s
+Ideal speedup
+
+15
+
+8
+10
+
+6
+4
+
+5
+2
+0
+
+0
+0
+
+2
+
+4
+
+6
+
+8
+#cores
+
+10
+
+12
+
+14
+
+16
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+#cores
+
+Figure 3: Parmap speedup (int vs ﬂoating point computations on Intel Xeon E5520) (left) and eﬀect of grain (on AMD Opteron) (right)
+
+overhead (Step 1 plus Step 3) exceeds the tens of milliseconds, we will deﬁnitely not be able to achieve the expected
+speedup values on the 24 core architecture.
+Parmap.parfold behaviour is not diﬀerent from the one demonstrated by the Parmap. Fig. 4 (left) shows the
+speedups achieved on the AMD 6176 Opteron architecture when parallelizing a program made of a single fold call
+by substituting the List.fold right with a Parmap.parfold without any optional parameters. Speedups do not
+change when using Parmap functions operating on arrays, instead of lists (see Fig. 4 right), as expected.
+Fig. 5 shows the eﬀects of thread pinning. The left plot is relative to the application running sequentially in 55
+secs. These application scales pretty decently on the 24 core architecture. In this case the eﬀect of pinning is evident.
+The right plot is instead relative to the synthetic application running sequentially in about 5.5 seconds. In that case, as
+evidenced also in Fig. 3 the application eﬃciency is much lower. In these cases pinning actually do not add any kind
+of beneﬁt, although it does not even introduce any sensible additional overhead.
+Since we are proposing a “minimalistic” parallel skeleton library for Ocaml, we were more interested in demonstrating the diﬀerent features of the library rather than showing speedups achieved in real applications, that almost
+never turn out to be just a single call to a map or to a reduce function. This is why all the experiments whose results
+have been discussed in this Section are relative to execution of synthetic benchmarks, and not real applications.
+The actual speedup measured running real applications with calls to Parmap functions will be greatly aﬀected by
+the particular mix of Parmap and non Parmap code and could be hardly used to evaluate the eﬃciency of the Parmap
+implementation. Nevertheless, based on the feedback we received from actual users of the library, we can say that
+real applications actually beneﬁt from the usage of Parmap proportionally to the amount of time spent in the map or
+fold call in the sequential execution, as expected.
+5. Related work
+Several attempts have been made to provide parallel libraries according to the “minimal disruption” principle.
+SkeTo [10] implements a data parallel only skeleton library in C/C++. The data parallel skeletons are implemented
+through library functions that are seamlessly called within user sequential code, much in the style of our Parmap. This
+framework can be hardly compared with Parmap, due to the fact the programs are written in imperative style. STAPL
+[11] is a C++ library providing “parallel containers” with adaptive implementation of standard parallel algorithms
+that can be used on both multi-cores and distributed architectures. The “minimal disruption” problem is addressed
+here by providing container classes and algorithms as much as possible close to the one in the standard C++ library.
+
+1845
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+25
+
+25
+
+fold (Tseq=11.6s)
+Ideal
+
+20
+
+20
+
+15
+
+15
+
+10
+
+10
+
+5
+
+5
+
+0
+
+list parmap
+array parmap
+Ideal
+
+0
+0
+
+5
+
+10
+
+15
+#cores
+
+20
+
+25
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+#cores
+
+Figure 4: Sample parfold speedup (left) and comparison lists vs. arrays (right) (AMD Opteron 6176 x2)
+
+Other functional programming frameworks based on the concept of algorithmic skeletons have been designed in
+the past. OCamlP3l [12] used a quite diﬀerent template based implementation and targets TPC/IP POSIX distributed
+architectures. It requires a substantially diﬀerent programming style with respect to the one guaranteed by Parmap.
+The same remark apply to the Functory system [13], which is quite similar in spirit to OCamlP3l. Parallel Haskell
+[14] and Erlang [15] both provide nice parallel programming frameworks targeting multi-cores and distributed architectures. Parallel Haskell, in particular, provides suitable ways to deﬁne skeletons by specifying parallel evaluation
+strategies for higher order functions modelling the skeleton functional semantics. Although specifying a parallel evaluation strategy only requires minimal syntactic modiﬁcations to the sequential code, it actually requires some extra
+knowledge from the programmer with respect to the kind of knowledge required to the Parmap programmer. In particular, the Haskell programmers are required to ﬁgure out which is the better parallel strategy to use among the ones
+available, whereas the Parmap programmer is just required to substitute a function call and all the details related to the
+parallel implementation are transparently handled by the Parmap implementation. While the Haskell approach may
+support more general parallel patterns, our approach supports a smoother integration within the “normal” (sequential)
+programming style of programmers.
+Map and reduce have been considered as convenient structured parallel programming constructs since a very long
+time. Backus individuated them as convenient higher order functions in his Turing award lecture [16]. Although not
+explicitly targeting parallel execution, the algebra of programs deﬁned in Backus’s masterpiece have been used by a
+number of researchers to support development of frameworks providing parallel map and reduce. Bird and Meertens
+elaborated a complete theory supporting concepts related to parallel execution of map and reduce in the ’80 [17]. This
+theory has been used in SkeTo to apply automatic program transformations improving program performance and,
+although never mentioned in their papers, is the reason of the success of Google’s mapreduce [18].
+6. Conclusions
+Parmap is a minimalistic library allowing to exploit multi-core architecture for OCaml programs. It has been
+designed with the goal of providing parallel map and reduce to OCaml programmers in a fairly natural way, such
+that the “minimal disruption” principle stated by Cole in his skeleton manifesto paper is enforced. In fact, in order
+to use Parmap, it is suﬃcient to substitute the calls to List functions with calls to the equivalent Parmap functions.
+The clean and eﬃcient implementation of Parmap is such that nearly optimal speedups are achieved on state-of-theart multi-core architectures when suitable grain computations are parallelized. The full source code of the Parmap
+library is available under the LGPL licence from http://gitorious.org/parmap, and is now also incorporated in
+the GODI installation system for OCaml librairies.
+The authors would like to thank Paul Vernaza, Franc¸ois Berenger and Pierre Chambart for stimulating discussions
+
+1846
+
+M. Danelutto and R. Di Cosmo / Procedia Computer Science 9 (2012) 1837 – 1846
+
+24
+
+24
+
+Pinned
+Unpinned
+Ideal
+
+22
+
+22
+
+20
+
+20
+
+18
+
+18
+
+16
+
+16
+
+14
+
+14
+
+12
+
+12
+
+10
+
+10
+
+8
+
+8
+
+6
+
+Pinned
+Unpinned
+Ideal
+
+6
+8
+
+10
+
+12
+
+14
+
+16
+#cores
+
+18
+
+20
+
+22
+
+24
+
+8
+
+10
+
+12
+
+14
+
+16
+#cores
+
+18
+
+20
+
+22
+
+24
+
+Figure 5: Eﬀect of pinning: speedup in case of coarse grain/scalable (left) vs. ﬁner grain/non scalable (right) applications (AMD Opteron 6176 x2)
+
+about Parmap, J´erˆome Vouillon for his contributions to the code that greatly improved its eﬃciency, Pietro Abate for
+help with the build system, and J´erˆome Maloberti for creating the package for the GODI OCaml distribution system.
+References
+[1] T. Mattson, B. Sanders, B. Massingill, Patterns for parallel programming, Addison-Wesley Professional, 2004.
+[2] K. Asanovic, R. Bodik, J. Demmel, T. Keaveny, K. Keutzer, J. Kubiatowicz, N. Morgan, D. Patterson, K. Sen, J. Wawrzynek, D. Wessel,
+K. Yelick, A view of the parallel computing landscape, Commun. ACM 52 (10) (2009) 56–67.
+[3] D. Goswami, A. Singh, B. R. Preiss, From design patterns to parallel architecture skeletons, Journal of Parallel and Distributed Computing
+62 (4) (2002) 669–695.
+[4] M. Cole, Bringing skeletons out of the closet: A pragmatic manifesto for skeletal parallel programming, Parallel Computing 30 (3) (2004)
+389–406.
+[5] M. Aldinucci, M. Danelutto, P. Dazzi, Muskel: an expandable skeleton environment, Scalable Computing: Practice and Experience 8 (4)
+(2007) 325–341.
+[6] P. Ciechanowicz, H. Kuchen, Enhancing Muesli’s Data Parallel Skeletons for Multi-Core Computer Architectures, in: Proc. of the 10th Intl.
+Conference on High Performance Computing and Communications (HPCC), IEEE, Los Alamitos, CA, USA, 2010, pp. 108–113.
+[7] R. Di Cosmo, Z. Li, S. Pelagatti, P. Weis, Skeletal parallel programming with ocamlp3l 2.0, Parallel Processing Letters 18 (1) (2008) 149–164.
+[8] J. Enmyren, C. W. Kessler, SkePU: A Multi-Backend Skeleton Programming Library for Multi-GPU Systems, in: HLPP 10: Proceedings of
+the fourth international workshop on High-level parallel programming and applications, 2010, pp. 5–14, baltimore, Maryland, USA.
+[9] M. Leyton, J. M. Piquer, Skandium: Multi-core programming with algorithmic skeletons, in: Proc. of Intl. Euromicro PDP 2010: Parallel
+Distributed and network-based Processing, IEEE, Pisa, Italy, 2010, pp. 289–296.
+[10] H. Tanno, H. Iwasaki, Parallel skeletons for variable-length lists in sketo skeleton library, in: Proceedings of the 15th International Euro-Par
+Conference on Parallel Processing, Euro-Par ’09, Springer-Verlag, Berlin, Heidelberg, 2009, pp. 666–677.
+[11] N. Thomas, G. Tanase, O. Tkachyshyn, J. Perdue, N. M. Amato, L. Rauchwerger, A framework for adaptive algorithm selection in stapl, in:
+Proceedings of the tenth ACM SIGPLAN symposium on Principles and practice of parallel programming, PPoPP ’05, ACM, New York, NY,
+USA, 2005, pp. 277–288.
+[12] M. Danelutto, R. Di Cosmo, X. Leroy, S. Pelagatti, Parallel functional programming with skeletons: the OCamlP3L experiment, in: Proceedings ACM workshop on ML and its applications, Cornell University, 1998.
+[13] J.-C. Filliˆatre, K. Kalyanasundaram, Functory: A Distributed Computing Library for Objective Caml, in: Trends in Functional Programming,
+Madrid, Spain, 2011.
+[14] P. W. Trinder, R. F. Loidl, Hans-WolfgangPointon, Parallel and distributed Haskells, Journal of Functional Programming 12 (4&5) (2002)
+469–510.
+´
+[15] F. Cesarini, S. Thompson, Erlang programming: a concurrent approach to software development, OReilly
+Media, 2009.
+[16] J. W. Backus, Can programming be liberated from the von neumann style? a functional style and its algebra of programs, Commun. ACM
+21 (8) (1978) 613–641.
+[17] D. B. Skillicorn, The Bird-Meertens formalism as a parallel model, in: Software for Parallel Computation, volume 106 of NATO ASI Series
+F, Springer, 1993, pp. 120–133.
+[18] J. Dean, S. Ghemawat, Mapreduce: simpliﬁed data processing on large clusters, Commun. ACM 51 (2008) 107–113.
+
+

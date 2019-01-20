@@ -1,0 +1,633 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 1383–1392
+ICCS 2015 International Conference On Computational Science
+
+Providing Parallel Debugging for DASH Distributed Data
+Structures with GDB
+Denis H¨
+unich1 , Andreas Kn¨
+upfer1 , and Jos´e Gracia2
+1
+
+Center for Information Services and High Performance Computing (ZIH), TU Dresden, Dresden,
+Germany
+denis.huenich|andreas.knuepfer@tu-dresden.de
+2
+High Performance Computing Center Stuttgart (HLRS), University of Stuttgart, Stuttgart,
+Germany
+gracia@hlrs.de
+
+Abstract
+The C++ DASH template library provides distributed data container for Partitioned Global
+Address Space (PGAS)-like programming. Because DASH is new and under development no
+debugger is capable to handle the parallel processes or access/modify container elements in a
+convenient way. This paper describes how the DASH library has to be extended to interrupt the
+start-up process to connect a debugger with all started processes and to enable the debugger for
+accessing and modifying DASH container elements. Furthermore, an GDB extension to output
+well formatted DASH container information is presented.
+Keywords: C++ templates, dash, gdb, debugging, distributed data structure, parallelization
+
+1
+
+Introduction
+
+Debuggers are the most essential tools for programmers. They allow programmers to observe
+the internal state of a running program in great detail as well as to modify variables. Furthermore, they allow to investigate the state at an exceptional program termination (crash). Thus,
+programmers can check directly if the program shows the behavior that was expected under
+given conditions, change such conditions, and investigate symptoms of crashes. There are many
+varieties of debuggers for diﬀerent programming languages and parallel programming models.
+It is generally accepted that debuggers are a vital part of a programming environment and that
+do-it-yourself replacements like the so called printf debugging are not advisable at all.
+Debugging for parallel and High Performance Computing (HPC) adopts many well established methods and tools from sequential debugging. In addition to all aspects that sequential
+debugging needs to solve, parallel debugging however faces additional challenges including the
+following:
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.345
+
+1383
+
+Providing Parallel Debugging for DASH with GDB
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+Many control streams There are many control streams, which – depending on the programming model – are called process, thread, rank, unit, etc. All of them need to be controlled
+correctly and eﬃciently during debugging.
+Communication between parallel entities The communication can be divided into data
+exchange and synchronization, sometimes both are implicitly combined. Communication
+is an intrinsic part of a parallel application, as in general the parallel entities are not
+executing independently from one another. If communication primitives are used in an
+illegal way this may lead to data corruption (a type of error known from sequential
+debugging) or races and deadlock situations (new types of errors not existing in sequential
+debugging).
+Distributed locations For larger scale parallelism the parallel entities are distributed over
+many hosts communicating over various interconnects.
+Reproducibility Certain eﬀects in parallel programming which are desired for the sake of
+parallel performance make the reproducibility of executions much more complicated.
+There are many tools and methods to assist parallel debugging including highly scalable ones.
+When designing and implementing new parallel programming concepts, debugging support
+is important from two perspectives. On the one hand, early adopters of the programming
+concept are in need for debugging tools for their application programs. This is particularly
+true, since by deﬁnition they will be new to that style of programming. On the other hand, the
+implementers of the parallel runtime system require the assistance of debuggers to investigate
+the behavior of test applications on top of a not yet reliable basis. Instead of self-made checks,
+debuggers are better for this purpose.
+The DASH C++ template library for parallel programming is a new parallel programming
+model which oﬀers distributed container data structure. In this work we present the requirements and solutions for basic debugging support for parallel programming with DASH.
+The remainder of this paper is structured as follows: Paper related to this work are presented
+in section 2. The section 3 brieﬂy introduces the DASH library and the underlying runtime.
+The challenges occurring when debugging parallel applications are discussed in section 4. The
+following section 5 explains the extensions added to debug DASH applications. Finally, section
+6 gives a conclusion and lists future tasks.
+
+2
+
+Related Work
+
+The DASH library used and extended in this paper is explained detailed in [6]. The underlying
+runtime using MPI3 is published in [12]. Both are brieﬂy explained in section 3. Recently DART
+was optimized to use shared memory for communication within a node [11], and extended to
+support GPGPUs [13].
+The debugger GDB[5] is a widely used serial debugger. A GDB session communicates
+with a single process, which restricts the debugging of parallel applications. Nevertheless, we
+used the GDB as debugger, because it is open source, extensible and can be used, with some
+modiﬁcations of the DASH library, to debug DASH applications. The LLDB [2] is also an open
+source debugger with the possibility of extensions. Because of the wide availability of the GDB,
+we decided not to use the LLDB, but don’t excluded the option for the future.
+For parallel applications it is particularly diﬃcult to ﬁnd suitable debuggers. In general,
+parallel debuggers are specialized for parallel libraries or language extensions. The Eclipse
+1384
+
+Providing Parallel Debugging for DASH with GDB
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+Parallel Tools[1] oﬀers debugging functionality for parallel applications but is limited to MPI and
+cluster resources and also needs an application integration into eclipse. The PGDB[4] has less
+restrictions than the eclipse parallel tools but is also limited to MPI. While Totalview[10] and
+DDT[3], which work with MPI, OpenMP, CUDA, etc., are closed source, hampering extending
+them, and don’t support the DASH library.
+The publication [8] not only discusses correctness checking, but also presents a method to
+extend GDB with custom pretty-printing facilities. However, only MPI data structures are
+covered in this work.
+
+3
+
+Overview about Parallel Programming with DASH
+
+DASH realizes a novel concept for parallel programming that tries to move standard tasks
+for parallel data handling and data distribution into ready-made container data structures.
+Those containers are inspired by the C++ Standard Template Library (STL), in fact they are
+implemented very similarly and in a compatible way to a large extend. Unlike STL containers,
+the DASH containers have a built-in notion of data distribution. Many distributed parts of
+a distributed data structure form the global container. The local parts employ PGAS-style
+(Partitioned Global Address Space) remote memory accesses to exchange data internally. The
+following presents DASH from an application programmers point of view and it’s internal design.
+
+3.1
+
+DASH from the User Perspective
+
+Let’s investigate this with an one-dimensional array as an example data structure. The element
+type can be speciﬁed as a template parameter and the data distribution can be selected from
+predeﬁned options blocked, cyclic, blockcyclic. In addition, special halo elements can be
+added at the boundaries between partitions.
+Each instance of a distributed DASH application is called unit which may be grouped in
+DASH teams. These concepts are roughly equivalent to rank and communicator in MPI. The
+allocation of the container array need to happen as a collective operation (over all units or all
+units in the respective team). The data ﬁelds are automatically distributed over all participating
+units, see Listing 1(line 5).
+Now the container is ready to be used. One way to use it is just like a local array where
+any unit can get or set any element. Internally, those operations execute either local read/write
+operation if the element happens to belong to the local partition, or otherwise a remote get/put
+operation if it is not. To a large extend, it can actually be used like a local C++ STL container.
+For example, the DASH array provides iterators that can be used for STL algorithms like sort,
+see Listing 1(line 11). This is provided for convenience and is not expected to deliver the
+optimum performance, of course, because it works sequentially on remote memory only handling
+individual elements at a time. However, through implicit remote accesses the DASH container
+transparently executes communication between the units. Still the parallel application using
+DASH is free to call its own communication and synchronization if this is compatible with
+DASH’s communication substrate (see 3.2 below).
+For the more advisable parallel processing of the array element, one way is using so called
+local iterators. They are provided by the array through the lbegin() and lend() methods, see
+Listing 1(line 17). When every unit processes all elements given by the local iterator, a perfect
+parallel processing happens.
+In addition to local access and transparent remote access, DASH containers can provide
+more complex communication functionalities. For example, a multi-dimensional array, which
+1385
+
+Providing Parallel Debugging for DASH with GDB
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+// split the units into 8 teams ( e . g . , one per node )
+dash :: team nodeteam = dash :: TeamAll . split (8) ;
+// allocate an array over the node team
+dash :: array < double > b (100000 , nodeteam ) ;
+// use the DASH container in place of an STL container
+// note sequential sort and perf . implications
+int myid = nodeteam . myID () ;
+if ( myid ==0) {
+std :: sort ( b . begin () , b . end () ) ;
+}
+// to use containers with standard algorithms in parallel ,
+// local iterators lbegin () , lend () are provided
+// this fills the array in parallel ( aka . ‘ owner computes ’)
+std :: fill ( b . lbegin () , b . lend () , 23+ myid ) ;
+
+Listing 1: A code example with DASH teams and the DASH array container used with globalview and local-view semantics.
+
+serves as a computation grid for stencil operations, proﬁts from a coordinated halo exchange
+method. This needs to be called as a collective operation from all team members and copies the
+boundaries (hyperplanes) to the halo elements. Thereafter, all units can work on local elements
+again for the following time step. This provides much better eﬃciency than individual remote
+accesses which would also work.
+Another goal of DASH is to provide a concept of conveniently managing multi-level locality
+or hierarchies of locality levels. This is in contrast to the traditional PGAS notion of the two
+locality levels “local” and “remote”. Those locality levels originate from today’s HPC platforms
+which already have several hierarchy levels, for example a hardware hierarchy consisting of CPU
+cores, NUMA domains, CPU sockets, nodes, and islands (w.r.t. the interconnect) [9]. Ignoring
+those hierarchies is not advisable from a performance perspective. Leaving the HPC application
+developers to manage multi-level hierarchies (with more than the two traditional levels) alone
+seems diﬃcult. DASH wants to provide a convenient solution with a built-in concept to address
+hierarchy levels.
+For this purpose, DASH includes a team concept where a team is a group of units (processes)
+which take part in parallel activities. Furthermore, DASH provides a hierarchy of teams which
+resemble the machine hierarchy. All team members can take part in collective operations and
+there is always a “ﬁrst” unit which can represent the team in higher-level teams.
+
+3.2
+
+The DASH API and the DART Run-Time System
+
+The DASH template library sits on top of a runtime system (DART), which is responsible for
+providing services to the DASH library, including the deﬁnition of semantics and the abstraction
+of the underlying hardware. In particular, DART provides functions for initialization of DASH
+processes (so called units) across nodes, the management of teams and groups ( i.e. sets of
+units), synchronization, one-sided communication, collective communication operations, and
+global memory management associated with the indispensable global pointer. The design of
+the DART API is suﬃciently abstract and generic, to allow to implement DART on top of
+1386
+
+Providing Parallel Debugging for DASH with GDB
+
+DASH C++ Template Library
+DASH RunƟme
+One-sided
+CommunicaƟon
+Substrate
+
+Component of DASH
+
+Tools and Interfaces
+
+DASH ApplicaƟon
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+ǆŝƐƟŶŐŽŵƉŽŶĞŶƚ
+
+MPI GASnet ARMCI GASPI
+Hardware: Network, Processor,
+Memory, Storage
+Figure 1: The layered structure of the DASH project.
+any low-level communication library. A particular implementation of DART using MPI-3[7] as
+its underlying communication substrate was presented in [12]. The DART developers are also
+considering GASNet, OpenSHMEM or GASPI as communication backend.
+
+4
+
+Debugging parallel applications
+
+While debugging serial applications can be quite challenging, parallel applications have new
+and higher demands on users and debuggers. So, what are important extensions for a parallel
+debugging process? First, support for parallel start-ups and the possibility of interrupting all
+processes at the same point and close to the beginning. Then it should be possible to set
+breakpoints on deﬁned processes with given information (host name, process id, etc.) provided
+by the application for debugging purposes. Second, the output of distributed states like team
+aﬃliations, locality relationships between pairs of units with respect to a given hierarchy level or
+team. Third, a formatted output of data in DASH containers not only in a local but in a global
+perspective. Fourth, relation to source code locations which is compatible with an unmodiﬁed
+GDB. Finally, access on administrative (e.g. base pointers or index intervals of each part in
+each dimension) and value data. Section 5 shows the implementation of the aforementioned
+extensions in the DASH library and GDB.
+
+5
+
+GDB Extension for DASH
+
+To make debugging for DASH applications possible, particular extensions and modiﬁcations of
+the DASH library and the GDB were necessary. In Section 5.1 modiﬁcations in the initialization
+process of the DASH library and provided information, important for a debugger attachment
+to a process, are described. The implementation of new GDB output formats for DASH data
+structures are explained in section 5.2. Value types within a DASH container and possible
+eﬀects on the application behavior if they are modiﬁed is subject of section 5.3. Extensions
+added to the DASH container are named and explained in the last section 5.4.
+1387
+
+Providing Parallel Debugging for DASH with GDB
+
+5.1
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+Debugger Start-up and Connection
+
+To attach a debugger to selected or all processes it is necessary to interrupt the simultaneously
+started DASH processes close to the beginning. Among other strategies we used the one suggested in the Open MPI debugging FAQ1 . The code snippet shown in Listing 2 makes use of
+the just mentioned strategy and is implemented in the initialization method of DASH.
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+
+dart_unit_t myid ;
+char hostname [256];
+dart_myid (& myid ) ;
+gethostname ( hostname , sizeof ( hostname ) ) ;
+std :: cout << " DART id " << myid << " at " << hostname << " : " <<
+getpid () << std :: endl ;
+if ( 0 == myid ) {
+int loop = 1;
+while ( loop ) { sleep (1) ; }
+}
+dash :: TeamAll . barrier () ;
+
+Listing 2: Start-up of a debugging session with an inﬁnite loop and a barrier for all processes
+The master unit enters an inﬁnite loop directly after the parallel initialization followed by a
+global barrier where all other units will be trapped at the very beginning of the execution.
+Now the user can manually connect to one, many or all of the units. Their locations (host
+and process id) are given by DASH and allow an attachment with individual GDB sessions
+or frontends like DDD2 where the user can set breakpoints to later interrupt the execution
+of the application and pass the control to the debugger. Such breakpoints on selected units
+may use global barriers like the initial inﬁnite loop in order to release all units from a single
+GDB instance. However, those barriers need to be present in the code already and cannot be
+inserted during the debugging session. Therefore it may be advisable to insert extra debugging
+barriers encapsulated in #ifdef DASH_DEBUG ... #endif clauses. To release the master unit
+from the inﬁnite loop it is necessary to attach the master unit process to a debugger session
+and use a similar sequence such as set loop=0 <enter> c <enter> to start the execution.
+The debugger will return control in some or all used GDB instances in case of a break point, a
+termination of a process due to an error, or the regular end of the execution.
+
+5.2
+
+Pretty Printer functionality
+
+For complex data structures the output of GDB isn’t often really helpful. The printed information look kind of cryptic and don’t reﬂect the expected values of the data structures. The
+standard (Listing 3) output of an STL vector for example looks the following:
+$1 = { < std :: _Vector_base < int ,
+std :: allocator < int > >> = { _M_impl = { < std :: allocator < int > > = { <
+__gnu_cxx :: new_allocator < int > > = { < No data fields >} , < No data fields
+>} , _M_start = 0 x603080 , _M_finish = 0 x6030a8 ,
+1 Open
+MPI
+FAQ
+“Debugging
+applications
+in
+parallel”
+at
+http://www.openmpi.org/faq/?category=debugging
+2 GNU
+DDD is a graphical front-end for command-line debuggers such as GDB http://www.gnu.org/software/ddd/
+
+1388
+
+Providing Parallel Debugging for DASH with GDB
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+_M_end_of_storage = 0 x6030c0 }} , < No data fields >}
+
+Listing 3: Standard GDB output of an STL vector
+To provide a nicer output, GDB introduced with version 7.0 the so called Pretty-Printer. A
+Python3 interface, allows to integrate custom output formats of data structures. The PrettyPrinter API oﬀers methods to access and use public and private members of classes, as well as
+iterating over elements like a vector. The output of the previous example (Listing 3) looks with
+the use of Pretty-Printers like in Listing 4.
+$1 = std :: vector of length 10 , capacity 16 = {1 , 2 , 3 , 4 , 5 , 6 , 7 , 8 , 9 ,
+10}
+
+Listing 4: Pretty-Printer GDB output of an STL vector
+It is obvious that the pretty printed output is more helpful in most cases. To support developers
+using DASH in the debugging process, Pretty-Printers for all DASH data structures where
+developed. Especially for global data structures, where the data are distributed over many
+processes, its more helpful to get the values, instead of the pointers pointing to them. Therefore,
+the Pretty-Printers make use of dedicated debugging interfaces in the DASH containers as
+described in 5.4. The Listing 5 shows the standard GDB output for a DASH one-dimensional
+array and Listing 6 shows the pretty printed version.
+$1 = ( dash :: Array < int , dash :: PatternBlocked > &) @0x7fff6018f370 : { m_team
+= @0x619ea0 , m_size = 20 , m_pattern = { < std :: __shared_ptr < dash ::
+Pattern , ( __gnu_cxx :: _Lock_policy )2>> = { _M_ptr = 0 xac2de0 ,
+_M_refcount = {
+_M_pi = 0 xac2dd0 }} , < No data fields >} , m_ptr = { < std ::
+__shared_ptr < dash :: GlobPtr < int > , ( __gnu_cxx :: _Lock_policy ) 2 > >
+= { _M_ptr = 0 xab1310 , _M_refcount = { _M_pi = 0 xab1300 }} , < No
+data fields >} ,
+m_acc = { < std :: __shared_ptr < dash :: MemAccess < int > , ( __gnu_cxx ::
+_Lock_policy )2>> = { _M_ptr = 0 xac2e50 , _M_refcount = { _M_pi = 0
+xac2e40 }} , < No data fields >}}
+
+Listing 5: Standard GDB output of a DASH one-dimensional array
+$1 = Dash :: Array < int , dash :: PatternBlocked > with 20 elements - Team with
+dart id 0 and position 0 - dart global pointer : std :: shared_ptr (
+count 1 , weak 0) 0 xab1310 = {1 , 1 , 1 , 1 , 1 , 2 , 2 , 2 , 2 , 2 ,
+3 , 3 , 3 , 3 , 3 , 4 , 4 , 4 , 4 , 4}
+
+Listing 6: Pretty-Printer GDB output of a DASH one-dimensional array
+
+5.3
+
+Value Modiﬁcation
+
+While debugging an application the user has the chance to read and modify public and private
+members of classes. He also can call class methods under certain circumstances (see 5.4). Thus,
+it is possible to change the containers data elements as well as their administrative data.
+Data containers need administrative data such as pointers to the start of stored elements
+or the number of elements to manage them. Changing the administrative data means changing
+3 Python
+
+- widely used general-purpose, high-level programming language (https://www.python.org/)
+
+1389
+
+Providing Parallel Debugging for DASH with GDB
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+the behavior of the calling methods or of the class methods itself. For instance, modifying the
+start pointer for chained data elements aﬀects iterators, returned by class methods and can
+result in segmentation faults. Administrative data in DASH containers are for example the
+global and local number of the elements, team identiﬁer or in case of the DASH array diﬀerent
+patterns to distribute the elements over the processes. Modifying one of them, could change
+the location of the searched data element and probably result in wrong values or an application
+error.
+Changing the data elements managed by the container in general only aﬀects the result or,
+depending on the restrictions of the changed element, the application behavior. As mentioned
+before, a DASH container can manage global and local data elements. To read or modify these
+elements, especially the global ones, the new class methods “setValue” and “getValue” within
+a container are necessary and only visible in the debugging mode. Why these two methods
+had to be added and the array subscript operator doesn’t work for this purpose is explained in
+section 5.4.
+
+5.4
+
+What to add in each new DASH container type?
+
+To produce debugging information in the operating system’s native format an application or
+library has to be compiled with the ﬂag “-g”. Now, class methods, including overwritten
+operators, are visible/callable in a GDB session with some limitations. For instance, class
+methods have to be used before a breakpoint, object ﬁles are compiled without an optimization
+level or methods were extended with “ attribute ((used))” when compiled with the GCC4 .
+Adding the “used” attribute needs modiﬁcations of the application/library source code. But
+because of the dependence to the GCC compiler it is, only for debugging, useful to call methods
+and operators, that should be visible, in the constructor of the DASH container. This causes
+a method call when an instance is created and ensures that the method is called before a
+breakpoint.
+Besides the visibility, access extensions for the DASH container data elements had to be
+developed. The standard tools and methods of GDB are insuﬃcient for this task. The reason
+will be demonstrated in the following based on the DASH array container. This container
+manages data elements distributed over many processes. To access these elements the array
+container provides among other methods iterators for local and global elements as well as an
+array subscript operator and a method named “at(index)” (access with range check). The
+iterator returned by the indirection or array subscript operator is a reference object which
+on his part returns or sets the array element with the help of the conversion and assignment
+operator. GDB doesn’t convert the data elements to its real data type, instead GDB only
+sees the type of the reference object. This also applies to the conversion and the assignment
+operator. A way to still get/set the elements is shown in the Listing 7. First, memory has to be
+allocated to buﬀer the reference object (line 1). Second, the reference object returned by the
+subscript operator has to be stored in the allocated memory (line 2). Finally, you can get/set a
+selected element (line 4 and 8). It is not quite intuitive to access data elements in the presented
+way. So we decided to add methods like setValue(position, element) and getValue(position)
+(used in line 6 and 12 for correctness checking) to the array container. So the user can easily
+access and modify the array data elements.
+1
+2
+3
+
+( gdb ) p ( dash :: GlobRef < int >*) malloc ( sizeof ( dash :: GlobRef < int >) )
+$11 = ( dash :: GlobRef < int > *) 0 x8ac4e0
+( gdb ) set *(( dash :: GlobRef < int >*) 0 x8ac4e0 ) = arr [0]
+4 GNU
+
+1390
+
+Compiler Collection - https://gcc.gnu.org/
+
+Providing Parallel Debugging for DASH with GDB
+4
+5
+6
+7
+8
+9
+10
+
+11
+12
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+( gdb ) p (*(( dash :: GlobRef < int >*) 0 x8ac4e0 ) ) . ’ operator int ’ ()
+$12 = 10
+( gdb ) p arr . getValue (0)
+$13 = 10
+( gdb ) p (*(( dash :: GlobRef < int >*) 0 x8ac4e0 ) ) . ’ operator = ’ (50)
+$14 = ( dash :: GlobRef < int > &) @0x8ac4e0 :
+Dash :: GlobRef < int > with index 0 and Dash :: MemAccess < int > with 3
+local elements and dart_teamid 0 - begin of allocation {
+unitid = 0 , segid = 1 , flags = 0 , addr_or_offs = { offset = 0 ,
+addr = 0 x0 }}
+( gdb ) p arr . getValue (0)
+$15 = 50
+
+Listing 7: Get and set values of a DASH Array without additional methods
+To enable additional functionality, including the interruption of the DASH application start
+process (described in section 5.1), the ﬂag “-DDASH DEBUG” has to be set for the compilation
+for both the DASH library and the application using it.
+
+6
+
+Conclusion and Future Work
+
+This paper presented extensions added to the GDB and the DASH library to debug parallel
+applications using the DASH library more convenient. After introducing the DASH library and
+the underlying runtime, challenges of parallel debugging were mentioned and discussed. Then a
+simple start-up strategy including an inﬁnite loop and a following barrier to allow the debugger
+to attach to selected DASH processes were presented. Furthermore, the reason for improving
+the output of DASH data structures within the GDB by extending him with own Pretty-Printer
+was described. DASH data structures were extended with new methods to simplify the access
+and modiﬁcation of local and especially global values.
+Next steps could be the automation of the start-up and attachment with a parallel GDB
+frontend as well as a graphical user interface to interact with the attached GDB instances.
+Also important is the adaption of the Pretty-Printers to more DASH containers and changes
+to the existing ones. Because of the used plug-in architecture of the LLDB an evaluation of
+this debugger in terms of formatted output and parallel execution extensibility is also very
+interesting. The representation of distributed states of parallel processes like team aﬃliation
+with existing tools is also planned.
+
+7
+
+Acknowledgement
+
+The DASH concept and its current implementation have been developed in the DFG project
+“Hierarchical Arrays for Eﬃcient and Productive Data-Intensive Exascale Computing” funded
+under the German Priority Programme 1648 “Software for Exascale Computing” (SPPEXA5 )
+
+References
+[1] Jay Alameda, Wyatt Spear, Jeﬀrey L. Overbey, Kevin Huck, Gregory R. Watson, and Beth
+Tibbitts. The eclipse parallel tools platform: Toward an integrated development environment for
+5 See http://www.sppexa.de and http://www.dfg.de/foerderung/info_wissenschaft/info_wissenschaft_
+14_57/index.html.
+
+1391
+
+Providing Parallel Debugging for DASH with GDB
+
+[2]
+[3]
+[4]
+
+[5]
+[6]
+
+[7]
+[8]
+
+[9]
+
+[10]
+
+[11]
+[12]
+
+[13]
+
+H¨
+unich and Kn¨
+upfer and Gracia
+
+xsede resources. In Proceedings of the 1st Conference of the Extreme Science and Engineering
+Discovery Environment: Bridging from the eXtreme to the Campus and Beyond, XSEDE ’12,
+pages 48:1–48:8, New York, NY, USA, 2012. ACM.
+Computer Science Department at the University of Illinois at Urbana-Champaign. The LLDB
+Debugger. http://www.gnu.org/software/gdb/, 2014. [Online; accessed 12-January-2015].
+Allinea DDT. The global standard for high-impact debugging on clusters and supercomputers.
+http://www.allinea.com/products/ddt, 2015. [Online; accessed 12-January-2015].
+Nikoli Dryden. Pgdb: A debugger for mpi applications. In Proceedings of the 2014 Annual
+Conference on Extreme Science and Engineering Discovery Environment, XSEDE ’14, pages 44:1–
+44:7, New York, NY, USA, 2014. ACM.
+Inc. Free Software Foundation. GDB: The GNU Project Debugger. http://www.gnu.org/
+software/gdb/, 2014. [Online; accessed 12-January-2015].
+Karl F¨
+urlinger, Colin Glass, Jose Gracia, Andreas Kn¨
+upfer, Jie Tao, Denis H¨
+unich, Kamran Idrees,
+Matthias Maiterth, Yousri Mhedheb, and Huan Zhou. Dash: Data structures and algorithms with
+support for hierarchical locality. In Lus Lopes, Julius ilinskas, Alexandru Costan, RobertoG. Cascella, Gabor Kecskemeti, Emmanuel Jeannot, Mario Cannataro, Laura Ricci, Siegfried Benkner,
+Salvador Petit, Vittorio Scarano, Jos Gracia, Sascha Hunold, StephenL. Scott, Stefan Lankes,
+Christian Lengauer, Jess Carretero, Jens Breitbart, and Michael Alexander, editors, Euro-Par
+2014: Parallel Processing Workshops, volume 8806 of Lecture Notes in Computer Science, pages
+542–552. Springer International Publishing, 2014.
+MPI Forum. MPI: A Message-Passing Interface Standard. Version 3.0, September 21st 2012. available at: http://www.mpi-forum.org (Sept. 2012).
+Joachim Protze, Tobias Hilbrich, Andreas Knupfer, Bronis R. de Supinski, and Matthias S. Muller.
+Holistic debugging of mpi derived datatypes. Parallel and Distributed Processing Symposium,
+International, 0:354–365, 2012.
+R. Rabenseifner, G. Hager, and G. Jost. Hybrid mpi/openmp parallel programming on clusters of
+multi-core smp nodes. In Parallel, Distributed and Network-based Processing, 2009 17th Euromicro
+International Conference on, pages 427–436, Feb 2009.
+Inc Rogue Wave Software. TotalView Debugger:Faster fault isolation, improved memory optimization, and dynamic visualization for your high performance computing apps. http://www.
+roguewave.com/products-services/totalview, 2015. [Online; accessed 12-January-2015].
+Huan Zhou, Kamran Idrees, and Jos´e Gracia. Leveraging MPI-3 shared-memory extensions for
+eﬃcient PGAS runtime systems. In Euro-Par 2015 (Vienna, Austria), August 2015. (submitted).
+Huan Zhou, Yousri Mhedheb, Kamran Idrees, Colin W. Glass, Jos´e Gracia, and Karl F¨
+urlinger.
+Dart-mpi: An mpi-based implementation of a pgas runtime system. In Proceedings of the 8th
+International Conference on Partitioned Global Address Space Programming Models, PGAS ’14,
+pages 3:1–3:11, New York, NY, USA, 2014. ACM.
+Lei Zhou and Karl F¨
+urlinger. DART-CUDA: A PGAS runtime system for multi-GPU systems. In
+IEEE 14th International Symposium on Parallel and Distributed Computing ISPDC 2015, Limassol, Cyprus, 2015. (submitted).
+
+1392
+
+

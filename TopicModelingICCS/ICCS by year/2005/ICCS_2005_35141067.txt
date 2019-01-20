@@ -1,0 +1,650 @@
+The SCore Cluster Enabled OpenMP Environment:
+Performance Prospects for Computational Science
+H’sien. J. Wong and Alistair P. Rendell
+Department of Computer Science, Australian National University,
+Canberra ACT0200, Australia
+alistair.rendell@anu.edu.au
+
+Abstract. The OpenMP shared memory programming paradigm has been
+widely embraced by the computational science community, as has distributed
+memory clusters. What are the prospects for running OpenMP applications on
+clusters? This paper gives an overview of the SCore cluster enabled OpenMP
+environment, provides performance data for some of the fundamental
+underlying operations, and reports overall performance for a model
+computational science application (the finite difference solution of the 2D
+Laplace equation).
+
+1 Introduction
+The two main classes of parallel computers available in today’s markets are clusters
+and hardware enabled Shared Memory Systems (SMS). Clusters are assembled from
+multiple disjoint computers and are generally programmed using some form of
+message passing. SMS on the other hand have a single common address space and
+can be programmed using either message passing or various threaded programming
+models. In general SMS are considered easier to use, but due to the need for
+specialized hardware they are also more expensive, and this is especially true for high
+processor counts.
+OpenMP [1] is a threaded programming model widely used on SMSs. Essentially it
+provides a compiler based interface to an underlying thread library. The model is
+attractive since it permits the incremental parallelization of existing sequential
+application codes and, as it consists largely of compiler directives, a developer can
+easily support both parallel and sequential versions of the same code at the same time.
+Given the cost advantages of clusters, but the programming advantages of OpenMP
+and the existence of a large body of OpenMP code, it is not surprising that various
+groups have been attempting to develop OpenMP programming environments for
+clusters [2-5]. Most of these attempts have been based on layering OpenMP on top of
+some existing Software Distributed Shared Memory (SDSM) environment, although
+we note interesting recent work by Huang et al to implement OpenMP over Global
+Arrays [6]. In either case, to obtain reasonable performance from an OpenMP code on
+a cluster it is likely that the application programmer will require some knowledge of
+the implementation. The aim of this paper is to discuss these issues in relation to the
+SCore cluster enabled OpenMP environment [2, 7] and to analyze its performance on
+V.S. Sunderam et al. (Eds.): ICCS 2005, LNCS 3514, pp. 1067 – 1075, 2005.
+© Springer-Verlag Berlin Heidelberg 2005
+
+1068
+
+H.J. Wong and A.P. Rendell
+
+a cluster comprising dual 550MHz Pentium III processors linked via a 100MBit
+Ethernet interconnect.
+
+2 The SCore Distributed Shared Memory Environment
+The SCore cluster enabled OpenMP is layered on top a page based SDSM
+environment called SCASH [2]. A basic understanding of SCASH is critical to
+understanding the overall performance of the SCore cluster enabled OpenMP.
+Essentially SCASH separates the address space of each process into global and local
+memory pages. Data assigned to local memory pages is private to each process, while
+data in the global memory pages can be shared between all processes. To facilitate
+sharing of the global memory pages, read and write accesses to the corresponding
+address ranges are protected using mprotect (on Unix). This means that when any
+process first accesses data in a global memory page an interrupt is triggered and this
+induces execution of the relevant SCASH interrupt handler. The interrupt handler
+determines the location of the required page and makes it available to the requesting
+process. There are three possible home locations for the requested page; i) it has been
+assigned to memory associated with the calling process; ii) it has been assigned to
+memory associated with another process that resides on the same physical computer
+as the calling process; iii) it has been assigned to memory associated with a process
+that resides on another physical computer. In case i the requested memory page is
+available immediately; in case ii the page might be available in, e.g. a shared memory
+segment that is linked to both processes; while in case iii a transfer of the page over
+the communication network is required.
+The interrupt is further characterized by the type of interrupt. Global memory
+pages assigned to the calling process or to a process located on the same node as the
+calling process are initially given read access, thus interrupts involving these “home”
+or “local” pages only occur when writing to these pages. All “remote” global memory
+pages are initially marked as “unmapped”, so depending on the operation transitions
+unmapped-read, unmapped-write or read-write can occur. Indeed if a process first
+reads from one of these pages and then shortly afterwards writes to the same page two
+interrupts will occur, one causes an unmapped-read transition and the other causes a
+read-write transition. In this case it would obviously be better to have a single
+interrupt with unmapped-write transition, and while in some cases the compiler may
+be able to make such optimizations this should not be taken for granted.
+To permit multiple processes to simultaneously access global data, copies of the
+same memory page can be transferred to multiple different processes. If the
+requesting process only requires read access this does not present a problem. If,
+however, it requires write access then there are two considerations. First, when do the
+modifications become visible to all other processes. Second and since memory pages
+are typically large (e.g. 4096bytes or greater), how to support multiple simultaneous
+writes to disjoint regions of the same memory page.
+The first issue, also known as the memory consistency model, is enforced by
+SCASH at synchronization points. This means that modifications made to any of the
+global memory pages are propagated back to the page owners at every
+synchronization point. Moreover if one process has modified a page, but another
+
+The SCore Cluster Enabled OpenMP Environment
+
+1069
+
+process has a read only copy of that page, then the read only copy must be invalidated
+and the protection on that page reset. This requires inter-process communication to
+communicate the changes, and some book keeping to keep track of which processes
+have copies of which pages. Whether this requires communication over the cluster
+interconnect will depend on the exact location of the process modifying a page
+compared to the owner of the page.
+To handle multiple simultaneous updates to the same memory page, SCASH
+employs a “twinning and diffing” procedure. This means that if a write fault is
+encountered, as well as locating and fetching a copy of that page (if it is not already
+available to that process either because it is owned by that process or has been fetched
+via a read fault) the handler will create two copies. One is modified in subsequent
+write operations, while the other is left unmodified. At the next synchronization point,
+a “diff” is made between the modified and unmodified copy and the changes relayed
+to the process owning that page. The time required to communicate the differences
+will depend in part on the number of changes made to that page.
+Table 1. The different memory page faults encountered in SCASH, details of what
+communications are required, and approximate times as recorded on a cluster of dual 550MHz
+Pentium III processor nodes linked via 100MBit/sec Ethernet. See text for further details
+Access
+Type
+
+Current
+Permission
+
+Page
+Owner
+
+Abbreviation
+
+Send
+Request
+
+Write
+Write
+Write
+
+ReadOnly
+ReadOnly
+ReadOnly
+
+Home
+Local
+Remote
+
+WROH
+WROL
+WROR
+
+Yes
+Yes
+
+Write
+Write
+Write
+
+ReadWrite
+ReadWrite
+ReadWrite
+
+Home
+Local
+Remote
+
+WRWH
+WRWL
+WRWR
+
+Yes
+Yes
+
+Write
+
+UnMapped
+
+Remote
+
+WUMR
+
+Yes
+
+Read
+Read
+Read
+
+ReadWrite
+ReadOnly
+UnMapped
+
+Remote
+Remote
+Remote
+
+WRWR
+RROR
+RUMR
+
+Yes
+Yes
+Yes
+
+Fetch
+Page
+
+Create
+Twin
+
+Time
+(usec)
+
+Yes
+Yes
+
+8
+44
+51
+7
+16
+24
+
+Yes
+
+Yes
+
+Yes
+
+599
+25
+18
+587
+
+Table 1 summaries the above and reports timing data for a variety of different page
+fault transitions obtained by running a set of specially designed OpenMP benchmarks
+under SCore version 5.4.0 on the Pentium III cluster. “Access type” denotes whether
+the interrupt was caused by a read or a write fault, “current permission” reflects the
+page permissions prior to the memory fault, and “page owner” denotes which process
+is ultimately responsible for this memory page. In this respect “home” implies that the
+process posting the interrupt is also the owner of the memory page, while “local”
+implies that the page is owned by a process running on the same physical node
+(noting the use of dual CPU nodes). Within SCASH not all transitions are possible,
+for example an RUMH transition is impossible since the default permission for a
+home page is ReadOnly.
+
+1070
+
+H.J. Wong and A.P. Rendell
+
+By way of contrast the timing data given in Table 1 should be compared to the
+latency of a “normal” memory access. This was measured using LMbench [8] as
+roughly 0.14usec. Within SCASH this would be the cost of accessing local memory,
+the cost of making a read access to a global memory page owned by the calling
+process, or the cost of reading (writing) to a page of global memory once a local copy
+had been created and assigned read (readwrite) protection. Clearly, from the data
+given in Table 1 the cost of the first write to any page of global memory, or first read
+of a remote page is significantly more expensive than 0.14usec. For example the cost
+of the first write to a global memory page owned by the calling process (WROH) is
+roughly 50 times greater at 8usec. While writing to a global memory page located
+within the same node, but not owned by the calling process (WROL) is longer still,
+since it requires some book-keeping (denoted by “send request”) and creation of a
+twin. Not surprisingly the most costly page faults involve read or write requests to an
+unmapped global memory page (WUMR or RUMR) as it requires that page to be
+transferred across the interconnect; at around 600usecs on a machine with a clock
+cycle of ≈2nsec this corresponds to roughly half a million clock cycles!
+For the application programmer it is important to realize that the costs given in
+Table 1 will, in general, be encountered for the first access to global memory after
+every synchronization point. That is following a synchronization point any local copy
+of a memory page is likely to be invalidated, so subsequent reads or writes to that
+page will encounter a new page fault and cost penalty as detailed in Table 1.
+A clear implication from the timing data is that codes which access memory by
+jumping from page to page with little or no reuse of data in the same page will
+perform very poorly (e.g. pointer chasing). Conversely to obtain reasonable
+performance the costs given in Table 1 need to be amortized over many subsequent
+data accesses to the same page, and this is especially true for remote page accesses. In
+short if you drag a memory page over the network you’d better make good use of it!
+Finally, we note that some of the events given in Table 1 may appear a little
+strange. For instance, a WRWH page fault is encountered when two processes share
+the same computer, the owner of the page has not yet written to it, but a companion
+thread on the same node has. Thus when the owner thread accesses this page an
+interrupt is triggered, but the page has actually already been marked with readwrite
+access.
+
+3 SCore Cluster Enabled OpenMP
+With a basic understanding of SCASH we can now consider the performance of some
+key OpenMP synchronization directives. To do this we have used the OpenMP
+microbenchmark tests suite [9] developed at Edinburgh Parallel Computing Centre
+(EPCC). Before presenting the results, however, it is pertinent to outline briefly how
+OpenMP is mapped onto the underlying SCASH SDSM.
+Not surprisingly OpenMP data quantities that are declared to be shared are stored
+in global SCASH memory pages. Thus if every thread in an OpenMP parallel region
+accesses the same global variable this will induce an interrupt on virtually all threads
+with requests for the relevant page to be transferred to the calling thread. The only
+exceptions are for read accesses to data stored in memory pages that are either owned
+
+The SCore Cluster Enabled OpenMP Environment
+
+1071
+
+by the calling thread or by a thread co-located on the same node. Thus as
+implemented the cost of transferring shared data from the master to child threads
+scales as O(No_Threads). Of course if multiple shared data quantities are stored in the
+same page then accesses to these other quantities will be cheap once the initial page
+transfer has occurred.
+The cluster enabled OpenMP compiler also uses a portion of the SCASH global
+shared memory space for administrative purposes. For example if the “#pragma
+omp parallel” directive is combined with a “copyin” clause then threadprivate
+data is transferred between the master and child threads by placing the relevant data
+items into a global memory page and having each child thread retrieve this data as
+required. Similarly information relating to the scheduling of parallel loops and
+reduction operations are communicated through global memory pages. Also and as is
+common to most OpenMP implementations, threads once created are kept alive but
+dormant between parallel regions. The parallel regions are “outlined” as functions that
+are then called as applicable by the child threads on entry to a parallel region. To
+communicate the name of the relevant function between the master and child threads
+the name of the outlined function is placed in an global memory page.
+Synchronization operations in OpenMP map to synchronization operations in
+SCASH. As part of the SCASH consistency model discussed above, this is where
+memory pages are flushed and updated. An SCASH barrier consists of 5 phases.
+1.
+2.
+3.
+4.
+5.
+
+Synchronization
+Flushing of modified memory pages
+Synchronization
+Invalidation of pages
+Synchronization
+
+Here flushing of the modified memory pages involves transferring the differences
+that have resulted from write operations back to the owning page, while invalidation
+of pages involves communicating with remote processes so that they can update their
+page tables based upon which pages have been modified. Just from this basic
+understanding of what is involved it is clear that synchronizations will be expensive.
+In Table 2 we report the timing results for the EPPC OpenMP synchronization
+microbenchmarks run on the Pentium III cluster. Some minor modifications to the test
+suite were made. In particular the iteration counter used in these benchmarks is
+assigned global scope. Since the first access to this variable (or more precisely the
+global memory page containing this variable) occurs within the timing routine this
+induces an interrupt and transfer of the associated memory page to the requesting
+page. To avoid this additional overhead we have defined this variable as threadprivate
+with a copyin clause to transfer it from master to child before the start of the
+timed loop.
+The results obtained on the Pentium cluster and using between 1 and 8 OpenMP
+threads are compared with similar data obtained on a Sun V1280 system with 12
+900MHz UltraSparc III processors and hardware shared memory. On the cluster
+results were obtained using both 1 and 2 threads per dual processor Pentium III node.
+Comparing a single thread run on the cluster (denoted 1x1) with a single thread run on
+the Sun (denoted 1) we see that the overheads associated with inclusion of the
+OpenMP directives are roughly equivalent (especially when the faster clock rate of
+
+1072
+
+H.J. Wong and A.P. Rendell
+
+the Sun processor is considered). As soon as we move to multiple threads, however,
+the situation changes dramatically with significantly larger overheads recorded on the
+cluster. Moreover this is even true when running 2 OpenMP threads on 1 node of the
+cluster (denoted 1x2) where the cost of the parallel/for/barrier/single/
+reduction constructs are typically two orders of magnitude larger than the
+equivalent results obtained on the Sun. If we move to 2 threads running across 2
+nodes of the cluster (denoted 2x1) the performance of these operations gets even
+worse. In comparison the overhead associated with the critical/ordered/
+atomic directives is relatively good for two threads within the same nodes, but
+increases dramatically when the threads are located on different nodes.
+Table 2. Overhead (usec) for OpenMP synchronization directives on cluster with dual
+processor Pentium III nodes linked via 100MBit/sec Ethernet and a 12 900MHz CPU Sun
+hardware shared memory V1280 system
+
+Directive
+parallel
+for
+parallel for
+barrier
+single
+critical
+lock
+ordered
+atomic
+reduction
+
+Pentium III (nodes x threads/node)
+1x1
+2x1
+1x2
+4x1
+4x2
+0.8
+1762
+474
+13556 43571
+0.5
+662
+221
+7731 17033
+1.2
+1797
+471
+13498 42571
+0.2
+661
+225
+7305 17631
+0.9
+4371
+304
+15330 47804
+1.3
+179
+6
+260
+976
+0.6
+52
+4
+74
+204
+1.7
+1154
+8
+3712
+6454
+1.3
+3446
+7
+4776
+5023
+1.1
+29994
+966
+47836 98553
+
+Sun V1280 (Threads)
+1
+2
+4
+8
+0.3
+5.3
+6.8
+10.0
+0.5
+2.1
+2.9
+4.3
+0.7
+6.0
+7.3
+12.8
+0.1
+1.1
+1.8
+2.9
+0.1
+0.9
+1.3
+2.0
+0.2
+0.3
+0.5
+0.5
+0.2
+0.4
+0.5
+0.5
+0.2
+0.6
+0.6
+0.6
+0.1
+0.5
+0.8
+1.1
+0.5
+5.5
+7.8
+12.0
+
+Table 2 shows that on the cluster the cost of a parallel/parallel for
+directive is roughly twice the cost of a barrier, while the cost of an isolated for
+directive is roughly equal to the cost of a barrier. This is easily explained by the
+existence of an implicit barrier at both the start and end of the parallel and
+parallel for directives, but only one implicit barrier at the end of the for
+directive. In contrast the single directive, while also containing a barrier at the end
+of the associated region of code, also requires some additional book-keeping to ensure
+that just one thread executes this portion of code. This is handled by using a shared
+counter, with access to this counter controlled by locks. As the shared counter is
+stored in global memory, page faults are encountered when each thread accesses it
+giving rise to extra cost. Also the overall cost of the single directive appears to scale
+rather poorly with increasing thread count, thus depending on the context, it may be
+better to specifically assign the work/code associated with this directive to one
+thread.
+The most expensive operation is reduction. This requires two barrier calls, and
+also makes use of the global administrative pages. Specifically, prior to the first
+barrier call, all threads place their partial results into unique locations in the global
+
+The SCore Cluster Enabled OpenMP Environment
+
+1073
+
+administrative page. The first barrier serves to propagate these partial contributions
+back to the thread owning that memory page – in this case to thread 0. When this
+barrier is complete thread 0 then combines the partial contributions and writes the
+result to another location in the same page. The second barrier is used to indicate that
+this operation is complete and that the child processes can now access the final result.
+As with the basic SCASH synchronization mechanism, the overall cost of a reduction
+operation will scale as O(No_Threads).
+
+4 Case Study
+To illustrate the likely performance of SCore cluster enabled OpenMP on a real
+computational science application code we consider heat distribution in a two
+dimensional conducting plate. In this problem the temperature of a conducting plate is
+held constant at the edges and the aim is to determine the temperature of the interior
+of the plate. The problem is described by the 2-D Laplace equation, and as such is
+similar to a number of other related problems. The equations are solved iteratively
+using a finite difference approach with a regular rectangular grid. During each
+iteration a new value of the temperature at a given grid point is computed based on the
+average of the temperatures of the four surrounding grid points, with iterations
+continuing until some agreed convergence is reached. Ignoring convergence testing
+and imposition of the boundary conditions the basic sequential code is as follows:
+/*Line1*/ for (i=0; i<no_of_iterations; i++){
+/*Line2*/
+for (y=0; y<no_of_rows; x++)
+/*Line3*/
+for (x=0; x< no_of_columns; x++)
+/*Line4*/
+new[x,y] = (old[x+1,y]+old[x-1,y]+
+old[x,y+1]+old[x,y-1])/4.0
+/*Line5*/
+tmp=new; new=old; old=tmp;
+/*Line6*/ } /* next iteration */
+
+Four parallel implementations were considered:
+1.
+2.
+
+3.
+
+4.
+
+Naïve: A “#pragma omp parallel for” directive combining thread
+creation and work division is placed immediately before line2.
+Barrier minimization: A “#pragma omp parallel” directive is
+placed before line 1, and a “#pragma omp for” before line 2. The
+rational for this is that it reduces the number of barriers per iteration from
+two to one.
+Page alignment and fault minimization: the memory associated with
+arrays new and old is carefully allocated so that threads maximize use of
+“home” data.
+Barrier and page fault minimzation: optimizations 2 and 3 are combined
+
+Timing results for the four different implementations run on 1, 2 and 4 nodes of the
+cluster are given in Table 3. From this it is immediately apparent that a naïve
+inclusion of OpenMP directives into the sequential code is not a good idea. Adjusting
+the code with the aim of reducing the number of associated barrier calls results in a
+slight performance gain on 2 nodes, but worse performance on 4 nodes. Since both
+cases are still much slower than the sequential code there are clearly other factors
+
+1074
+
+H.J. Wong and A.P. Rendell
+
+affecting performance. If we now adjust memory to ensure that data quantities are
+optimally aligned we see a dramatic performance increase, with the code now
+showing some performance benefit from running on multiple nodes. Finally
+combining barrier minimization with page placement we obtain the best performance
+result – albeit only a speedup of 1.9 on 4 nodes of the cluster.
+Table 3. Performance comparison of sequential heat code with three alternative OpenMP
+parallel algorithms run using SCore on the Pentium III cluster for a grid size of 1024x1024 and
+100 iterations
+
+0
+1
+2
+3
+4
+
+Implementation
+Sequential
+Naïve
+Barrier Opt.
+Page Fault Opt.
+Barrier&Page Opt.
+
+1x1
+8.2
+8.2
+8.2
+8.2
+8.2
+
+Time (sec)
+2x1
+75.7
+63.7
+6.9
+6.7
+
+4x1
+86.9
+101.1
+5.3
+4.3
+
+Speedup
+2x1
+4x1
+0.11
+0.13
+1.19
+1.22
+
+0.09
+0.08
+1.55
+1.91
+
+5 Conclusions
+This paper provides a brief overview of the SCore cluster enabled OpenMP
+environment. The performance of some of the key underlying operations on a cluster
+of Pentium III processors is evaluated and compared with OpenMP running on a
+dedicated hardware shared memory system. Using this information and a knowledge
+of the SCore implementation we were able to obtain an acceptable level of
+performance for a computational science kernel running on the Pentium III cluster.
+Acknowledgements. The authors gratefully acknowledge discussions with J. Antony
+and A. Over. This work was supported in part by the Australian Research Council
+through Linkage Grant LP0347178.
+
+References
+1. OpenMP Forum, “OpenMP: A proposed industry standard api for shared memory
+programming”, http://www.openmp.org, Oct. 1997.
+2. Y. Ojima, M. Sato, H. Harada, Y. Ishikawa, “Performance of Cluster-enabled OpenMP for
+the SCASH Software Distributed Shared Memory System”, Proc. of the 3rd IEEE/ACM Int.
+Sym. on Cluster Computing and the Grid, 450-456 (2003).
+3. Y.C. Hu, H. Lu, A.L. Cox, and W. Zwaenepoel, “OpenMP for Networks of SMPs”, J.
+Parallel Dist. Computing, 60, 1512-1530 (2000).
+4. S-J. Min, A. Basumallik and R. Eigenmann, “Optimizing OpenMP Programs on Software
+Distributed Shared Memory Systems”, Int. J. Parallel Programming, 31, 225-249 (2003).
+5. D. Margery, G. Vallée, R. Lottiaux, C. Morin, and J-Y. Berthou, “Kerrighed: a SSI Cluster
+OS Running OpenMP”. Proc. 5th European Workshop on OpenMP (EWOMP '03), Sept.
+2003.
+
+The SCore Cluster Enabled OpenMP Environment
+
+1075
+
+6. L. Huang, B. Chapman, Z. Liu and R. Kendall, “Efficient Translation of OpenMP to
+Distributed Memory”, Lecture Notes in Computer Science, 3038, 408 (2004).
+7. See http://www.pccluster.org/
+8. L. McVoy, “LMBench – Tools for Performance Analysis”, http://www.bitmover.com/
+lmbench
+9. See http://www.epcc.ed.ac.uk/research/openmpbench/openmp_index.html
+
+

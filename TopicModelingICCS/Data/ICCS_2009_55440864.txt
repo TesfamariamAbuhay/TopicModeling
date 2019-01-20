@@ -1,0 +1,695 @@
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs∗
+Mingliang Wang1, Hector Klie2, Manish Parashar1, and Hari Sudan2
+1
+
+NSF Center for Autonomic Computing (CAC)
+The Applied Software System Laboratory (TASSL)
+Rutgers, The State University of New Jersey
+94 Brett Road, Piscataway, NJ 08854, USA
+{mlwang,parashar}@cac.rutgers.edu
+2
+ConocoPhilips
+Houston, TX, USA
+{Hector.M.Klie,Hari.H.Sudan}@conocophillips.com
+
+Abstract. Current many-core GPUs have enormous processing power, and
+unlocking this power for general-purpose computing is very attractive due to
+their low cost and efficient power utilization. However, the fine-grained
+parallelism and the stream-programming model supported by these GPUs
+require a paradigm shift, especially for algorithm designers. In this paper we
+present the design of a GPU-based sparse linear solver using the Generalized
+Minimum RESidual (GMRES) algorithm in the CUDA programming
+environment. Our implementation achieved a speedup of over 20x on the Tesla
+T10P based GTX280 GPU card for benchmarks with from a few thousands to a
+few millions unknowns.
+
+1 Introduction
+Single core performance is leveling off, and recent growth has focused on on-chip
+parallelism and multiple cores. Chip designers are increasing processing capability by
+building multiple processing cores in one chip package and keep increasing the
+numbers of cores that can fit into a chip. Moore's Law has a new interpretation: it is
+the number of cores that doubles every 18 months [1]. Following this trend,
+commodity hardware is delivering formidable processing power at rather moderate
+cost and GPU is taking the lead. For example, the latest T10P GPU core embedded in
+a NVIDIA GTX280 graphics card delivers over a TFLOP [2], at a price tag of less
+than $500. Other competing venders in graphics and general purpose computing have
+similar offerings.
+
+∗
+
+The research presented in this paper was supported in part by National Science Foundation via
+grants numbers IIP 0758566, CCF-0833039, DMS-0835436, CNS 0426354, IIS 0430826, and
+CNS 0723594, and by Department of Energy via the grant number DE-FG02-06ER54857,
+and was partially conducted as part of the NSF Center for Autonomic Computing at Rutgers
+University. The authors would also like to thank NVIDIA for their technical support.
+
+G. Allen et al. (Eds.): ICCS 2009, Part I, LNCS 5544, pp. 864–873, 2009.
+© Springer-Verlag Berlin Heidelberg 2009
+
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs
+
+865
+
+The huge performance available on GPUs has generated interest in using it for
+general purpose computing [3,4,5]. GPUs are stream processors and were historically
+designed for shader operations that involve applying a series of shader kernels to a
+large collection of data elements called a stream. This is a restricted form of
+parallelism, and while it simplifies the hardware and software required to implement
+it, mapping general-purpose computing to this paradigm is often difficult.
+In this paper, we explore the use of GPUs for solving large sparse linear systems
+using the Generalized Minimal RESidual (GMRES) [6] algorithm. This is an
+important algorithm because many scientific applications can be transformed into
+solving a sparse linear system, and GMRES is the classical iterative method when the
+coefficient matrix is asymmetric. Our preconditioned GMRES implementation
+achieves a speedup of over 20x on the Tesla T10P based GTX280 GPU card, relative
+to a serial version1, for benchmarks with from a few thousands to a few millions
+unknowns. Close to the highest speedup was achieved for the largest input.
+0
+
+1
+
+…
+
+29
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+P
+
+SFU
+
+SFU
+
+SM
+
+…
+
+SFU
+
+SM
+
+SM
+
+GPU memory
+DMA
+
+CPU memory
+P:
+SM:
+SFU:
+
+thread processor
+shared memory
+special function unit
+
+Fig. 1. Architecture overview of a Tesla T10P core for general-purpose computation
+
+2 Backgrounds and Related Work
+An architectural overview of the TESLA T10P GPU architecture, from the
+perspective of general purpose computing, is presented in Fig. 1. Note that graphics
+related details are omitted.
+Tesla T10P SIMD core is an SIMD array of scalar processors. It has 30
+multiprocessors with 8 Thread Processor (cores) each, resulting in a total of 240
+1
+
+The serial version of GMRES was based on the FORTAN version in SPARSEKIT, which was manually
+translated to ANSI C. The C version performed the same or better than the FORTRAN version for all
+benchmark inputs. The code was compiled using the Intel® icc version 10.1 compiler with optimization
+flag –O2, and executed on the Intel® Harpertown core clocked at 3.0GHz. Optimization flag –O2 was
+chosen because the codes performed slightly better using –O2 as compared to using –O3.
+
+866
+
+M. Wang et al.
+
+cores. Each multiprocessor has one instruction issue unit, which broadcasts
+instructions to the scalar cores [2,7]. The flexibility offered by T10P cores includes
+the ability to execute scalar threads with arbitrary branch behaviors and memory
+access patterns. In [2], this exposure of the SIMD units as individual programmable
+scalar units is called Single Thread Multiple Thread (SIMT). However this flexibility
+comes at a cost if it is not exploited properly [2,7].
+The GPU platform also has a more complex memory structure. In case of the
+T10P, cores have access to a set of off-chip memory spaces: global memory, local
+memory, constant memory, and texture memory. Constant and texture memory are
+cached but global and local memory are not. The on-chip memory includes a small
+shared memory (16KB on a T10P chip) that is local to each multiprocessor and can be
+used as software managed cache. The instruction cache is transparent to programmers.
+For general purpose computing on a GPU, most programmers only use global
+memory, shared memory, and local memory. The latency of a global memory access
+is about 400 core clock cycles, and that of a shared memory access is 1 cycle if there
+are no bank conflicts [7].
+The connection between CPU memory and GPU memory is through a fast PCIe
+16x point-to-point link. The transfer time for a given size data chunk can be computed
+as the following.
+t transfer = t c +
+
+S
+B
+
+(1)
+
+t c : the constant startup overhead. Device to host : 9.95μs, host to device : 13.3μs
+S : bytes transfered
+B : bandwidth. Device to host : 5.76GB/s, host to device : 5.05 GB/s
+
+Note that the above equations as well as the constants are derived using actual transfer
+times measured for a range of data sizes (1024 B to 64 MB).
+2.1 Support for Programming on GPU
+Programming GPUs for general purpose computing is not easy. Earlier programming
+models were based on shading languages such as HLSL, GLSL [8] and Cg [9], which
+are graphics oriented and have to be used with the OpenGL or DirectX APIs. In these
+models, computation was essentially organized as a sequence of shading operations
+(kernels) on graphics data (streams). Programmers had to make explicit calls to these
+graphics APIs to manage streams and launch kernel calls.
+With the advent of Brook [10], direct general-purpose stream programming is
+supported on the GPU platform. General-purpose computation on a GPU is directly
+expressed as kernels acting on streams using this model. The model also eliminates
+the unnatural graphics API calls in the prior models. CUDA [7] added even more
+flexibility by allowing scattering, which enables direct and random access to DRAM
+associated with a GPU and makes programming on GPU almost as flexible as a CPU.
+Other features of CUDA include the exposure of the on-chip fast shared memory,
+local synchronization, and atomic operations on memory.
+
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs
+
+867
+
+2.2 Related Work
+In the area of matrix computation, Galoppo et al. [11] studied the peak performance
+of a GPU dense matrix decomposition algorithm. Volkov et al. [12] also investigated
+the implementation of dense matrix computation and claimed to approach peak
+performance on the G80 series GPUs using their matrix-matrix multiply routine. In
+[13], Garland gave an introduction to sparse matrix algorithms on NVIDIA GPUs.
+Data parallel approach to GPU programming using the primitive segmented scan was
+presented in [14]. Boltz el al. [15] discussed an iterative solver for symmetric sparse
+matrix. These previous efforts focused on handling the peculiarities of the GPU
+platform while implementing a particular algorithm or algorithmic building block
+using the programming environment provided by the vendors. They showed
+impressive results and demonstrated the tremendous potential of GPUs as
+coprocessors.
+GMRES is a widely used iterative method for solving large linear systems, and its
+parallelization has been attempted on various platforms using different approaches. In
+[16], a hybrid parallelized GMRES on GRID systems was presented. Compared to
+our method, it is a distributed memory implementation and involves computation of
+eigenvalues that requires more computation and does not efficiently use the GPU
+hardware. An earlier parallel implementation using PVM message passing was
+reported in [17]. It was programmed using a parallel version of basic linear algebra
+operations for distributed memory computers. It was designed for the linear systems
+derived from 5-point finite difference discretizations and exploited its particular
+communication patterns for efficiency. Our implementation nonetheless is for generic
+sparse linear systems.
+Conjugate gradient is a related iterative algorithm that solves symmetric positivedefinite linear systems, and its implementation without preconditioning on an earlier
+NVIDIA GPU platform was reported in [15]. This implementation was based on an
+awkward graphics API and focused on issues that arose while mapping the algorithms
+to this unwieldy API. Our preconditioned GMRES solves generic sparse matrixes and
+has a powerful parallelized preconditioner.
+
+3 Parallelizing GMRES for Stream Processing Using GPUs
+A key aspect of programming applications to use GPUs involves partitioning the
+computation into a partition that runs on the CPU and another partition that runs on
+the GPU. The purpose of this partitioning is to offload selected, for example, compute
+intensive, portions to the GPU, while still using the CPU for other aspects such as
+global synchronization. Note that typically it is not beneficial to offload a complete
+application to the GPU due to the limitations of the stream-processing model. Stream
+processing is most appropriate when similar operations (kernels) are applied to a large
+collection of homogeneous data elements. A kernel is applied independently to each
+element without communication during execution. This limits the computation that
+can be implemented as a single kernel and therefore, most applications require a
+sequence of kernel calls. Additionally, an application may need to communicate with
+other entities or use other services, which may not be accessible from a GPU.
+
+868
+
+M. Wang et al.
+
+Application partitioning presents several challenges. It requires programmers to
+manually identify which computations are appropriate for the GPU and to keep track
+of the computations running on the CPU and on the GPU, as well as manually initiate
+and manage data transfers between the two. This style of programming is not only
+tedious but also error-prone, and significantly impacts programmers’ productivity.
+To address this issue, we propose to create a high-level library that can
+transparently offload compute-intensive operations to GPU for certain classes of
+applications, and that presents, on the CPU side, a set of abstract data types as basic
+building blocks for programming numeric applications. These abstractions include
+vectors, dense matrices and sparse matrices. These data types maintain memory
+regions within GPU and CPU memory spaces and support synchronization between
+them. A set of basic operations similar to the BLAS level 1, are included. Problem
+specific operations such as those used in GMRES are implemented over these basic
+operations. The method to parallelize GMRES for the Tesla T10P GPU using CUDA
+is presented below.
+3.1 GMRES Iterations
+GMRES is a well-known iterative method to solve large sparse non-symmetric
+systems of the form Ax = b and was proposed by Saad and Schultz in 1986 [16].
+GMRES generates a basis of dimension m for the Krylov subspace
+K m ( A, v ) = span{v, Av , A 2V ,..., A m −1v} for a given initial residual v . The Krylov basis
+is constructed with the Arnoldi algorithm which is typically implemented in terms of
+the modified Gram-Schmidt orthogonalization process to generate the orthogonal
+basis {v1 , v2 ,..., vm } of the Krylov subspace K m ( A, v ) .
+
+Given the Krylov basis, an intermediate solution
+by
+
+the
+
+solution
+
+of
+
+the
+
+least
+
+squares
+
+x m in the m-th iteration is given
+problem:
+
+minimize b − Ax 2 ,
+
+where x ∈ x0 + K m ( A, r0 ) and r0 = b − Ax0 is the residual associated with the initial
+guess x0 .
+As m increases, the computational cost increases at least as O ( m 2 n ) , and memory
+cost increases as O (mn ) . In large systems, this limits the largest value of m that can
+be used. Restarted GMRES is applied to remedy this situation. After a fixed number
+m of iterations, the solution x m is used as the initial guess x0 to restart a new
+GMRES.
+However, GMRES does not always converge, and even when it converges, it may
+take too many iterations to reach the desired residual tolerance. Preconditioning is a
+technique to improve this situation. It replaces the system Ax = b with the modified
+systems
+
+M −1 Ax = M −1b .
+or
+
+(2)
+
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs
+
+AM −1 xˆ = b, x = M −1 xˆ .
+
+869
+
+(3)
+
+The desired properties of M include 1) the modified system M −1 A converges fast,
+2) linear systems My = c easy to solve; 3) easy to parallelize. The preconditioned
+GMRES algorithm is shown in List 1.
+The most expensive operations of this algorithm are computing the
+term w = AM −1v j . It requires solving a linear system with coefficient matrix M and a
+matrix-vector multiplication. In parallelizing this algorithm, we choose to find a
+preconditioner that makes computing the vector term w = AM −1v j amenable to be
+distributed in different processors. For the time being, we do not seek parallelizing the
+GMRES algorithm itself.
+List 1. Left-preconditioned Generalized Minimum Residual algorithm with restarts
+
+START:
+compute r0 = b − AM −1 x 0 ,
+β = r0 , and v1 = r0 / β
+for j=0,1,2,…m do
+compute w = AM −1 v j
+for i=1,2,3,…,j do
+hij = v iT w
+w = w − hij wi
+
+end do
+compute h j +1, j = w and v j +1 = w / h j +1, j
+end do
+//solve the least square problem
+
+y m such that it is
+
+min y βe1 − Hˆ y , Hˆ is the matrix constructed from hij //
+
+x m = x0 + Vm y m
+//test for termination condition //
+if satisfied,
+goto DONE
+else
+
+x0 = xm
+goto START
+end if
+DONE:
+output x = M −1 xm
+
+870
+
+M. Wang et al.
+
+3.2 Parallelizing Matrix Vector Multiplication and Pre-conditioning
+
+Sparse matrix vector multiplication appears in computing the term w = AM −1v j , and
+hence requires us to choose a strategy that is compatible with the parallel solve
+operation in the preconditioning matrix.
+In the serial GMRES, incomplete LU decomposition is often used as the
+preconditioner as it can greatly improve the convergence rate. It is illustrated in the
+following equation.
+A = LU + E .
+
+(4)
+
+For a sparse matrix A, it is LU-decomposed but only at the locations where A
+originally has non-zeros. The term E accounts for the dropped elements.
+
+A1
+U
+L
+
+A2
+A3
+…
+Ak
+
+Fig. 2. Block ILU preconditioner is less effective than the conventional ILU, but has plenty of
+parallelism to exploit. This fits well in the data parallel model of computation on GPU. Each
+individual block is sparse and back/forward substitutions are used to compute U −1 L−1v . The
+typical block size used in the experiments was 32.
+
+We parallelize ILU by using its variant block-ILU [19], which incurs further
+drops by conducting ILU only along the main diagonal. Coefficient matrix A is
+divided into equal sized sub-matrices and then locally decomposed using ILU, as
+shown in Fig. 2.
+Because these blocks do not communicate to each others in decomposition and also
+in solving it, this scheme fits well in the data parallelism paradigm. A stream now is a
+collection of sub-matrices along the main diagonal.
+With this parallelizing scheme for the preconditioner, we can now easily compute
+in parallel the sparse matrix vector multiplication by computing a lot of small matrix
+vector multiplication on the main diagonal blocks. General sparse matrix vector
+multiplication is investigated in [13].
+However, the preconditioner computed from this block ILU is in general less
+effective than the conventional ILU computed from the whole matrix and hence
+requires more iterations to reach the same level of residual.
+
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs
+
+871
+
+3.3 Polynomial Preconditioner
+
+A preconditioner can be enhanced by computing a polynomial of it and use this new
+matrix as the preconditioner. This technique is discussed in [19]. The following is a
+polynomial preconditioner of order s.
+
+M −1 = [ I + N + ... + N s ] .
+
+(5)
+
+with
+(6)
+N = [ I − ωU −1 L−1 A] .
+We implement a polynomial preconditioner using the block ILU preconditioner
+and empirically compare its effectiveness.
+Note that this polynomial preconditioner is not computed explicitly but through a
+series of forward-backward substitutions and matrix vector multiplications, built from
+the operations discussed in above.
+
+4 Experimental Evaluation
+The parallel GMRES was tested on the Tesla T10P GPU using a set of matrix data
+from the oil field simulation data of ConocoPhillips. The order of the system ranges
+from ~2000 to ~1.1 million. The serial version was run on Intel Harpertown clocked
+at 3.0GHZ and the parallel version on the same machine, with a NVIDIA GTX 280
+GPU card. They were compiled using the Intel ICC version 10.1 and used CUDA
+SDK version 2.0. Table 1 presents the experimental results for different matrices.
+Residual tolerance 1e-2 reflects the actual value requested in a modeling application
+at ConocoPhillips.
+Table 1. Experimental evaluation of GMRES on Tesla T10P GPU. Polynomial order=1,
+GMRES restart=20, final residual=1e-2. Times are in seconds.
+Matrix
+
+N
+1946
+
+Serial
+Iters.
+3
+
+Parallel Serial
+Iters.
+Time
+6
+0.0018
+
+Parallel
+Time
+0.0060
+
+Speedup Mem Trans. Diff. bewteen
+Solutions 2
+0.3
+5.30%
+1.8e-05
+
+Sample 1
+Sample 2
+
+192096
+
+10
+
+20
+
+9.41
+
+1.16
+
+8.1
+
+2.30%
+
+Sample 3
+
+184102
+
+13
+
+19
+
+7.67
+
+0.326
+
+23.5
+
+3.60%
+
+1.3e-04
+
+SPE 10_1
+
+132000
+
+40
+
+40
+
+4.82
+
+0.70
+
+6.8
+
+2.70%
+
+2.4e-02
+
+SPE 10_2
+
+1122000
+
+140
+
+100
+
+436.33
+
+22.10
+
+19.7
+
+1.30%
+
+2.1e-03
+
+8.0e-03
+
+The effect of polynomial enhancement is shown in Fig. 3, for one of the matrices.
+As evident in the figure, polynomial enhancement is effective, i.e., as the order of the
+polynomial increases, the number of iterations required to reach a desired precision
+decreases. However, as the order increased, each iteration requires more computation.
+Our empirical study showed that a low order, i.e., 1~2, yields the best result for the all
+the matrices tested.
+2
+
+Difference of solutions is measured as ||x1 – x2||/||x2|| (2-norm), where x1 and x2 are the
+parallel and serial solutions respectively.
+
+872
+
+M. Wang et al.
+10
+
+Serial
+p=0
+10
+
+-1
+
+p=1
+p=2
+p=4
+p=6
+p=8
+
+10
+
+10
+
+-2
+
+-3
+
+0
+
+20
+
+40
+
+60
+
+80
+
+100
+
+120
+
+140
+
+160
+
+180
+
+Fig. 3. Effectiveness of polynomial enhancement. Matrix=85x220x60, n=1,122,000, number of
+non-zero = 7,780,000, restart=20.
+
+5 Conclusions
+The parallel implementation of GMRES on the Tesla T10P GPU presented in this
+paper has shown very encouraging speedups (up to ~ 20x), which confirms the great
+potential benefits of offloading computation to GPUs. In parallelizing GMRES,
+block-ILU plays a crucial role, as it not only parallelizes the preconditioning
+computation but also naturally decomposes the matrix-vector multiplication and the
+subsequent polynomial enhancement. Discovering this strategy requires deep
+understanding of the iterative algorithms and also the characteristics of the GPU
+hardware. This highlights the necessity for collaborations between domain experts
+and parallel program developers, as well as the need for higher-level programming
+support.
+In the empirical study presented, it was observed that a low degree (s < =2) was a
+well-balanced choice from the perspective of effectiveness of polynomial
+enhancement. When the degree is larger, even though the preconditioner is still
+improves, the additional computation incurred dominates the gains due to reduced
+iterations.
+In our implementation using C++, the serial version of GMRES was around 1000
+lines of codes, while the parallel one was roughly 5000 lines of code. From the
+productivity standpoint, this partly illustrates the additional work needed in parallel
+programming on GPU with CUDA.
+The small C++ library developed helped hide the details of GPU programming for
+numerical algorithms from the applications experts and enabled the access of the GPU
+platform from a broader audience.
+
+Solving Sparse Linear Systems on NVIDIA Tesla GPUs
+
+873
+
+References
+1. Agarwal, A., Levy, M.: The kill rule for multicore. In: Proceedings of the 44th annual
+conference on Design automation, San Diego, California, pp. 750–753. ACM, New York
+(2007)
+2. Lindholm, E., Nickolls, J., Oberman, S., Montrym, J.: NVIDIA Tesla: A unified graphics
+and computing architecture. Micro, IEEE 28(2), 39–55 (2008)
+3. He, B., Yang, K., Fang, R., Lu, M., Govindaraju, N., Luo, Q., Sander, P.: Relational joins
+on graphics processors, Vancouver, Canada, pp. 511–524. ACM, New York (2008)
+4. He, B., Govindaraju, N.K., Luo, Q., Smith, B.: Efficient gather and scatter operations on
+graphics processors. In: Proceedings of the 2007 ACM/IEEE conference on
+Supercomputing, Reno, Nevada, pp. 1–12. ACM Press, New York (2007)
+5. Rodrigues, C.I., Hardy, D.J., Stone, J.E., Schulten, K., Hwu, W.M.W.: GPU acceleration
+of cutoff pair potentials for molecular modeling applications. In: Proceedings of the 2008
+conference on Computing frontiers, Ischia, Italy, pp. 273–282. ACM, New York (2008)
+6. Saad, Y., Schultz, M.H.: GMRES: a generalized minimal residual algorithm for solving
+nonsymmetric linear systems. SIAM Journal on Scientific and Statistical Computing 7(3),
+856–869 (1986)
+7. Nickolls, J., Buck, I., Garland, M., Skadron, K.: Scalable parallel programming with
+CUDA, Los Angeles, California, pp. 1–14. ACM Press, New York (2008)
+8. Rost, R.J.: OpenGL(R) Shading Language. Addison-Wesley Professional, Reading (2004)
+9. Mark, W.R., Glanville, R.S., Akeley, K., Kilgard, M.J.: Cg: a system for programming
+graphics hardware in a c-like language. In: ACM SIGGRAPH 2003 Papers, San Diego,
+California, pp. 896–907. ACM Press, New York (2003)
+10. Buck, I., Foley, T., Horn, D., Sugerman, J., Fatahalian, K., Houston, M., Hanrahan, P.: Brook for
+GPUs: stream computing on graphics hardware. ACM Trans. Graph. 23(3), 777–786 (2004)
+11. Galoppo, N., Govindaraju, N.K., Henson, M., Manocha, D.: LU-GPU: Efficient algorithms for
+solving dense linear systems on graphics hardware. In: Proceedings of the 2005 ACM/IEEE
+conference on Supercomputing., p. 3. IEEE Computer Society, Los Alamitos (2005)
+12. Volkov, V., Demmel, J.: LU, QR and Cholesky factorizations using vector capabilities of
+GPUs. Technical Report UCB/EECS-2008-49, EECS Department, University of
+California, Berkeley (May 2008)
+13. Garland, M.: Sparse matrix computations on manycore GPU’s, Anaheim, California, pp.
+2–6. ACM, New York (2008)
+14. Sengupta, S., Harris, M., Zhang, Y., Owens, J.D.: Scan primitives for GPU computing. In:
+Proceedings of the 22nd ACM SIGGRAPH/EUROGRAPHICS symposium on Graphics
+hardware, San Diego, California, pp. 97–106. Eurographics Association (2007)
+15. Bolz, J., Farmer, I., Grinspun, E., Schroder, P.: Sparse matrix solvers on the GPU:
+conjugate gradients and multigrid. In: ACM SIGGRAPH 2003 Papers, San Diego,
+California, pp. 917–924. ACM, New York (2003)
+16. Zhang, Y., Bergere, G., Petiton, S.: A parallel hybrid method of GMES on grid system. In:
+Parallel and Distributed Processing Symposium, IPDPS 2007, IEEE International, pp. 1–7 (2007)
+17. Dias, R., Cunha, D., Hopkins, T.: A parallel implementation of the restarted GMRES iterative
+algorithm for nonsymmetric systems of linear equations. Adv. Comp. Math 2, 261–277 (1994)
+18. He, H., Bergere, G., Petiton, S.: GMRES method on lightweight grid system. In:
+Proceedings of the 4th International Symposium on Parallel and Distributed Computing,
+pp. 74–82. IEEE Computer Society Press, Los Alamitos (2005)
+19. Saad, Y.: Iterative Methods for Sparse Linear Systems, 2nd edn. Society for Industrial and
+Applied Mathematics (April 2003)
+
+

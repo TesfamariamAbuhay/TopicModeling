@@ -1,0 +1,577 @@
+Running Ada on Real-Time Linux
+Miguel Masmano, Jorge Real, Ismael Ripoll, and Alfons Crespo
+Department of Computer Engineering (DISCA)
+Technical University of Valencia, Spain
+jorge@disca.upv.es
+
+Abstract. The Real-Time Linux operating system (RTLinux) is an attractive platform for real-time programming, since real-time tasks can be guaranteed bounded
+response times, whilst a number of applications, IDEs, GUIs, etc. are also available for the same platform. In RTLinux, real-time tasks are implemented (in C) as
+kernel modules. Special care must be taken when writing kernel modules: an error
+in a single task can make the whole system hang or crash, since they are executed
+in the kernel memory space.
+This is clearly an area where Ada can be of great help: Ada’s strong typing,
+consistency checking, robust syntax and readability, and the availability of high
+quality compilers, encourage the writing of correct software and allow to catch
+coding errors early in the implementation.
+In this paper, we show the state of development of a compilation system for Ada
+programs on RTLinux, based on the GNAT Ada compiler.
+
+1
+
+Introduction
+
+Several real-time kernels have been developed in the recent years that provide support for
+Ada programs. MaRTE OS [2] and ORK (Open Ravenscar Kernel) [6] are two examples.
+MaRTE provides full Ada support, whilst ORK implements the Ravenscar subset [5].
+However, these kernels provide only the limited support needed for small embedded
+systems.
+Real-time applications require predictability. In the general case, an operating system
+(OS) is intended to provide a number of complex services (file systems, complex memory
+management, a number of drivers for the different hardware devices, networking, etc.)
+and is designed to fairly share the computing resources among processes, to have good
+average response times and to provide a high throughput. This fact makes it virtually
+impossible to achieve real-time performance in general purpose OSs. However, new
+trends in embedded systems consider that some additional services, such as networking
+or high-level resource management, are crucial for applications in the fields of complex
+process control, multimedia, robotics, etc.
+A solution to this conflict consists in inserting a real-time layer beneath an existing
+OS, which provides a virtual machine for the OS, that runs in the background, and to
+run the real-time workload in the foreground. This is the approach followed by RealTime Linux (RTLinux, for short) [4] and other OSs like RTX [12] on Windows NT.
+The benefits of such an approach are predictability for the real-time applications, where
+the complex non real-time functions are performed in the background, and the data and
+J.-P. Rosen and A. Strohmeier (Eds.): Ada-Europe 2003, LNCS 2655, pp. 322–333, 2003.
+c Springer-Verlag Berlin Heidelberg 2003
+
+Running Ada on Real-Time Linux
+
+323
+
+control connections between real-time and non real-time parts of the application are
+achieved by means of fast real-time buffers (RT FIFOs in RTLinux). The OS device
+drivers can also be inherited for use without hard timing constraints.
+Until today, RTLinux only allowed C programming and some support for C++.
+Our work focuses on generating an RTLinux application fully written in Ada. There
+exists a precedent to this work by Shen, Charlet, and Baker [11] which describes the
+implementation of an Ada tasking kernel as a layer of the Linux OS, derived from an
+early version of RTLinux. This work achieved to run Ada programs at the Linux kernel
+level. In their approach, the Ada run-time system is executed as a Linux kernel module.
+Two levels can be identified: the Ada application at the lower level and the Linux OS
+providing support to other non real time applications.
+In our approach, we maintain the RTLinux 3.1 layer, which offers a POSIX.13
+subset and we build Ada applications to be executed on top of RTLinux only by slightly
+modifying the GNAT 3.14 run-time system and by adding the functionality needed to
+allow the execution of the Ada program as a Linux module. The fact that RTLinux version
+3.1 is more POSIX-oriented than previous releases obviously eases the porting.
+At first glance, this approach could seem not suitable for small embedded systems,
+because it requires to install the full Linux OS. However, an important effort has been
+done in parallel in our group [13] to minimise the Linux footprint and to include only a
+minimum number of selected services by means of a configuration tool to generate the
+embedded system.
+The structure of this paper is as follows. Section 2 gives a brief overview of the
+RTLinux structure. Section 3 explains the modifications we have done to some parts of
+the GNAT run-time system and the functionalities implemented by the new Real-Time
+GNAT Layer (RTGL). Section4 presents several examples of the Ada features that this
+work provides support for. In Sect. 5, some performance metrics are provided. Section 6
+presents our conclusions and indications for further work on this topic.
+
+2
+
+Overview of RTLinux
+
+A general purpose operating system (OS), such as Linux [10] deals directly with all
+hardware resources such as input-output addresses, memory management and interrupts.
+This kind of OSs try to provide good average response times, not to guarantee maximum
+bounds of execution time. This makes general purpose OSs inadequate to achieve hard
+real-time performance, with guaranteed deadlines.
+In RTLinux [4], the Linux OS is patched in order to create the RTLinux layer,
+between the hardware and Linux itself. This layer captures interrupts before passing
+them to Linux and intercepts Linux’s disabling and enabling of interrupts. In this way,
+RTLinux takes control of the real interrupts, whilst Linux only receives interrupt requests
+when RTLinux has already acknowledged them.
+Interrupts directed to Linux will be passed only when Linux has interrupts enabled
+and RTLinux reissues them to Linux. When Linux executes the macro for disabling
+interrupts it really does not disable them, it only informs RTLinux not to pass more
+interrupts until the next enabling of interrupts.
+
+324
+
+M. Masmano et al.
+
+User space
+applications
+
+Libraries
+
+OS Interface
+
+Linux OS
+
+T1
+
+T2
+
+T3
+
+Real-Time
+tasks
+
+Drivers
+
+Virtual
+Machine
+
+POSIX
+Threads API
+RTLinux
+
+RT scheduler
+
+Actual
+Machine
+Hardware
+
+Fig. 1. Architecture of RTLinux
+
+Figure 1 shows the architecture of RTLinux. It can be seen as RTLinux having the
+real view of the hardware and Linux having a virtual view, given by RTLinux.
+Real-time applications are implemented as loadable kernel modules. The application’s threads may use the RTLinux API, an interface very similar to POSIX for creation
+and destruction of threads, managing of signals, accessing devices, communication and
+synchronisation, etc. The different parts of this API are also implemented as modules
+that can therefore be loaded or not, depending on the real-time application requirements.
+Linux modules are dynamically linked with the Linux kernel, forming a single program (the Linux kernel with the added functionalities provided by the modules). Therefore the modules run in the same address space as the kernel. In this situation, an erroneous real-time task can make the whole system crash. According to [4], the use of
+the C language aggravates this problem, since equivalence of arrays and pointers, type
+casts make it all too easy to write programs with memory referencing bugs. This is a
+good reason to use Ada instead, given its advantages over C to produce programs that
+are more reliable (e.g., syntax, strong typing, readability...)
+It is important to note that the real-time scheduler is also a loadable module, easily
+replaceable, which allows to test different scheduling policies.
+
+3
+
+Creating RTLinux Modules from Ada Sources
+
+RTLinux uses a dynamic module loader from Linux to load and execute real-time
+modules at the kernel level. These modules are relocatable code in ELF format (Executable and Linking Format) which export several predefined symbols such as the
+functions init module() and cleanup module(), and other symbols like author and
+license. The first two are called when loading and unloading the module, respectively,
+and implement the desired functionality for such events. Typically, init module() first
+demands resources and initialises the devices to be used by an associated thread, which
+is then released. It can be seen as the main function in a typical C program. This function
+
+Running Ada on Real-Time Linux
+
+325
+
+is automatically called upon insertion of the module with the Linux command insmod.
+On the other hand, the function cleanup module() is executed at module unload (by
+means of the Linux rmmod command) and it takes care of freeing the previously allocated
+resources.
+RTLinux modules are usually implemented in C, therefore it is straightforward to
+import these symbols with include. But Ada requires a different way of making these
+symbols visible. We shall distinguish two cases to explain our approach: Ada programs
+that do not require the run-time system services and programs that do need run-time
+support (e.g., tasking programs).
+3.1
+
+Programs with No Run-Time System Support
+
+First, we will describe how it is possible to load an Ada program as a kernel module
+without considering the run-time system.
+There are two ways to load an Ada program as a kernel module; one way is to export
+the necessary symbols from the Ada program, as suggested by T. Baker in [3]. The other
+way is to implement a C program, which exports the necessary symbols, and then link
+it with our Ada program; this is the method of our choice. We have found two reasons
+for this approach:
+– Several RTLinux functions are written as macros, and it is easier to use them in C.
+– init module() and cleanup module() call several RTLinux functions (e.g., for
+the creation of threads). If we adopted the first approach, we should provide an
+interface to all these functions (Baker suggests to include them in System.OS Interface). In our approach, we provide an object file that is incrementally linked
+with the application, therefore hiding RTLinux-specific symbols. This object file
+defines the Real-Time GNAT Layer, RTGL, that will be explained below.
+An Ada program with no run-time can be easily compiled into a loadable kernel
+module by only providing the appropriate modifiers to the compiler command, such that
+the program is linked with a simple C object file before the final module is created.
+3.2
+
+Programs with Run-Time System Support
+
+Programs that make calls to the Ada run-time system require a modified run-time system
+in order to be executed on RTLinux. In this section, we shall explain the modifications
+needed to implement our Ada-RTLinux system.
+The compiler we are based on is GNAT 3.14 for Linux on an i386 platform, with FSU
+threads, a POSIX threads library. The applications compiled with GNAT are structured
+in several layers. The Ada program uses the services of the GNU Ada Runtime Library
+(GNARL), which interfaces with the underlying OS through a lower level layer called
+GNULLI (GNARL Lower Level Interface).
+We have done a minimum number of changes to GNARL, most of them at the
+GNULLI level. In particular, the packages System.OS Primitives and System.OS Interface have been changed to use the interface of RTLinux instead of Linux and to
+provide adequate support for the ceiling locking operation.
+
+326
+
+M. Masmano et al.
+
+In addition, several packages have been added to provide the following functionalities:
+Rtl IO This package implements a front-end for the rtl printf() function, which
+allows to Put objects of several data types on the screen. We have not implemented
+a Get equivalent yet.
+Rtl Fifo This package provides an interface to use the RTLinux FIFOs. It allows
+to create and destroy FIFOs, and to send to and receive from them. Rtf Create
+and Rtf Destroy make calls to the Linux Kernel. Since RTLinux modules run in
+the kernel memory space, special care must be taken to implement these calls. The
+algorithm we have implemented invokes the FIFO creation primitive by means of
+an interrupt that is queued to Linux, not a direct call. This avoids random errors in
+the Linux kernel. This method is not bounded in time, but it is important to note that
+the FIFOs are created statically at startup, not during the normal program execution.
+Rtl Interrupts This package provides the functionality needed to deal with interrupts. It is basically a binding to the RTLinux functions for interrupt enabling,
+disabling and handling support.
+Rtl Pt1 This package provides a binding to the RTL Posix Tracing standard (POSIX
+1003.1q), version 1.0. This package, in conjunction with the Quivi viewer [1], allows us to graphically monitor the temporal behaviour of the Ada tasks in a program.
+3.3 The RT-GNAT Layer
+The RT-GNAT Layer (RTGL) is a new layer that we have implemented to load an Ada
+program as a kernel module and which allows us to give support to the GNAT runtime system. It exports kernel symbols (like init module, cleanup module, author,
+license and kernel version strings), and also the RTLinux interface and library
+functions.
+The services offered by RTGL are:
+– Library functions. The GNAT run-time system uses some standard functions (for
+string management and time conversions) which are not provided by RTLinux or
+the Linux kernel. RTGL provides them. Some of these functions are taken from the
+OSKIT project (Utah University, [7]) and from the source code of GNU GCC 2.8.1.
+– Exported symbols. Since RTGL is implemented in C, it can import Kernel headers and it can directly export symbols like kernel version, etc. RTGL imports the
+init module and cleanup module functions.
+– A dynamic memory manager. RTLinux does not provide dynamic memory management. This feature is provided by the Linux kernel and thus it can not be used
+from an RT-thread. We need dynamic memory since the Ada runtime uses it for task
+creation, string creation, etc. When init module() is executed our memory manager demands a sufficient amount of memory (user-defined) via the bigphysarea
+module, which allows us to obtain a large amount of contiguous memory and make
+it available to the GNAT run-time system. This memory is managed with a dynamic
+memory management algorithm, called DIDMA (Doubly Indexed Dynamic Memory Allocator) that we are currently developing [8]. The main goal of this algorithm
+is to provide allocation and deallocation of memory in a bounded time.
+
+Running Ada on Real-Time Linux
+
+Ada background tasks
+
+Non real-time
+layer
+
+Hard
+real-time
+layer
+
+327
+
+Other
+Linux
+processes
+
+Ada Real-Time Application
+
+GNARL
+GNULLI
+
+Linux
+Kernel
+
+RTGL
+
+RTLinux
+
+Fig. 2. Architecture of the whole system, with an Ada application running on top of RTLinux
+
+The resulting application architecture can be seen in Fig. 2. The Ada application is
+divided into two parts, one with hard real-time requirements (the Ada real-time application) and another part that is scheduled by Linux (Ada background tasks), since it has
+no strict timing requirements. These two parts are two different Ada programs. The link
+between them is via real-time FIFOs. The real-time FIFO mechanism provides a rapid
+way of communicating tasks in the real-time and non real-time layers of the system.
+It also allows the hard real-time tasks to communicate with applications written in a
+different language. Real-time FIFOs are provided as special devices in the /etc/dev
+directory.
+The Ada real-time application uses the services provided by RTGL only at startup,
+for the creation of threads. The program then uses the modified run-time system to obtain
+the tasking services (rendezvous, protected objects, etc). The Linux kernel is scheduled
+in the background with respect to the Ada real-time application components.
+The process of generating the module from the Ada sources consists in calling
+gnatmake with the appropriate options. A script called rtgnatmake has been written to automate this process.
+
+4
+
+Implemented Features
+
+This section explains the Ada features we have already implemented and tested. We have
+followed an incremental approach, from the simpler to the more complex Ada features.
+First, we compiled and run a simple sequential Hello world program. Then we added
+delays, exceptions, tasks, protected objects, and asynchronous transfer of control.
+To compile an Ada program for RTLinux, the RTGL layer is needed in order to
+generate the corresponding loadable kernel modules. Besides this layer, some minor
+modifications have been made to System.OS Primitives (for non-tasking programs)
+and System.OS Interface (for programs that use tasking.)
+
+328
+
+4.1
+
+M. Masmano et al.
+
+Simple Sequential Programs
+
+Sequential programs (that do not even use delays) written in Ada only require the RTGL
+layer, because they do not need support from the run-time system. If the program requires
+to Put text on the screen, then it needs to import the package RTL IO. The following is
+a simple Hello world example:
+with RTL_IO; use RTL_IO;
+procedure Hello is
+begin
+Put_Line ("Hello World!");
+end Hello;
+
+4.2
+
+Delays
+
+Both the wall clock (from Ada.Calendar) and the monotonic clock (from Ada.Real Time) have been implemented. This feature has required changes in System.OS Primitives and in System.OS Inteface. These changes consist in converting the
+time types used in RTLinux to the internal representations of time in the GNAT run-time
+system.
+4.3
+
+Exceptions
+
+As for today, we have only implemented software generated exceptions, i.e., exceptions
+generated either by an explicit raise sentence in the program, or generated by the
+run-time system by means of procedure Raise. Hardware originated exceptions, like
+FP exceptions, have not been implemented yet. These exceptions generate hardware
+traps. The default handler in RTLinux just dumps the processor state to the screen and
+halts the system. We need to investigate further how to treat these exceptions and return
+to a consistent state. The following sample program can be compiled and executed on
+RTLinux:
+with RTL_IO; use RTL_IO;
+procedure Exceptions_Example is
+procedure Exception_Error is
+Error : exception;
+begin
+raise Error;
+exception
+when Error =>
+Put_Line ("This is an error");
+end Exception_Error;
+Str: String(1..2);
+begin
+Exception_Error;
+delay 1.0;
+Str := "123"; -- This line produces CONSTRAINT_ERROR
+exception
+when CONSTRAINT_ERROR =>
+Put_Line ("*** This is a CONSTRAINT_ERROR");
+end Exceptions_Example;
+
+The screen output of this program is, as expected, the string "This is an error" followed
+by the message "*** This is a CONSTRAINT ERROR" one second later.
+
+Running Ada on Real-Time Linux
+
+329
+
+4.4 Tasks
+The implementation of tasking has required to modify System.OS Primitives in order
+to import the RTLinux types and functions used for this purpose. The type pthread
+in RTLinux corresponds to a record, with some components of types defined in the
+Linux kernel. The required Linux types have been imported to make them visible in the
+definition of the pthread type. Also, the signal masks for threads have been changed
+to substitute the Linux signals with the RTLinux signals. RTLinux only implements a
+subset of the Linux signals.
+4.5
+
+Protected Objects, Ceiling Locking, and Dynamic Priorities
+
+Protected objects are already implemented in the Linux run-time system of GNAT, but
+some changes were required to provide an adequate support to the ceiling locking policy.
+The first requirement has to do with the installation of RTLinux itself. The installation
+script of RTLinux allows to optionally enable this policy. By default it is disabled, but
+this policy is necessary to guarantee bounded blocking times. Therefore we need to
+explicitly enable this option when installing RTLinux.
+An important aspect related to the locking policy is the ability to dynamically change
+a task priority. We have found that the implementation of dynamic priorities in RTLinux
+does not match the ceiling locking policy correctly. One of the fields of a thread descriptor
+is the thread’s priority. The value of this field represents the priority at which the thread
+is currently being executed. On the other hand, part of the descriptor of a mutex is a field
+called oldprio that reflects the priority of the thread when it locked the mutex, before the
+thread inherited the ceiling priority of the mutex. The raising of the thread’s priority upon
+locking the mutex consists in changing the thread’s priority in the thread’s descriptor.
+This makes the thread execute at the ceiling priority. When the thread unlocks the mutex,
+the priority field in the thread’s descriptor is overwritten with oldprio.
+The problem comes when another thread wants to change the base priority of the
+thread that is locking a mutex. This priority change is also implemented as a change in
+the priority field of the thread’s descriptor. Therefore, this new priority will be lost when
+the thread unlocks the mutex. We realised this anomaly when we saw some priority
+changes that did not take effect when the target task was holding a mutex. Actually,
+we found that no priority change was effective, since setting the priority of a task was
+always executed whilst holding an internal mutex.
+This problem has required to give the adequate support in RTGL for dynamic priorities, that takes into account that Set Priority may be called whilst the target task is
+running a protected operation. When a thread locks a mutex, we take note that the thread
+is holding that particular mutex. If the priority of the thread must be changed whilst
+holding the mutex, then the new priority is written in the oldprio field of the mutex. In
+this way, the priority change will take effect immmediately when the thread unlocks the
+mutex. For the case of nested calls to protected operations in different protected objects,
+only the outermost oldprio is changed. In fact we have a list of thread descriptors, one
+of whose fields is the identifier of the mutex held by the thread (or null). The access
+to this list is optimised by means of a simple mapping function that gives access to the
+mutex descriptor with cost O(1).
+
+330
+
+M. Masmano et al.
+
+Fig. 3. Quivi chronogram of the protected object example with dynamic priorities
+
+In order to check this implementation, we have prepared a test program consisting
+of:
+– A protected object PO with a ceiling priority equal to 18. It has a single protected
+procedure whose only mission is to busy-wait during 40 µs.
+– Task 1 is a task that alternatively sets the priority of another task (Task 2) to 15,
+then waits for 500 µs, then sets Task 2’s priority to 5, then waits for another 500 µs
+and then repeats the cycle.
+– Task 2 is also a cyclic task with a period of 300 µs. Its priority is initially 15, but it
+changes due to the execution of Task 1. This task calls the protected procedure of
+PO once each cycle.
+– Task 3 is a cyclic task with a priority equal to 10, i.e., the lowest priority task. It has
+a period of 150 µs.
+Figure 3 shows a snapshot of the program execution. This chronogram has been
+obtained with the Quivi tool, mentioned in section 3.2. The left column shows the names
+of the different entities that can be monitored with Quivi. Kernel represents the kernel
+activity; Main Task is the main Ada subprogram; Then we can see the three tasks in
+this example; and finally the time consumed by the Linux OS can be seen. A dot in
+a task line represents its activation time, according to its period. When a task starts
+executing and when there is a context switch, a number indicates the priority of the task
+gaining access to the processor. Figure 3 shows a time window where Task 2 activates
+and starts executing with a priority equal to 5. Then it locks the mutex associated with
+PO and starts executing the protected procedure with the inherited ceiling priority 18.
+Afterwards, both Task 1 and Task 3 activate. Task 1 gains access to the processor and,
+as described before, changes Task 2’s priority to 15. This change does not take effect
+immediately, since Task 2 is executing a protected procedure. When Task 1 ends, then
+Task 2 is chosen to execute. It does it with a priority 18 at the beginning, because it is
+
+Running Ada on Real-Time Linux
+
+331
+
+still running the protected operation, but it still keeps on running after unlocking PO’s
+mutex, despite the fact that Task 3 is also ready. This is only possible because Task 2’s
+priority is effectively 15, which forces Task 3 to wait for Task 2 to complete.
+4.6
+
+Other Features
+
+We have successfully tested other constructs of Ada such as rendezvous, asynchronous
+transfer of control, timed entry calls, selective accept and conditional entry calls. These
+features worked with no more changes required, since the GNAT run-time system already
+implemented them.
+
+5
+
+Performance Metrics
+
+We have done some performance tests for this implementation. Up to now, we know
+that the maximum frequency of a single real-time task we can achieve is 50 KHz on
+an Athlon/600 MHz. On the same hardware, MaRTE 1.0 achieves 66 KHz. We did not
+expect to have better performance, since we have not focused on optimizations yet. For
+instance, the hardware clocks we are using are the Programmable Interval Timer (PIT)
+and Time Stamp Counter (TSC) of the ix86 architecture. It takes 3 µs to program the
+TSC+PIT timer on a Pentium III/550 MHz. We expect to achieve better results by using
+the APIC clock, which only requires 324 ns on the same platform. Another important
+source of performance differences with MaRTE is the fact that MaRTE uses a flat memory
+approach, with paging disabled, whilst Linux requires paging to be enabled, which also
+imposes an overhead.
+To measure the kernel overhead, we have reproduced the tests presented in [11],
+based on calculating the maximum achievable utilisation (in practice) of an harmonic
+task set. The task set is formed by 6 tasks with frequencies 320 Hz, 160 Hz, 80 Hz,
+40 Hz, 20 Hz and 10 Hz. We gradually adjust the amount of time consumed by each
+task and we do it proportionally to the taks’ periods, i.e., 1 µs increments for the most
+frequent task, 2 µs for the second, 4 µs for the third, 8 µs for the fourth, and so on. The
+maximum theoretical utilisation in this case is 100%. The difference between the actual
+utilisation achieved and the theoretical maximum gives a figure of the total overhead
+imposed by the OS. We have compared an Ada implementation of the test program with a
+similar program in C, therefore we can measure both the kernel and the run-time system
+overhead. The measured utilisations are 98.69% for the Ada version and 99.45% for the
+C version. These numbers indicate a low kernel overhead (1.31% in Ada; 0.55% in C)
+and a relatively small overhead introduced by the run-time system (99.45% − 98.69% =
+0.76%).
+These results have been repeatedly obtained, but some times we have had slightly
+lower utilisations. It is important to note that RTLinux is not in itself a deterministic
+platform. A Linux process may really disable interrupts (not virtually) by using ioctl.
+For instance, running an X server interferes the results. Our conclusion in this sense is
+that RTLinux is an excellent platform for soft real-time or teaching purposes, but also
+that one needs to restrict the running applications to those that respect the RTLinux layer.
+Obviously, caching is also a source of indeterminism.
+
+332
+
+6
+
+M. Masmano et al.
+
+Conclusions and Future Work
+
+In this paper, we have described our approach to run Ada programs on RTLinux, explaining the additions and modifications needed for such a purpose. We have achieved
+our main goal of running Ada programs on RTLinux. The implementation is still in the
+development and testing phase, but we have had encouraging results, such as porting a
+17-task application that we had previously developed in MaRTE OS for the control of
+two robotic arms and a chain of conveyor belts with two machining stations. We only had
+to replace a with clause to make the application run on RTLinux. We also plan to use this
+approach for teaching real-time systems, since it has interesting advantages: RTLinux
+is freely available; we can use an instrumented version of RTLinux in combination with
+the visualization tool Quivi in order to graphically analise timing properties; and we
+only need one computer for both development and testing.
+The porting of GNAT to RTLinux is quite transparent: at the moment, the programmer
+only needs to know the package Rtl IO for simple input and output of text. Additionally,
+Rtl FIFO provides a binding for using real-time FIFOs and Rtl Pt1 gives an interface
+to the POSIX tracing facilities.
+Another important conclusion from the experiments we have developed is related
+with the suitability of RTLinux for hard real-time systems. Predictability in RTLinux can
+only be achieved if we make sure that no running application can gain root privileges
+to disable interrupts. Otherwise, the timing requirements of the real-time application
+cannot be guaranteed.
+The resulting architecture of the Ada application, with a non real-time layer and a
+hard real-time one, motivates us to study the applicability of the Distributed Systems
+Annex of the Ada standard in the future. The whole Ada program can be seen as a
+multipartition program, one partition running the hard real-time tasks and one or more
+additional partitions for the non real-time tasks. Ideally, the communication mechanisms
+between real-time and non real-time tasks (the FIFO buffers) would be hidden under
+the distributed model of Ada, therefore releasing the programmer to deal with FIFO
+primitives.
+Acknowledgements. This work has been partly funded by the European OCERA project
+[9] and by the Spanish Comisi´on Interministerial de Ciencia y Tecnolog´ıa project number
+TIC-99-1043-C03-02. We also want to thank Agust´ın Espinosa for his work on Quivi
+and Andr´es Terrasa for instrumenting RTLinux.
+
+References
+1. A. Espinosa. Quivi: a Chronogram Viewer in Tcl-Tk (in Spanish).
+http://www.dsic.upv.es/˜aespinos/quivi.html, 2002.
+2. M. Aldea and M. Gonz´alez-Harbour. MaRTE OS: An Ada Kernel for Real-Time Embedded
+Applications. Reliable Software Technologies - Ada Europe 2001, Lecture Notes in Computer
+Science, 2043:305–316, 2001.
+3. T. Baker. Ada and Embedded Real Time Linux. In SIGAda Conference, 2000.
+4. M. Barabanov. A Linux-based Real-Time Operating System. Master’s thesis, New Mexico
+Institute of Mining and Technology, Socorro, New Mexico, June 1997.
+
+Running Ada on Real-Time Linux
+
+333
+
+5. A. Burns. The Ravenscar Profile. Ada Letters, XIX(4), 1999.
+6. J. de la Puente, J. Zamorano, J. Ruiz, R. Fern´andez, and R. Garc´ıa. The Design and Implementation of the Open Ravenscar Kernel. In Proceedings of IRTAW10, Ada Letters, volume
+XXI, nr 1, pages 85–90, 2001.
+7. J. Lepreau, M. Flatt, and et. al. The Oskit Project. University of Utah,
+http://www.cs.utah.edu/flux/oskit/, 2002.
+8. M. Masmano. Doubly Indexed Dynamic Memory Allocator.
+http://www.ocera.org/download/components/WP4/dynmem.html, 2003.
+9. Open Components for Embedded Real-Time Applications. European IST programme 35102.
+http://www.ocera.org/, 2002.
+10. Open Source Development Network. Linux news, information, software, documentation and
+tutorials. http://linux.com/, 2002.
+11. H. Shen, A. Charlet, and T. Baker. A "Bare-Machine" Implementation of Ada Multi-Tasking
+Beneath the Linux Kernel. Reliable Software Technologies - Ada Europe 99, Lecture Notes
+in Computer Science, 1622:287–297, 1999.
+12. VentureCom. RTX. http://www.vci.com/index.asp, 2002.
+13. J. Vidal, P. Mendoza, I. Ripoll, and J. Vila. A Tool for Customizing RT-Linux to Embedded
+Systems. In Real-Time Linux Workshop, Milano, 2001.
+
+

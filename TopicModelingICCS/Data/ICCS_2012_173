@@ -1,0 +1,371 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 2012 – 2015
+
+International Conference on Computational Science, ICCS 2012
+
+An improvement of choosing
+map-join candidates in Hive
+Fang Wanga
+b
+
+Yong Shia,b*
+
+a
+Research Center on Fictitious Economy and Data Science, CAS, Beijing 100190, China
+College of Information Science and Technology, University of Nebraska at Omaha, Omaha, NE 68182, USA
+
+Abstract
+
+Currently Hive uses the size of tables on disk to determine if a common-join should be converted into a map-join.
+Our experiments demonstrate that this is a conservative decision criteria which will fail to identify optimization
+opportunities close to the decision frontier. Our implementation differs from the current implementation in the way
+we identify optimization candidates. By pre-computing hashtable sizes and adjusting them with per-query selectivity
+factors, we are able to choose optimization candidates directly as a function of expected hashtable size, factoring out
+the conservative file size criteria. In this paper we show that this approach results in more common-join to map-join
+optimizations and can provide average speedups of up to 1.30 in certain scenarios.
+Hive; Hadoop; join optimization; data warehouse
+____________________________________________________________________________________________
+1. Introduction
+Among the optimizations in hive, converting common-joins into map-joins has proven very beneficial when
+carrying out join operations on a map-reduce cluster. In this work, we present a modified map-join optimization that
+can provide average speedups of up to 1.30 in certain scenarios.
+2. Related Work
+The latest trends in the Internet industry have produced a great need for petabyte-scale data analysis solutions.
+This has led to the introduction and wide adoption of the map-reduce[1] framework, a computing model capable of
+supporting vast amount of computation and data storage on commodity hardware. Hadoop, is one of such solutions
+that allow users to easily manipulate their data across clusters of thousands of computers using the map-reduce
+
+* Corresponding author. Tel.: +86 10 82680697; fax: +86 10 82680697.
+E-mail address: wangfang211@mails.gucas.ac.cn(F. Wang), yshi@gucas.ac.cn(Y. Shi).
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.225
+
+Fang Wang and Yong Shi / Procedia Computer Science 9 (2012) 2012 – 2015
+
+2013
+
+programming model. Hive[2] provides an SQL-like interface for programmers to manipulate data distributed on
+clusters.
+3. Solution
+Our method consists of two main strategies. First, we calculate a hashtable when data is first loaded into the
+system. This gives us the exact size on memory of a hashtable given a join column. The join column can be
+specified when the table schema is defined. Similarly to an index, we could extend Hive so that additional hashtable
+sizes could be precomputed later on. The idea is to store this information in conjunction with the metadata that Hive
+stores for each table. An example syntax of how this could be specified is illustrated bellow.
+CREATE TABLE data (id INT, name STRING) PRECOMPUTE HASH ON id;
+In our implementation, we did not use the above semantics but rather specified this information through custom
+variables that can be modified from the Hive interactive console. When we detect that new data is being loaded into
+a table, we check the system variables to see if we should calculate a hashtable for a particular column of the table
+being loaded. When the hashtable is created, if its total size is small enough to fit the mapper's memory, we mark the
+column as good for join and store this information on the metastore. When the table is later on used in a join, we
+check if the column we are joining on has been marked good for map-join.
+The above strategy factors out the misleading input table file size criteria and instead will guide common-join to
+map-join candidate selection based on the biggest size hashtable that we will see given a join column. The biggest
+hashtable given a column, uses that column's values as a key and stores all the rest of the fields in each entry. Our
+basic decision method is illustrated in Listing 2.
+Listing 2. Pseudocode of our basic map-join candidate selection method
+boolean shouldBeConsideredForMapJoin( join_table, join_column ) {
+maxHashTable =
+metastore.getMaxHashtable(join_table, join_column);
+if (maxHashTable == null) return false;
+maxHashTableSize = maxHashTable.getMemSize();
+if ( maxHashTableSize < mapper.max_memory * MAP_FRAC ) {
+return true;
+} else {
+return false;
+}
+}
+Our second strategy improves our basic candidate selection method by adjusting the maximum hashtable size
+according to each query SELECT predicates. The idea now is to store the total number of different keys that we saw
+when we created the hashtable. When the join statement contains a WHERE statement, we adjust the hashtable size
+using formulas similar to the ones used for physical path selection in regular relational databases [3]. To limit the
+scope of our project, we decided only to adjust hashtable file size only when the query's WHERE clause contained a
+column=constant predicate. Our optimized candidate selection method is illustrated in Listing 3.
+Listing 3. Pseudocode of our optimized map-join candidate selection method
+boolean shouldBeConsideredForMapJoin( query , join_table, join_column) {
+maxHashTable =
+metastore.getMaxHashtable(join_table, join_column);
+if (maxHashTable == null) return false;
+maxHashTableSize = maxHashTable.getMemSize();
+sel_fact = 1;
+if (query.hasConstantColumnFilter) {
+sel_fact = 1/maxHashTableSize.getTotalKeys();
+}
+if ( maxHashTableSize * sel_fact < mapper.max_memory * MAP_FRAC ) {
+
+2014
+
+Fang Wang and Yong Shi / Procedia Computer Science 9 (2012) 2012 – 2015
+
+return true;
+} else {
+return false;
+}
+}
+4. Experiments
+We ran a series of experiments on real and generated data on a Hive instance running on an Intel Core i5
+machine with 2.4 GHz processor speed (2 dual core processors) and 4 GB of RAM. The underlying Hadoop instance
+consisted of a single node cluster, each mapper and reducer task was limited to 512 MB or 256 MB of memory as
+specified. We used Apache access log data from [4] to study the effects of table sizes and query selectivity factors
+on optimization candidates selection and overall performance.
+4.1 Results
+4.1.1 Key diversity vs hashtable size with generated data
+For this experiment, we assigned a small table threshold of 21 MB and created different small tables that
+contained 1 million rows. Each row contained an 8 byte key. Mappers and reducer's max memory was set to 256
+MB. As illustrated in Table 1, there is a strong relation between the total number of different keys and the resulting
+hashtable. Our basic selection method gives us an average speedup of 1.93 for this experiment based on query Q1.
+Q1: FROM datasetN JOIN big_data ON (datasetN.id=big_data.id) INSERT OVERWRITE
+TABLE output SELECT datasetN.*;
+Table 1. Effects of key diversity on hashtable size and optimization candidate selection
+
+4.2.2 Performance on real world data and other queries
+The data shows that the size of the big table can slightly benefit map-join executions, especially as it increases.
+We can see that outside the current decision boundary (25 MB) there are opportunities to select map-join candidates
+that would yield speedups of up to 1.30. The current method does not consider query selectivity clauses, which is the
+focus of our succeeding experiment. A summary of the findings of this experiment is presented in Table 2.
+4.2.3 Selectivity factor
+For this experiment we considered a query that filters out rows from the small table, which in effect would
+decrease the size of the derived hashtable and thus, and provide good speedups in more cases. As the Table 3 shows,
+our estimated size is much smaller than the actual size of the derived hashtables. As our results illustrate, even for a
+query that only selects 0.0001% of the small table rows, the derived hashtable is much bigger than it should be.
+Q2: FROM small_apachelog t1 JOIN big_apachelog t2 ON (t1.host = t2.host)
+INSERT OVERWRITE TABLE output_short SELECT t1.host, t1.time WHERE
+Q3: FROM apachelog1 t1 JOIN apachelog2 t2 ON (t1.host = t2.host) INSERT
+OVERWRITE TABLE output SELECT t1.* WHERE t1.host="example.domain.com";
+
+2015
+
+Fang Wang and Yong Shi / Procedia Computer Science 9 (2012) 2012 – 2015
+
+Table 2. Results of Q2 with a 1GB big table and hive.mapjoin.smalltable.filesize = 25 MB
+t1 (small table)
+
+t2 (big table)
+
+Current Method
+
+Our Method
+
+Speedup
+
+20 MB
+200K rows
+
+1GB
+10.4 million rows
+
+154.9 sec
+
+153.1 sec
+map-join
+
+1.01
+
+30 MB
+
+1 GB
+10.4 million rows
+
+214.2
+map-join
+
+1.23
+
+300K rows
+
+263.5 sec
+common-join
+
+40MB
+410K rows
+
+1 GB
+
+291.6 sec
+common-join
+
+259.0
+map-join
+
+1.13
+
+70MB
+710K rows
+
+1 GB
+
+381.0 sec
+common-join
+
+417.6
+map-join
+
+0.91
+
+100 MB
+
+1 GB
+10.4 million rows
+
+564.0
+map-join
+
+0.93
+
+1.02 million rows
+
+526.3 sec
+common-join
+
+10.4 million rows
+10.4 million rows
+
+map-join
+
+Table 3. Results of Q3 with a 1GB big table and hive.mapjoin.smalltable.filesize = 25 MB
+selectivity
+(small table)
+
+t1
+(small table)
+
+t2
+(big table)
+
+Current Method
+
+Our Method
+
+Estimated
+Size
+
+Actual
+Size
+
+Speedup
+
+70 MB
+710K rows
+
+2 GB
+20.8 million rows
+
+158.3 sec
+common-join
+
+216.2 sec
+map-join
+
+7.58 KB
+
+3029 KB
+
+0.73
+
+0.35%
+
+70 MB
+710K rows
+
+2 GB
+
+138.5
+
+2769 KB
+
+0.80
+
+20.8 million rows
+
+common-join
+
+172.8 sec
+map-join
+
+7.58 KB
+
+0.26%
+
+70 MB
+710K rows
+
+2 GB
+
+92.4
+
+2480 KB
+
+0.99
+
+20.8 million rows
+
+common-join
+
+104.4 sec
+map-join
+
+7.58 KB
+
+0.176%
+
+70 MB
+710K rows
+
+2 GB
+
+64.479
+common-join
+
+58.8 sec
+map-join
+
+7.58 KB
+
+2195 K
+
+1.09
+
+0.09%
+
+70 MB
+710K rows
+
+2 GB
+
+61.281
+common-join
+
+57.2 sec
+
+7.58 KB
+
+1910 K
+
+1.07
+
+0.0001%
+
+20.8 million rows
+20.8 million rows
+
+map-join
+
+5. Conclusion
+In this work we presented an alternative method for selecting optimization candidates that would allow us to turn
+common-join into map-joins. Our results show that there is a need for a better selection method than the currently
+employed. By considering expected hashtable sizes we can get speedups of up to 1.30 in certain scenarios. Yet, the
+advantages of map-join quickly diminish as the hashtable occupies greater portions of mapper's memory. Our
+experiments also show a need for a reasonable allocation scheme for the hashtable currently used by map-join. This
+in addition to testing our solution on a real-world cluster is left as future work.
+References
+1. Jeffrey Dean and Sanjay Ghemawat. 2008. MapReduce: simplified data processing on large clusters. Commun. ACM 51, 1 (January 2008),
+107-113.
+2. Ashish Thusoo, Joydeep Sen Sarma, Namit Jain, Zheng Shao, Prasad Chakka, Suresh Anthony, Hao Liu, Pete Wyckoff, and Raghotham
+Murthy. 2009. Hive: a warehousing solution over a map-reduce framework. Proc. VLDB Endow. 2, 2 (August 2009), 1626-1629.
+3. P. Griffiths Selinger, M. M. Astrahan, D. D. Chamberlin, R. A. Lorie, and T. G. Price. 1979. Access path selection in a relational database
+management system. SIGMOD '79. ACM, New York, NY, USA, 23-34.
+4. ACM SIGCOM, 2008. The Internet Traffic Archive. http://ita.ee.lbl.gov/html/traces.html
+
+

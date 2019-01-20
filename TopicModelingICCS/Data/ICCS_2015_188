@@ -1,0 +1,490 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 120–129
+ICCS 2015 International Conference On Computational Science
+
+Eﬃcient Particle-Mesh Spreading on GPUs
+Xiangyu Guo1 , Xing Liu2 , Peng Xu1 , Zhihui Du1 , and Edmond Chow2
+1
+
+Tsinghua National Laboratory for Information Science and Technology
+Department of Computer Science and Technology, Tsinghua University, 100084, Beijing, China
+gxy13@mails.tsinghua.edu.cn, bly930725@gmail.com, duzh@tsinghua.edu.cn
+2
+School of Computational Science and Engineering, Georgia Institute of Technology,
+Atlanta, Georgia, 30332, USA
+xing.liu@gatech.edu, echow@cc.gatech.edu
+
+Abstract
+The particle-mesh spreading operation maps a value at an arbitrary particle position to contributions at regular positions on a mesh. This operation is often used when a calculation
+involving irregular positions is to be performed in Fourier space. We study several approaches
+for particle-mesh spreading on GPUs. A central concern is the use of atomic operations. We
+are also concerned with the case where spreading is performed multiple times using the same
+particle conﬁguration, which opens the possibility of preprocessing to accelerate the overall computation time. Experimental tests show which algorithms are best under which circumstances.
+Keywords: particle-mesh, spreading, interpolation, sparse matrices, GPU, warp shuﬄe
+
+1
+
+Introduction
+
+Many scientiﬁc applications involve both a set of particles that can reside at arbitrary locations
+in space, and a Cartesian mesh with regularly-spaced mesh points. Given a set of values,
+such as velocities, on the mesh points, it may be desired to ﬁnd the interpolated values at
+the arbitrary particle locations. This is called the particle-mesh interpolation operation. Mesh
+points nearby the particle are used to interpolate the value of the quantity at that particle. The
+inverse operation takes values at particle positions and contributes them to values at nearby
+mesh points. This is called the particle-mesh spreading operation. The topic of this paper
+is particle-mesh spreading. The operation is a key step in the non-equispaced fast Fourier
+transform [5, 16], with applications including tomography, magnetic resonance imaging, and
+ultrasound. Particle-mesh spreading is also used in the particle-mesh Ewald summation (PME)
+method [4], widely used in molecular dynamics [7] and other types of simulations [15, 11] to
+evaluate long-range interactions between particles.
+In various particle-mesh applications, given quantities located at particle positions, such as
+velocities, forces or charges, are mapped onto a 3D regular mesh. The spreading contributes to
+120
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.210
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+a p × p × p region of the mesh roughly centered at the particle. The value of p is related to the
+order of the (inverse) interpolation function. Figure 1 illustrates the particle-mesh spreading of
+two particles onto a 2D mesh using p = 4.
+
+Figure 1: Particle-mesh spreading onto a 2D mesh with p = 4. The solid circle and triangle represent
+two particles. The mesh points receiving contributions from these particles are shown with open circles
+and triangles, respectively.
+
+While both particle-mesh interpolation and spreading are important, we focus on the latter
+because it is much more challenging to obtain high performance for the spreading operation.
+The reason why these operations have very diﬀerent performance characteristics is because
+data structures are usually particle based rather than mesh based. This is due to the fact
+that it is easy to determine the neighboring mesh points of a particle, but not easy to eﬃciently
+determine the neighboring particles of a mesh point, especially when particles can move. For the
+spreading operation, a natural parallelization across particles means that the mesh variables are
+shared, and locking/waiting is needed to control access to these variables. For the interpolation
+operation, the quantity at each particle is simply computed by reading the values at nearby
+mesh points. This paper focuses on the particle-mesh spreading operation on GPUs, where
+large numbers of threads may be contending for writes on mesh variables.
+The simple method of parallelizing particle-mesh spreading on GPUs is to use one thread to
+perform the spreading operation for each particle. As mentioned, this requires using expensive
+atomic operations as multiple threads might attempt to update the same mesh location simultaneously. Additional challenges arise from the sparse and irregular nature of spreading, making
+it hard to achieve load balance and coalesced memory access, leading to poor performance on
+GPU hardware.
+Previous research on particle-mesh spreading on GPUs attempt to enhance coalesced memory access and partially avoid the use of atomic operations [8, 2]. In these studies, a preprocessing step is used to create a mesh based data structure. Each mesh point can store a single
+particle [8] or a list of particles [2]. No atomic operations are needed to perform the actual
+spreading operation because a single thread sums the contributions for a mesh point using the
+mesh based data structure.
+A number of issues can be raised with the above mesh based approach. Performance is
+highly dependent on the number of particles per grid point. (The relationship between the
+number of particles and the number of grid points is chosen by balancing accuracy and cost.)
+For fewer than 1 particle per grid point on average, the mesh based approach may be ineﬃcient
+because of the large number of mesh points not associated with particles. Also, while avoiding
+atomic operations is a good optimization guideline, on recent GPU microarchitectures, e. g.,
+the Kepler GK110, the atomic operation throughput has been substantially improved, making
+particle based approaches more competitive.
+In traditional uses of particle-mesh spreading, the operation is performed once for a given
+conﬁguration of particles, where a conﬁguration is a set of particle locations. In this paper, we
+121
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+are motivated by the important and emerging case of needing to perform the spreading operation
+multiple times for the same particle conﬁguration, in sequence. This use case coincides with
+the increasing use of iterative methods for solving systems of equations or computing functions
+of operators. An example is using the Lanczos algorithm to compute Brownian displacements
+in Brownian dynamics simulations [11]. Here, the main cost is applying the particle-mesh
+operator where the spreading operation is the most diﬃcult to parallelize part. This use case
+means that it may be proﬁtable to perform some preprocessing, such as construction of mesh
+based data structures, to speed up the overall computation. Indeed, this study was initiated
+because we need to know what particle-mesh spreading algorithm to use for our Brownian
+dynamics simulation code [11].
+The main contribution of this paper is two-fold: 1) study the use of mesh based data
+structures that can be useful when the spreading operation is performed multiple times, and 2)
+propose a technique of using GPU warp shuﬄe operations to optimize the spreading operation
+with mesh based structures. It is unlikely that one single spreading method achieves the best
+performance for all applications, with diﬀerent densities of particles relative to mesh points. To
+fully understand when to use which algorithms, we compare several spreading algorithms using
+parameterized test cases.
+
+2
+
+Critique of Existing Approaches
+
+Particle Based Approach. The simple particle based approach assigns one thread per particle to perform the spreading operations. Because multiple threads working on nearby particles
+may need to update the same mesh points concurrently, the use of atomic operations is generally necessary. While this approach may work well on CPUs, it is traditionally thought to be
+ineﬃcient on GPUs where atomic operations are relatively more expensive.
+A major advantage of the particle based approach is that it only needs a simple data
+structure, consisting of the list of particles and their coordinates. The (inverse) interpolation
+coeﬃcients are computed “on-the-ﬂy” using the particle coordinates.
+Mesh Based Approach. The mesh based approach, in contrast to the particle based
+approach, assigns threads to mesh points. This is the approach in the clever work of Harvey
+and Fabritiis [8] on NVIDIA’s Tesla microarchitecture. The basic idea is to use a “gather”
+for each mesh point rather than a “spread” for each particle. The algorithm consists of three
+steps. In the ﬁrst step, each particle is placed at the nearest mesh point. Atomic operations
+are still needed in this step, but they are much fewer than in the particle based approach (by
+a factor of p3 because particles rather than spreading contributions are collected at the mesh
+points). Each mesh point can hold at most one particle, so any additional particles are placed
+on an overﬂow list. In the second step, the actual spreading operation is performed at each
+mesh point by gathering contributions from particles placed in the surrounding p3 mesh points.
+Since each thread only updates one mesh point, the use of atomic operations is not needed
+in this step. As designed, memory access is coalesced in this step as adjacent threads update
+adjacent mesh points. In the third step, particles on the overﬂow list are processed using the
+particle based approach. This algorithm follows the paradigm of dividing the computation
+into a regular part and an irregular part. The regular part can be computed quickly on GPU
+hardware and hopefully dominates the irregular part. In this paper, we refer to this speciﬁc
+mesh based algorithm as the “Gather algorithm.”
+When the number of particles is smaller than the number of mesh points, the Gather algorithm has many more memory transactions than the particle based approach. This may be
+an acceptable cost if it is lower than the penalty of using atomic operations. This was the
+122
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+case for the Tesla microarchitecture used by Harvey and Fabritiis [8], but on NVIDIA’s Kepler
+microarchitecture where atomic operations can be as fast as global memory load operations,
+the extra memory transactions may outweigh the gain of avoiding atomic operations.
+Another potential disadvantage of the Gather algorithm is that the interpolation weights
+must be computed multiple times, once for every particle contributing to a mesh point, rather
+than simply once for every particle in the particle based approach. This is because the interpolation weights for a particle depends on a particle’s position. In essence, the interpolation weights
+are computed p3 times rather than once. In this paper, we use cardinal B-spline interpolation
+(used in the smooth PME method [6]).
+We note that when the Gather algorithm for spreading must be performed many times for
+the same particle conﬁguration, the result of the ﬁrst placement step of the Gather algorithm
+can be saved and reused.
+Multicoloring Approach. In previous work on Intel Xeon Phi, we parallelized the spreading operation with a particle based approach that does not need atomic operations [11]. Multicoloring is used to partition the particles into sets called “colors.” Spreading is performed
+in stages, each corresponding to a color. In each stage, a thread is assigned a subset of the
+particles of the current color such that each thread can update mesh locations without conﬂict
+from other threads. This algorithm, however, is not appropriate for GPUs because of limited
+parallelism, due to each thread being assigned the spreading operation for many particles. In
+essence, the particles assigned to a thread must be processed sequentially, otherwise conﬂicts
+would occur. We will not discuss the multicoloring approach further in this paper.
+
+3
+3.1
+
+Proposed Mesh Based Approaches
+Mesh Based Data Structures
+
+When the spreading operation is performed multiple times for the same particle conﬁguration, it may be worthwhile to separately consider a preprocessing step and a spreading step
+such that the spreading step is as fast as possible, and the cost of the preprocessing step can be
+amortized over the multiple spreading operations. To avoid needing atomic operations in the
+spreading step, the preprocessing step generally needs to compute a mesh based data structure.
+The mesh based data structure computed by the Gather algorithm, however, has two main
+issues: 1) it requires performing gather operations on every mesh point even for mesh points
+that do not have particles spreading onto them, and 2) it requires recomputing the interpolation
+coeﬃcients many times.
+In order to make the spreading step as fast as possible, it is tempting to use a diﬀerent mesh
+based data structure where the interpolation coeﬃcients are stored and not recomputed. This
+addresses the second problem above, but introduces the drawback that DRAM reads would be
+needed for the interpolation coeﬃcients. Although these reads can be coalesced, the tradeoﬀ
+between storage and recomputation of interpolation coeﬃcients must be studied. To address
+the ﬁrst problem above, we can explicitly store a list of contributions at each mesh point. This
+also avoids the need for an overﬂow list in the Gather algorithm.
+The above ideas can be implemented using a sparse matrix. Each row of the sparse matrix
+is stored contiguously, and the elements in a row represent the interpolation weights for a given
+mesh point. Applying the spreading operation consists of performing a sparse matrix-vector
+product (SpMV), where the vector is the quantities at the particle locations to be spread. The
+challenge, however, lies in constructing this sparse matrix as eﬃciently as possible.
+We use three mesh based data structures, which we call single mesh, group mesh, and
+123
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+hybrid mesh. Single mesh is identical to the compressed sparse row (CSR) data structure used
+in sparse matrix computations. We implement an optimized CUDA code for constructing this
+data structure in three steps: 1) traversing all particles and counting the number of spreading
+contributions to each mesh point, 2) a preﬁx sum to obtain the starting positions of each mesh
+point in the data structure, and 3) computing the spreading contributions from each particle
+and inserting these into the rows of the data structure. Since multiple threads may attempt
+to update the same row of the matrix simultaneously, atomic operations must be used. In all
+three steps, we assign p3 threads rather one thread to each particle to maximize use of parallel
+resources.
+An ineﬃciency with the above procedure, however, is that in the ﬁrst step, the threads
+assigned to each particle are in one warp, but will update diﬀerent rows of the CSR matrix. This
+step will have low performance on GPUs because of non-coalesced memory access. To promote
+coalesced memory access, we group sets of grid points in the single mesh data structure. This
+gives the group mesh data structure. It is similar in spirit to various multirow sparse matrix
+storage formats for GPUs [14, 9, 10] and has good memory access locality and tends to have
+coalesced memory accesses.
+For completeness we also test the hybrid mesh data structure, which is analogous to using
+the hybrid sparse matrix format [1] in cuSPARSE for representing the spreading operator.
+
+3.2
+
+Spreading Optimization
+
+With the spreading operator stored in a sparse matrix format, the spreading step can be
+eﬃciently computed using sparse matrix-vector multiplication (SpMV). While optimization
+techniques for SpMV have been intensively studied on GPUs, e.g., [1, 3], we apply special techniques to accelerate the spreading step on GPUs that utilizes the hardware features introduced
+in the Kepler microarchitecture.
+We deﬁne a compute unit (CU) as a group of threads used to collect the spreading contributions at a mesh point. By using more than one thread for a mesh point, thread divergence
+is reduced and coalesced memory access is promoted. This is analogous to why more than one
+thread is used to multiply a row in GPU implementations of SpMV [1].
+Using multiple threads for a mesh point or row, however, requires the use of atomic operations because multiple threads within a CU will update the same mesh point simultaneously.
+To avoid the use of atomic operations, we let a speciﬁc thread in the CU collect the sum using
+an intra-CU reduction operation. On the Kepler microarchitecture, the reduction operation
+can be eﬃciently implemented by using a hardware feature called warp shuﬄe. Warp shuﬄe is
+a new set of instructions that allows threads of a warp to read each other’s registers, providing
+a new way to communicate values between parallel threads besides shared memory. Compared
+to shared memory communication, warp shuﬄe is much more eﬃcient. The throughput of warp
+shuﬄe instructions is 32 operations per clock cycle per multiprocessor for Kepler GPUs [13].
+Figure 2 illustrates the intra-CU reduction implemented using warp shuﬄe instructions.
+The ﬁgure shows a warp of 32 threads, organized such that 8 threads are assigned to a row (or
+mesh point), i.e., CU=8. To perform a reduction operation within a row using 8 threads, 3
+iterations of warp shuﬄe operations are needed, following the binomial tree algorithm.
+The performance of the spreading step using the single mesh method is dependent on the
+choice of the size of CU. Here, we describe a heuristic of choosing the size of CU, which can be
+expressed as
+⎧
+⎪1
+if N p3 /K 3 < 1
+⎨
+CUoptimal = 2t if 2t ≤ N p3 /K 3 < 2t+1 and 0 ≤ t < 4
+⎪
+⎩
+16 if N p3 /K 3 ≥ 16
+124
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+Figure 2: Illustration of intra-CU reduction using warp shuﬄe operations. The reduction across 4 sets
+of 8 threads is performed in 3 iterations following the binomial tree algorithm (see text).
+
+Figure 3: The performance of the spreading step
+using the single mesh method with various sizes
+of CU.
+
+Figure 4: Performance of the spreading step using
+the group mesh method with various gsize. The
+tests used K = 128.
+
+where N refers to the particle numbers used, p represents the interpolation order and K stands
+for the mesh dimension, therefore, N p3 /K 3 represents the average number of spreading contributions per mesh point (ASM ). In sparse matrix terms, ASM is the average number of
+nonzeros per row.
+To explain the heuristic, we use CU sizes that are powers of 2 for eﬃciency of the warp shuﬄe
+reduction. The CU size should also be at least larger than ASM , otherwise some threads will be
+idle. When ASM is larger than 16, the heuristic selects the optimal CU size as 16. Increasing
+the CU size from 16 to 32 does not signiﬁcantly improve the load balance as 16 appears to
+be ﬁne enough parallelism. Also, increasing the CU size from 16 to 32 increases the number
+of warp shuﬄe iterations from 4 to 5. We have run some experiments to verify the heuristic.
+Figure 3 shows the results.
+The performance of the group mesh algorithm depends on the selection of the group size
+(gsize), i. e., the number of mesh points that are grouped together. On the one hand, there is
+more write contention when gsize is small. On the other hand, the total number of warps that
+can be used for spreading is smaller when gsize is larger. We experimentally determined that
+an optimal value of gsize is 64 for any average number of spreading contributions per mesh
+point. The number may vary on diﬀerent GPUs. On the GPU hardware used in our test, using
+gsize = 64 appears to be an appropriate compromise between parallelism and memory access
+conﬂicts. Figure 4 shows this result.
+Figure 5 compares the execution time of the single mesh method using warp shuﬄe and
+using shared memory. As can be seen, use of warp shuﬄe reductions is never worse than the
+shared memory counterpart. When the average number of spreading contributions per mesh
+125
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+point (ASM ) is larger than 20, these two versions achieve approximately the same performance.
+One explanation for this phenomenon is that, when ASM is suﬃciently large, the shuﬄe or
+shared memory load is hidden by other costs such as warp divergence or poor cache usage
+(Figure 3 tells us one warp only uses half the cache line when ASM is larger than 20).
+
+Figure 5: Performance comparison of the spreading operation using warp shuﬄe and shared memory
+reduction (K = 128).
+
+4
+4.1
+
+Experimental Comparisons
+Test Environment
+
+Experiments were conducted on a NVIDIA K40c with the Kepler GK110 microarchitecture.
+For evaluating the eﬀect of using atomic operations, we also used a GTX 480, based on the
+earlier Fermi microarchitecture. CUDA version 6.5 toolkit was used in all the experiments.
+The performance of particle mesh spreading will be problem dependent, and therefore no
+single test problem is suﬃcient. We expect that diﬀerent algorithms will be best for diﬀerent particle conﬁgurations. Here, we propose a class of test problems for particle-mesh problems. The
+key parameter is the average number of spreading contributions for each mesh point (ASM ). To
+construct problems with diﬀerent values of ASM , we use diﬀerent numbers of particles ranging
+from 1000 to 10,000,000, and diﬀerent mesh dimensions K × K × K, with K chosen as 32, 64,
+128 and 256. We also use interpolation parameter p = 6. We generate random positions for the
+particles using a uniform distribution over the mesh, which is the usual case for simulations of
+biological molecules in solvent.
+
+4.2
+
+Atomic Operation Overhead on Diﬀerent Platforms
+
+In previous work [8, 2], particle based approaches were considered less eﬃcient than mesh
+based approaches method due to the use of atomic operations. While this may be true on
+earlier GPU microarchitectures, the Kepler GK110 microarchitecture has signiﬁcantly improved
+performance of atomic operations [12]. We are thus interested in the improvement of the particle
+based approaches compared to mesh based approaches on contemporary GPU hardware.
+In this section, we test the particle based algorithm, and show the overhead of atomic
+operations by comparing the execution time of the algorithm itself and a modiﬁed version
+that replaces atomic operations with normal global memory store operations. We use both the
+Kepler platform and the older Fermi platform. Although the modiﬁed version does not generate
+correct results, it is useful for determining the performance impact of atomic operations.
+126
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+Figure 6: Impact of using atomic operations for
+problems with K = 64. “Atomic” is the particle based algorithm; “non-atomic” shows eﬀect
+of replacing atomic operations by global memory
+writes.
+
+Figure 7: Performance comparison between the
+particle based algorithm and the Gather algorithm on Fermi and Kepler microarchitectures.
+The test problems used K = 64.
+
+Figure 8: Performance of spreading for diﬀerent
+algorithms (K = 128).
+
+Figure 9: Performance of constructing the mesh
+based data structure for diﬀerent algorithms
+(K = 128).
+
+As shown in Figure 6, on the Fermi microarchitecture, atomic operations add a very large
+overhead to the particle based algorithm. On the Kepler microarchitecture, the overhead is
+much smaller, and is only a small fraction of the overall execution time.
+Figure 7 compares the performance of the particle based algorithm and the Gather algorithm
+on the Fermi and Kepler microarchitectures. On Fermi, the particle based algorithm requires
+more time than the Gather algorithm, but on Kepler, the Gather algorithm requires more time.
+This change is directly related to the improvement in performance of the atomic operations on
+Kepler.
+
+4.3
+
+Comparison of Spreading Costs
+
+Figure 8 compares the cost of the spreading operation using diﬀerent algorithms. For the
+mesh based algorithms, we do not include the time for constructing the mesh based data
+structures, which will be considered in the next subsection. We make the following observations.
+1. For small numbers of particles, the particle based algorithm is best. Threads are less
+likely to experience contention on atomic writes when there are fewer particles, which gives this
+algorithm an advantage in this regime. It can be observed in the ﬁgures that the slope of the
+127
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+timing curve for this algorithm (red triangles) increases very slightly as the number of particles
+is increased. This eﬀect may be due to greater contention due to more particles.
+2. Except for small numbers of particles, the hybrid mesh algorithm, using the cuSPARSE
+SpMV operation for the hybrid format, is generally best.
+3. The cost of the Gather algorithm is composed of gathering contributions at each mesh
+point, and processing the overﬂow particles (these are steps 2 and 3 of the Gather algorithm,
+as explained in Section 2). When the number of particles is much less than K 3 , there are few
+if any overﬂow particles, and thus the cost of the algorithm is independent of the number of
+particles. For K 3 particles or more, the overﬂow phase adds to the execution time. The cost of
+this phase increases linearly with the number of overﬂow particles. Thus there is an expected
+knee in the timing for the Gather algorithm, as observed.
+
+4.4
+
+Comparison of Preprocessing Costs
+
+We now compare the costs of constructing the mesh based data structures. From the sparse
+matrix point of view, transferring from a particle based data structure to a mesh based data
+structure is a matrix transpose operation. However, note that in particle-mesh applications,
+there is no sparse matrix corresponding to the particle based data structure.
+Figure 9 shows the overhead of constructing the mesh based data structures. The group
+mesh data structure can be constructed the fastest, due to better memory access patterns. The
+hybrid mesh data structure (the ELL-COO format) is generally slowest to construct.
+
+4.5
+
+Spreading Multiple Times
+
+Putting together the above results, we can determine the best algorithm to use depending
+on how many spreading operations are performed for the same particle conﬁguration. When
+only a single spreading operation is performed for a given particle conﬁguration, the simple
+particle based method is fastest. This is due to very fast atomic operations on current GPU architectures. When multiple spreading operations are performed and the preprocessing costs can
+be amortized, the single mesh and group mesh algorithms are marginally better, for moderate
+numbers of spreading operations (around 20). For very large numbers of spreading operations,
+the hybrid mesh approach using the hybrid sparse matrix data structure in cuSPARSE is fastest.
+This is due to very fast spreading but relatively high data structure construction times.
+
+5
+
+Conclusion
+
+In this paper, we discussed the advantages and disadvantages of various algorithms for particlemesh spreading. We categorized algorithms as being particle based or mesh based. Those that
+are particle based generally require atomic operations. Those that are mesh based require the
+construction of mesh based data structures. We discussed single mesh and group mesh data
+structures that are related to sparse matrix data structures. We also introduced the use of
+warp shuﬄe operations for performing reductions for summing contributions to a mesh point
+with multiple threads. This idea can be extended to optimize the SpMV operation on GPUs
+for row-based data structures.
+Timing tests were used to determine which algorithms are best for a test set parameterized
+by the average number of particles per mesh point. With this knowledge in hand, we can use
+a simple procedure to select the best algorithm to use for diﬀerent particle-mesh spreading
+problems.
+128
+
+Eﬃcient GPU Spreading
+
+X. Guo, X. Liu, P. Xu, Z. Du, and E. Chow
+
+Acknowledgements
+This work was supported by the U.S. National Science Foundation under grant ACI-1306573,
+the National Natural Science Foundation of China (No. 61440057, 61272087, 61363019 and
+61073008), the Beijing Natural Science Foundation (No. 4082016 and 4122039), the Sci-Tech
+Interdisciplinary Innovation and Cooperation Team Program of the Chinese Academy of Sciences, and the Specialized Research Fund for State Key Laboratories.
+
+References
+[1] N. Bell and M. Garland. Implementing sparse matrix-vector multiplication on throughput-oriented
+processors. In Proc. SC ’09, pages 18:1–18:11, New York, NY, USA, 2009. ACM.
+[2] W. Brown, A. Kohlmeyer, S. Plimpton, and A. Tharrington. Implementing molecular dynamics
+on hybrid high performance computers–particle–particle particle-mesh. Comput. Phys. Commun.,
+183(3):449–459, 2012.
+[3] J. W. Choi, A. Singh, and R. Vuduc. Model-driven autotuning of sparse matrix-vector multiply
+on GPU. In PPoPP ’10, pages 115–126, New York, NY, USA, 2010. ACM.
+[4] T. Darden, D. York, and L. Pedersen. Particle mesh Ewald – an N log(N ) method for Ewald sums
+in large systems. J. Chem. Phys., 98(12):10089–10092, 1993.
+[5] A. Dutt and V. Rokhlin. Fast Fourier transforms for nonequispaced data. SIAM J. Sci. Comput.,
+14(6):1368–1393, 1993.
+[6] U. Essmann, L. Perera, M. Berkowitz, T. Darden, H. Lee, and L. Pedersen. A smooth particle
+mesh Ewald method. J. Chem. Phys., 103(19):8577–8593, 1995.
+[7] A. G¨
+otz, M. Williamson, D. Xu, D. Poole, S. Le Grand, and R. Walker. Routine microsecond
+molecular dynamics simulations with AMBER on GPU. 1. Generalized Born. J. Chem. Theory
+Comput., 8(5):1542–1555, 2012.
+[8] M. Harvey and G. De Fabritiis. An implementation of the smooth particle mesh Ewald method
+on GPU hardware. J. Chem. Theory Comput., 5(9):2371–2377, 2009.
+[9] Z. Koza, M. Matyka, S. Szkoda, and L. Miroslaw. Compressed multirow storage format for sparse
+matrices on graphics processing units. SIAM J. Sci. Comput., 36(2):C219–C239, 2014.
+[10] M. Kreutzer, G. Hager, G. Wellein, H. Fehske, and A. Bishop. A uniﬁed sparse matrix data
+format for eﬃcient general sparse matrix-vector multiplication on modern processors with wide
+SIMD units. SIAM J. Sci. Comput., 36(5):C401–C423, 2014.
+[11] X. Liu and E. Chow. Large-scale hydrodynamic Brownian simulations on multicore and manycore
+architectures. In Parallel and Distributed Processing Symposium, 2014 IEEE 28th International,
+pages 563–572. IEEE, 2014.
+[12] NVIDIA. NVIDIA Kepler GK110 Architecture Whitepaper, 2012.
+[13] NVIDIA. CUDA C Programming Guide, 2014.
+[14] T. Oberhuber, A. Suzuki, and J. Vacata. New row-grouped CSR format for storing the sparse
+matrices on GPU with implementation in CUDA. arXiv preprint arXiv:1012.2270, 2010.
+[15] D. Saintillan, E. Darve, and E. Shaqfeh. A smooth particle-mesh Ewald algorithm for Stokes
+suspension simulations: The sedimentation of ﬁbers. Phys. Fluids, 17(3):033301, 2005.
+[16] A. Ware. Fast approximate Fourier transforms for irregularly spaced data. SIAM Rev., 40(4):838–
+856, 1998.
+
+129
+
+

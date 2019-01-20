@@ -1,0 +1,407 @@
+A Fast Multifrontal Solver for Non-linear Multi-physics
+Problems
+Alberto Bertoldo, Mauro Bianco, and Geppino Pucci
+Department of Information Engineering, University of Padova, Italy
+{cyberto,bianco1,geppo}@dei.unipd.it
+
+Abstract. The paper presents a highly optimized implementation of a multifrontal
+solver for linear systems arising in the FEM simulation of multi-physics problems
+related to the behaviour of porous media. The solver features a careful preprocessing phase that is crucial to considerably speed up both system assembly and
+Gaussian elimination. When run on a number of relevant test cases, the proposed
+solver compares very favourably with both its previous unifrontal counterpart and
+two general multifrontal solvers well known in the literature.
+
+1
+
+Introduction
+
+The FEM simulation of non-linear fully coupled multi-physics problems is a challenging and, for many aspects, yet open problem. Due to their complexity, these problems
+require physical models based on very large, non-linear systems of PDEs. The specific
+multi-physics problem targeted in this paper is the simulation of porous media [4]. The
+computational kernel of the simulation is a solver of large unsymmetric linear systems,
+whose sparsity pattern does not change through iterations.
+Due to their size, by virtue of their structure, and for stability reasons, the above
+mentioned linear systems are often solved using frontal approaches [6]. For the specific
+application under consideration, previous work [4] has studied the accuracy of standard
+pivoting strategies for the subfamily of unifrontal methods. Subsequently, Bianco [3]
+has proposed the novel implicit minimum-degree pivoting strategy, which affords an
+efficient implementation in terms of fast routines for dense matrices (e.g., the BLAS
+level 3 library.)
+This paper extends previous work to the multifrontal approach, in which the assembly
+of the linear system proceeds in a tree-like fashion on the entire mesh. On four sizable test
+cases from our application domain, the resulting solver outperforms both the previous
+unifrontal solver of [3] tailored for the specific problem at hand, and other two prominent
+general multifrontal solvers: MUMPS [1] and SuperLU [5].
+
+2
+
+Logical Solution Algorithm
+
+As stated above, the multifrontal approach entails a tree-like assembly of the linear
+system from repeated joins of subsystems corresponding to larger and larger regions of
+This work was supported, in part, by MIUR of Italy under COFINLAB and PRIN grants. Further
+support for the first and second author came from Consorzio “Roma Ricerche” and CISM of
+Italy, respectively.
+M. Bubak et al. (Eds.): ICCS 2004, LNCS 3037, pp. 614–617, 2004.
+c Springer-Verlag Berlin Heidelberg 2004
+
+A Fast Multifrontal Solver for Non-linear Multi-physics Problems
+
+615
+
+the FE mesh. Given an assembly tree and one of its internal nodes t, let A[t] u[t] = b[t]
+¯ [t]
+¯ [t] u
+be its corresponding system after assembly of the associated region, and A
+¯ [t] = b
+be the reduced system obtained by eliminating Fully-Summed (FS) variables. Let also
+lx(t) and rx(t) denote, respectively, the left and the right children (subregions) of node
+(region) t. The logical sequence of steps that must be performed once two children
+regions are ready to be joined is the following:
+1. Assembly: Merge the (reduced) matrices of the two (children) regions into a single
+(not reduced) matrix relative to the joined (parent) region. In the merged matrix A[t] ,
+rows/columns relative to variables in the left child region are placed first, while the
+ones relative to the right child region are appended later.
+2. Swap: Pack FS rows and columns into blocks (called FS blocks) towards the bottom
+and right sides of the matrix. (In order to make the computation efficient, and to ease
+subsequent assembly phases, we employ a minimal swap algorithm which does not
+move those rows/columns which are already in their destination blocks.)
+3. Copy: Copy the FS blocks into temporary buffers which will be passed as input
+parameters to optimized linear algebra routines for fast UL factorization.
+4. Elimination: Let
+A[t] =
+
+N R
+, where
+C S
+
+N ∈ R(ft −nt )×(ft −nt ) , R ∈ R(ft −nt )×nt ,
+C ∈ Rnt ×(ft −nt ) , S ∈ Rnt ×nt
+
+(1)
+
+C, R and S represent the three FS blocks (ft and nt are defined later). Obtain the
+factorization S = UL, compute U = RL−1 and L = U−1 C, and finally compute
+¯ [t] = N − U L .
+the Sch¨ur complement with respect to S as A
+5. Strip: Strip blocks U and L and factors U and L and store them to finally solve the
+system with substitution algorithms. The region is now associated with the reduced
+¯ [t] .
+matrix A
+In our application all the matrices involved in the above steps are dense [3], hence
+¯ [t] can be obtained efficiently in terms of
+the partial factorization of A[t] and matrix A
+BLAS level 3 routines.
+We call the previous algorithm a logical algorithm, since it needs an actual implementation. To this aim, at the ouset we perform a preprocessing phase, called symbolic
+analysis, in order to gather relevant data of the solution process. In [3] it is shown how
+to merge the step 2 (swap) and the step 3 (copy) steps. Below, we describe a faster and
+more advanced merging of steps 1 (assembly), 2 (swap), and 3 (copy) into what we call
+a super-assembly phase.
+
+3
+
+Symbolic Analysis
+
+Our symbolic analysis takes advantage of the fact that the rows and columns that
+become fully-summed at each node of the assembly tree are the same at every iteration
+of the solver for a given mesh, so, for each region, the position of each variable in
+the blocks N, C, R, and S can be computed beforehand. Moreover, we can keep the
+sub-matrices N, C, R, and S of A[t] within separate buffers BN , BC BR and BS .
+During symbolic analysis, the following information is computed for each node of the
+assembly tree t:
+
+616
+
+A. Bertoldo, M. Bianco, and G. Pucci
+
+ft : the dimension of A[t] , which is called front size;
+nt : number of variables of A[t] that become fully-summed;
+υt (·) : for i ∈ {1, . . . , ft }, υt (i) is the global index of the i-th variable of A[t] soon after
+the swap step of the logical algorithm. Clearly, variables υt (i) for i ∈ {1, . . . , ft −
+nt } are not FS, while variables υt (j) for j ∈ {ft − nt + 1, . . . , ft } are FS.
+¯ [t]
+We assume to have available at a leaf t the corresponding Sch¨ur complement A
+obtained from static condensation of the associated element [3]. For what concerns
+¯ [lx(t)] and A
+¯ [rx(t)] be the Sch¨ur complements of the left and
+composite regions, let A
+right subregions of t, respectively. From the previous steps, we have available the
+correspondence between their row (resp., column) indexes and global variable indexes,
+respectively in υlx(t) (·) and υrx(t) (·). From these, we can easily compute two index
+[t]
+[t]
+maps γl (k) and γr (k) that, for the k-th variable in A[t] , indicate the indexes associated
+with that variable in the matrices of the two children as follows:
+
+ h if ∃h < ∞ :
+[t]
+υt (k) = υlx(t) (h);
+γl (k) =
+
+∞ otherwise.
+
+
+ h if ∃h < ∞ :
+υt (k) = υrx(t) (h);
+γr[t] (k) =
+
+∞ otherwise.
+
+(2)
+
+Using these definitions, we can think of k as the destination row/column index of a
+[t]
+[t]
+variable in the assembled region and of γl (k) and γr (k) as the source indexes of
+that variable, respectively in the left component and in the right component during the
+assembly process (in case the k-th variable is not present in one of the two children,
+we map the variable to a “default” value of ∞, which is considered an index for a zero
+element) . These quantities can be computed for each node in the tree by simulating the
+assembly process of the logical algorithm without any floating point operation.
+
+0
+
+1705
+
+(a) Execution times
+
+38505
+
+535
+335
+250
+230
+
+300
+
+50
+47.5
+50
+
+100
+
+140
+
+200
+
+0
+
+0
+6405
+9880
+Number of variables
+
+400
+
+PMMS
+Unifrontal
+MUMPS
+SuperLU
+
+32.5
+27.5
+30
+90
+
+100
+
+500
+
+10
+10
+10
+12.5
+
+846
+860
+
+200
+
+Memory required (MB)
+
+300
+
+666
+
+642
+606
+
+284
+
+400
+
+317
+
+500
+
+518
+
+450
+
+600
+
+494
+584
+553
+
+700
+
+PMMS
+Unifrontal
+MUMPS
+SuperLU
+
+312
+325
+
+7.136
+
+800
+
+74
+
+0.6279
+0.99
+0.6802
+1.062
+
+10
+
+1.154
+2.072
+1.357
+4.584
+
+15
+
+5
+
+33.194
+12.599
+
+20
+
+900
+Flops rate (MFLOPS)
+
+23.264
+
+25
+
+600
+
+1000
+PMMS
+Unifrontal
+MUMPS
+SuperLU
+
+0.059
+0.06
+0.114
+0.0539
+
+Execution times (s)
+
+30
+
+354
+
+35
+
+1705
+
+6405
+9880
+Number of variables
+
+(b) FLOP rate
+
+38505
+
+1705
+
+6405
+9880
+Number of variables
+
+38505
+
+(c) Memory required
+
+Fig. 1. Performance results for test cases using the four solvers.
+
+The main purpose of the index maps defined in Eq. (2) is that of generating the sub¯ [lx(t)] and A
+¯ [rx(t)] , and placing them
+matrices N, C, R and S of A[t] starting from A
+directly into buffers BN , BR , BC , and BS , thus merging together the first three steps
+of the logical algorithm. For efficiency reasons, we make sure that buffer BN reuse as
+¯ [lx(t)] . In order to
+much memory space as possible from the one previously allocated to A
+avoid overwriting entries of the latter matrix prior to their use, it is sufficient to compute
+¯ [lx(t)] (i, j) is used when updating
+BS , BR , and BC , before BN . In fact, observe that A
+[t]
+[t]
+[t]
+A (m, n), with γl (m) = i and γl (n) = j. By the properties of the precomputed
+¯ [lx(t)] in common with BN that could be overwritten are
+maps, the only entries of A
+
+A Fast Multifrontal Solver for Non-linear Multi-physics Problems
+[t]
+
+617
+
+[t]
+
+those entries (i, j) such that both γl (i) and γl (j) are greater than ft − nt + 1, which
+have already been used, since they contribute to entries in BS , BR , and BC .
+
+4
+
+Performance Results
+
+This final section compares some performance figures of the presented solver (dubbed
+PMMS, Porous Media Multifrontal Solver) with the ones of the previous unifrontal
+version [3] and those of two well-known general solvers: SuperLU version 3.0 [5] and
+MUMPS version 4.3 [1]. The test cases are four FE (square) meshes yielding linear
+systems with sizes varying from 1705 to 38505 variables. Our platform is an IBM
+Power3 processor at 375MHz and 4 Gbyte of memory.
+The results of the tests are shown in Figs. 1.(a), 1.(b), and 1.(c) reporting, respectively
+the execution times, the FLOP rates, and the memory requirements for each iteration
+of the solver. On our grids, PMMS largely outperforms the unifrontal solver of [3] and
+is always faster than both MUMPS and SuperLU except for the smallest, and least
+significant test case (see Fig. 1.(a)). The worse performance exhibithed by SuperLU
+w.r.t. MUMPS had also been observed in [2]. For the sake of fairness, the running times
+measured for SuperLU do not include the assembly of the full matrix of the system.
+Fig. 1.(b) shows that MUMPS exhibits a rather larger rate of execution of floating
+point operations than PMMS, which suggests that the former solver is better tuned than
+ours (which is still away from being optimized) although it resorts to an algorithm of
+higher complexity. From this point of view, matching the floating point performance
+of MUMPS appears as a challenging objective for the final release of our solver. For
+the memory usage, in Figure 1.(c) it can be noted how MUMPS has a slightly smaller
+space requirement than PMMS for the biggest test case, while SuperLU always has the
+largest. Finally, we want to remark that the numerical accuracy of the various solvers
+with respect to modified component-wise backward error metric [4] (figures not shown
+here due to space constraints) are all comparable with the roundoff unit of the 64-bit
+floating point precision used.
+
+References
+1. P.R. Amestoy, I.S. Duff, J.Y. L’Excellent. Multifrontal parallel distributed symmetric and
+unsymmetric solvers. Comput. Meth. Appl. Mech. Eng. 184:501–520, 2000.
+2. P.R.Amestoy, I.S. Duff, J.Y. L’Excellent, X.S. Li Analysis and comparison of two general sparse
+solvers for distributed memory computers. ACM Trans. on Meth. Soft. (TOMS). 24(4):388–421,
+2001.
+3. M. Bianco A high-performance UL factorization for the frontal method. In Proc. Int. Conf.
+on Computational Science and its Applications (ICSSA 2003), pages 893–902, Montreal, CA,
+May 2003. Lecture Notes in Computer Science 2667, Springer-Verlag.
+4. M. Bianco, G. Bilardi, F. Pesavento, G. Pucci, and B. A. Schrefler. A frontal solver
+tuned for fully-coupled non-linear hygro-thermo-mechanical problems. Int. J. Num. Meth.
+Eng.57(13):1801–1818, 2003.
+5. J.W. Demmel and S.C. Eisenstat and J.R. Gilbert and X.S. Li and J. W. H. Liu. A Supernodal
+Approach to Sparse Partial Pivoting. SIAM J. Mat. Anal. and Appl. 20(3):720–755, 1999.
+6. I. S. Duff and J. A. Scott. The design of a new frontal code for solving sparse, unsymmetric
+systems. ACM Trans. Math. Soft. (TOMS) 22(1):30–45, 1996.
+
+

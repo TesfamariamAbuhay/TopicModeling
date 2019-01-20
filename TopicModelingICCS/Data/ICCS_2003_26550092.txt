@@ -1,0 +1,550 @@
+Impact of a Restricted Tasking Profile:
+The Case of the GOCE Platform Application Software
+Niklas Holsti and Thomas Långbacka
+Space Systems Finland Ltd., Kappelitie 6, 02200 Espoo, Finland
+{Niklas.Holsti,Thomas.Langbacka}@ssf.fi
+http://www.ssf.fi
+
+Abstract. We are designing the on-board software for the GOCE satellite
+platform so that static analysis can verify its real-time requirements. Our aim is
+to analyse the binary code to derive bounds on the worst-case execution time for
+each task, followed by a schedulability analysis using preemptive fixed-priority
+scheduling. The code-analysis step constrains the sequential coding and the
+schedulability-analysis step constrains the concurrency design (tasking). We use
+the Ravenscar tasking profile further limited to a single suspension point per
+task and a single call of each protected entry. We discuss how this profile
+matches the real-time requirements and its impact on the designers, the software
+architecture and the resource usage. The main issue is that the singlesuspension-point rule prevents procedural abstraction of operations that involve
+input-output. Some design patterns emerge from this example.
+
+1
+
+Introduction
+
+The real-time performance of an embedded program is invariably verified by
+measuring execution times and response times when the program is tested. However,
+often testing can be done only in the final phase of a project, when the software and
+hardware can be integrated. Performance problems may be discovered late, making
+them expensive to correct. Furthermore, it may be hard to find the worst-case scenarios
+and test them. If the measured times are not the worst case they may be exceeded when
+the program is in use, perhaps making the system fail.
+Static analysis is another approach in which the program is designed and coded in
+such a way that its real-time performance can be determined mathematically for all
+possible scenarios. Usually, this approach divides the program into a set of tasks or
+threads, maps the real-time requirements to task deadlines, and determines the overall
+schedulability using a suitable task scheduling model and the worst-case execution
+time of each task as computed from the code. This analysis can often be done before
+testing, at least in a preliminary way, and can be automated and repeated as the
+program evolves. Worst-case performance problems can be detected early.
+Static analysis should be foreseen in the design and coding of the program. The
+algorithms must be designed with worst-case analysis in mind, and the tasking
+architecture must follow the rules of the computational model.
+In this paper we discuss a particular set of tasking rules as used in the design of a
+medium-sized, real-time, embedded program: the Platform Application Software
+J.-P. Rosen and A. Strohmeier (Eds.): Ada-Europe 2003, LNCS 2655, pp. 92−101, 2003.
+ Springer-Verlag Berlin Heidelberg 2003
+
+Impact of a Restricted Tasking Profile
+
+93
+
+(PASW) of the Gravity and Steady-state Ocean Circulation Explorer satellite (GOCE),
+a scientific satellite under construction for the European Space Agency (ESA). This
+example points out some general design problems and solution patterns.
+The rest of the paper is organized as follows. Section 2 summarizes the real-time
+requirements and development constraints of the PASW. In section 3 we describe and
+motivate the tasking rules which are a subset of the Ada Ravenscar profile. The impact
+of these constraints on the PASW design is discussed in section 4 with the support of
+examples. Section 5 summarizes the problems, traces them to the Ravenscar rules or to
+our stronger rules, and discusses the impact on the overall static analysis.
+
+2
+
+The GOCE Satellite and Its Platform Application Software
+
+GOCE is a scientific Earth observation satellite being constructed for the European
+Space Agency by an industrial team led by the prime contractor Alenia Spazio of
+Turin, Italy. Space Systems Finland (SSF) is implementing the GOCE on-board
+Platform Application Software (PASW) for the avionics subcontractor, Astrium Space
+GmbH of Friedrichshafen, Germany.
+The main instrument in GOCE is a highly sensitive gravity gradiometer that
+contains freely flying “proof masses” whose positions are measured and controlled
+electrostatically. The instrument is used both to measure the gradient of the Earth's
+gravitational field and to measure the non-gravitational acceleration and rotation of the
+GOCE satellite due to the Earth's atmosphere and magnetic field. These nongravitational effects are large, because GOCE will use a very low orbit of about
+250 km altitude, but they are compensated by continuously controlled ion thrusters,
+making GOCE fly a “drag-free” trajectory and maximizing the sensitivity of the
+instrument.
+The PASW runs in the GOCE Central Data Management Unit (CDMU,
+implemented by LABEN, Italy) on a 24 MHz ERC32 (SPARC V7) processor and is
+written in Ada using the XGC compiler [1], a variant of GNU Ada. The PASW has
+two main functions: attitude and orbit control, which keeps GOCE on a drag-free orbit,
+and the so-called data-handling function, which means the routing of commands,
+housekeeping data, and scientific data between the ground and various functions in the
+PASW and in other subsystems on GOCE. This includes sensor data collection, massmemory storage and replay, monitoring data for anomalies, autonomous response to
+anomalies, and time-tagged command execution. There is also a facility to upload and
+execute interpreted control procedures, using the On-board Command Language
+software from the IDA institute at the University of Braunschweig, Germany.
+For the purpose of this paper, the main design problems arise from the input-output
+channels and the data-flows. Figure 1, below, illustrates them.
+The four principal PASW real-time activities are: (1) the attitude and orbit control,
+which runs at 10 Hz and uses the MIL-bus for sensor and actuator data; (2) the TM
+down-link from mass-memory, which uses the fast serial lines and should fill all of the
+TM bandwidth of about 1.2 Mbs; (3) the periodic data collection, which samples the
+analog and digital lines and other data at 10 Hz; and (4) the routing of TC and TM
+packets, over the MIL-bus, between the CDMU and the remote terminals. The TC/TM
+traffic is partly periodic and partly sporadic and is extensively configurable by ground
+commands. The PASW manages a total of 15 interrupt sources.
+
+94
+
+N. Holsti and T. Långbacka
+
+Reconfiguration modules (2)
+
+Analog
+RT 1
+
+Mass Mem
+
+Digital
+OBRT
+
+RT 2
+
+Sys. Log
+
+...
+
+Thermal
+
+TTC-B-01
+
+RT 14
+
+MIL-bus serial
+1 Mb/s 20 Mb/s
+STR1
+
+Many users
+
+Many users
+
+Platform Application SW
+Many TC handlers
+
+Star
+Track
+Proc.
+
+Many TM sources
+
+STR2
+STR3
+
+serial 24/16 Mb/s
+TC module
+
+TM module
+
+4 kb/s
+1.2 Mb/s
+Ground
+
+Fig. 1. The GOCE CDMU input-output channels and peripherals used by the PASW
+
+Most I/O channels multiplex data and messages of several types to and from different
+devices and with different real-time requirements. The I/O channels must be shared by
+concurrent tasks, sometimes in a prioritized way. Moreover, the PASW and the
+peripheral units have finite buffering resources, and the real-time activities must be
+paced and synchronized to avoid buffer overflow.
+We want to design the PASW to ensure predictable hard real-time performance
+under a bounded maximum load but to also provide soft-real-time qualities such as
+improved response times under light load and smoothly degraded performance under
+overload. These requirements on concurrency and timing may be hard to implement
+using a strongly restricted subset of Ada tasking. We aim in this paper to use the
+PASW as a test case for the subset described in the next section.
+
+3
+
+The Tasking Profile
+
+The Ravenscar profile (here abbreviated RP) is a restriction of the Ada tasking features
+that aims to make the real-time behaviour of an Ada program statically analysable. A
+second aim is to allow a simpler, faster and more easily verifiable kernel (run-time
+system). The RP was defined at a sequence of IRTAW meetings (see [1] and
+references therein) and is proposed for ISO standardisation.
+
+Impact of a Restricted Tasking Profile
+
+95
+
+Briefly, an RP program contains a statically fixed number of Ada tasks. All tasks
+start at program boot, never terminate or abort, and communicate only through
+protected objects. Task entries, rendez-vous and asynchronous transfer of control are
+excluded. A protected object can have at most one entry, the barrier of the entry must
+be a single boolean variable local to the object, and the number of tasks waiting on the
+entry must never exceed one. The “requeue” statement is excluded. Interrupts are
+statically bound to protected operation handlers.
+In the RP, a task can be suspended (wait) only when it calls a protected entry, when
+it executes a “delay until” statement, or by the explicit suspend and release operations
+in the predefined package Synchronous_Task_Control. The static analysis of an
+RP program is further simplified if we add two stricter rules:
+• A task has a single suspension point.
+• A protected entry is called by a single task.
+The single-suspension-point rule means that tasks are clearly divided into cyclic or
+time-triggered tasks that suspend on a delay statement, and sporadic or event-triggered
+tasks that suspend on an entry call.
+The second rule ensures in a static way that no more than one task can wait on an
+entry. It also implies that each interrupt is statically connected to one task, the task that
+calls the entry of the protected object that contains the interrupt handler procedure.
+We have chosen this stricter profile to make the PASW suitable for the ESA
+schedulability analysis tools that follow the “HRT” model [3] and for our WCET
+analysis tool [4][5] without any manual translation from the Ada design to a simpler
+analysis model. However, the profile may make the design harder to create and
+understand. Furthermore, the schedulability analysis depends on the activation
+intervals, offsets and deadlines of the tasks, and these may now be harder to derive
+from the high-level real-time requirements because the task set is less directly related
+to the high-level functions. This trade-off is our main subject.
+
+4 Design Problems and Patterns
+4.1 Introduction
+In the PASW case, we have found that our profile imposes design constraints and a
+design style that were not apparent to us from the start. The designer must take a new
+approach to some common real-time problems. In this section, we try to describe these
+issues from the point of view of the designer rather than as a list of included or
+excluded language features. The main issues are the following:
+•
+•
+•
+•
+
+Abstracting operations that include input/output or timing.
+Reifying input/output actions that use the same channel.
+Pacing data-flow from task to task.
+Queues with release controls.
+
+Below, we will discuss how the tasking design is altered and how the scheduling
+attributes of the tasks are affected.
+
+96
+
+N. Holsti and T. Långbacka
+
+4.2 Procedural Abstraction Difficulties
+The subprogram concept, or procedural abstraction, is without doubt the major tool of
+the software designer, and is itself necessary for the next most important tool, that of
+subsystems or modules as realized in Ada packages.
+Traditionally, reading and writing data from or to peripheral devices is done by
+subprograms, such as Ada.Text_IO.Put, or the Unix system services read() and
+write(). For example, one GOCE hardware unit contains a real-time clock giving the
+On-Board Reference Time (OBRT) that the PASW must read to time-stamp telemetry
+packets and for other purposes. Normally, the designer would define a package OBRT,
+say, and a function OBRT.Clock to read and return the time. Our profile forbids this
+because the clock must be read using an I/O channel, which means that the reading task
+must wait for an interrupt to signal that the clock read-out is available, and this would
+introduce a new suspension point in the task.
+The program's modular structure must now be based on the flow of data from the
+input channels, through the processing stages and to the output channels. No procedure
+can encapsulate a hidden suspension point. A procedure that contains a suspension
+point must be used carefully and only to be the single suspension point of a task.
+This is a very strong constraint on the design. Moreover, it makes the whole design
+depend strongly on the hardware architecture, specifically on whether a peripheral unit
+is memory-mapped and so can be used without suspension, or connected to an I/O
+channel that uses interrupts or delays which imply suspension. If the hardware design
+changes in this respect, the change cannot be hidden in the lower-level procedures, but
+propagates to all tasks that use this part of the hardware.
+For the PASW we designed a “proxy” clock that can be read without I/O. A cyclic
+task reads the physical OBRT clock (using I/O) and records the value together with the
+corresponding value of Ada.Real_Time.Clock. The “proxy” OBRT.Clock function
+uses Ada.Real_Time.Clock and converts the value to the OBRT scale. This works
+for the OBRT, but would not work for less predictable values.
+4.3 Starter Tasks and Continuer Tasks
+Consider the PASW task, referred to above, that cyclically reads the OBRT clock
+using an I/O channel. The design of this task seems simple: first use a delay statement
+to wait for the next cycle, then command the channel coupler to start the I/O, wait until
+the I/O is complete, and read the data from the channel buffer. The problem is that this
+design involves two suspension points: the delay statement and the wait for I/O
+completion which would usually be implemented as an entry call in the following way:
+loop
+Compute Next_Time;
+delay until Next_Time;
+IO_Channel.Start (reading the OBRT);
+IO_Channel.Wait_For_Completion (Result);
+Check and use Result;
+end loop;
+
+Here we assume that IO_Channel.Start starts the reading of the OBRT clock and
+IO_Channel.Wait waits for it to finish (wait for interrupt). This code is not allowed
+by our profile because it contains two suspension points: delay until and
+IO_Channel.Wait_For_Completion.
+
+Impact of a Restricted Tasking Profile
+
+97
+
+Our design splits the task into two tasks: the “starter” task that waits for the next
+cycle and starts the I/O, and the “continuer” task that waits for the I/O to complete and
+then checks and uses the OBRT value read. The “starter” task body is:
+loop
+Compute Next_Time;
+delay until Next_Time;
+IO_Channel.Start (reading the OBRT);
+end loop;
+
+The “continuer” task body is:
+loop
+IO_Channel.Wait_For_Completion (Result);
+Check and use Result;
+end loop;
+
+Both tasks satisfy our profile, but the logical flow of the process is now harder to
+understand. Moreover, usually the “starter” must pass some data to the “continuer” to
+describe the I/O operation and what to do with the result. These data may be passed in
+a global variable, or via the IO_Channel object if protected access is needed.
+This division into “starter” and “continuer” resembles I/O drivers in operating
+systems. Drivers are usually split into a subprogram that is called from the user process
+to start an I/O, and an interrupt handler that is executed later in the system context.
+The PASW design contains several such groups of closely cooperating tasks. We
+call these groups processes. This splitting of tasks creates a problem for the static
+analysis because the high-level real-time requirements are usually expressed as a
+deadline on the whole process, while our schedulability analysis only ensures deadlines
+for each task. The analyst must split the process deadline into task deadlines and I/O
+deadlines, which is not trivial to do. Furthermore, the splitting usually creates a set of
+tasks with strong but implicit precedence relationships and timing offsets and if these
+are not taken into account the schedulability analysis may be too pessimistic. For
+example, in a typical PASW process it is impossible for both the “starter” and
+“continuer” tasks to be ready (schedulable) at the same time, so they cannot interfere.
+4.4
+
+Reifying I/O Actions
+
+The I/O channel that accesses the OBRT is also the channel for several other HW
+registers, the mass memory and the “safeguard” memory which holds configuration
+data and a log of system events such as anomaly reports. The channel is thus used by
+other processes. Each process needs to start various kinds of I/O operations and wait
+for them to finish. The channel can only run I/O operations serially, one at a time, so
+mutual exclusion is needed from start to finish of the I/O operation.
+In full Ada, we would define a protected object with “start I/O” entries for starting
+each kind of I/O operation, with entry barriers that ensure that the channel is idle. The
+object would also contain an interrupt-handling procedure and a “wait for I/O to stop”
+entry which waits for the I/O to end and then releases the exclusive access to the
+channel by opening the barriers on the “start I/O” entries.
+The RP forbids such a protected object because it has more than one entry and
+because many tasks might be queued on the same entry. Moreover, splitting the tasks
+into “starter” and “continuer” tasks as explained above is no longer enough to satisfy
+our single-suspension-point rule, because the calls of the “start I/O” entries would also
+
+98
+
+N. Holsti and T. Långbacka
+
+add suspension points to the “starter” tasks. We need two new mechanisms: one to
+serialize the I/O operations without suspending the “starter” tasks, and another to avoid
+many “continuer” tasks waiting on the same “wait for I/O to stop” entry.
+The serialization problem suggests a queue to store waiting I/O requests. The
+enqueue operation can be non-suspending if the queue is given enough space to hold
+one request from each “starter” task (a static number in RP). The queue is consumed
+by a single “driver” task that actually starts the I/O operations.
+The single-waiter problem suggests creating one protected synchronization object
+for each “continuer” task, with each I/O request referring to the associated
+synchronization object. The synchronization object has a “signal” operation and a
+“wait for signal” entry, and also buffers one I/O result for the “continuer” task.
+This means that I/O requests and I/O results must be encoded or reified as data
+objects that contain the kind of I/O to be performed, buffer pointers, synchronization
+object pointers and so on. This resembles how operating systems reify I/O requests,
+building and enqueuing “I/O control blocks” to be handled by device drivers.
+In the PASW OBRT example, we need a synchronization object that is accessible
+to the “starter” and “continuer” tasks:
+OBRT_Synch : aliased IO_Channel.Synch_Object_T;
+
+where we now assume that IO_Channel is a package which declares, among other
+things, the protected type Synch_Object_T and types for I/O requests and results.
+The “starter” task is:
+loop
+Compute Next_Time;
+delay until Next_Time;
+Request := (
+Kind => IO_Channel.Read_OBRT,
+Synch => OBRT_Synch'Access);
+IO_Channel.Enqueue (Request);
+end loop;
+
+The “driver” task is triggered when there are enqueued I/O requests and the channel is
+idle. It takes a request from the queue and starts the I/O. When the I/O is done, the
+interrupt handler signals the synchronization object referred to in the Synch
+component of the request, passing the I/O result as a parameter. The “driver” task can
+then start the next I/O. The “continuer” task waits on the synchronization object:
+loop
+OBRT_Synch.Wait_For_Completion (Result);
+case Result.Kind is
+when IO_Channel.Read_OBRT =>
+Check and use Result.OBRT;
+when others =>
+Handle unexpected kind of result;
+end case;
+end loop;
+
+This design complicates the static analysis in two ways. Firstly, the time offset between
+the “starter” task and the “continuer” task depends on the variable number and kind of
+requests in the queue. Secondly, the interrupt handler calls the synchronization object
+via an access (the Synch component ) which makes it hard to find the call graph. We
+can avoid this “dynamic” call only if the IO_Channel package knows more about its
+
+Impact of a Restricted Tasking Profile
+
+99
+
+client processes. For example, if we know that only one process will ever read the
+OBRT, the synchronization object for this kind of I/O can be encapsulated in
+IO_Channel and statically called from a case statement based on the Kind component
+of the I/O request. However, this would increase the architectural coupling. The PASW
+design currently uses the dynamic approach.
+4.5
+
+Pacing Data Flow
+
+A task is generally part of a data-flow network, taking input from “upstream” tasks or
+other data sources and generating output for “downstream” tasks or other data sinks.
+The task should be activated only when the sources can provide input. We assume that
+data must not be lost. If the sinks are not immediately ready to receive the resulting
+output, the task is often designed to suspend itself until the sinks can accept the output.
+Our tasking profile does not allow this, because the task would have two suspension
+points: one waiting for input data, the other waiting for output capacity. Adding an
+output buffer queue only shifts the problem to suspending on a full queue.
+The “downstream” suspension is avoided if the design ensures that there is always
+capacity to handle or buffer the output. However, this is not robust against overload.
+Another possibility is to activate the task only when there is output capacity as well
+as input data. This is possible only for sporadic tasks and only when the upstream
+sources can buffer data. This method propagates the downstream congestion upwards,
+which may improve the resource utilization if the input is smaller than the output.
+For example, the PASW can be sent telecommands to dump stored telemetry from
+the system log to ground. The dumping process contains a task that reads system log
+memory. This task is activated only when a dump TC is in progress (upstream) and
+there is buffer space (downstream) to handle the TM, all the way down to the I/O
+channel leading to the TM hardware. The I/O interrupt on this channel signals that
+some buffer space is released. This signal propagates upwards in the task chain and
+eventually activates the task to read more TM from the system log memory.
+If more dump telecommands arrive when a dump is in progress, they are held in a
+queue. Since a dump TC is typically much smaller than the TM data in the dump, much
+less memory is needed for the TC queue than would be needed for all the TM, if all the
+data were read from system log memory at once.
+This “downstream” data-flow pacing complicates the schedulability analysis
+because the interval between activations of a sporadic task is now determined both by
+“upstream” events and “downstream” events.
+4.6
+
+Queues with Release Control
+
+Data queues are generally used to convey data from task to task. In full Ada, a queue
+would normally be coded as a protected object that contains an array holding the
+queued data and two operations, Put and Get, to enqueue and dequeue data. Both
+operations would usually be entries, with Put suspending the upstream producer task
+until the queue has room for more data, and Get suspending the downstream consumer
+task until the queue has some data to be taken out. This provides flow control
+(execution pacing) for both producer and consumer. The RP, however, allows only one
+entry, so either Put or Get must be just a protected procedure with no barrier. The
+queue can then pace its producers or its consumers, but not both.
+
+100
+
+N. Holsti and T. Långbacka
+
+In our profile only one task can be paced in this way, since only one task can call
+the entry. Queues in the PASW usually have multiple producers but one consumer, so
+we make Put a procedure and Get an entry.
+To take downstream capacity into account, each queue has a release quotum which
+sets the number of elements that can be released. The Get barrier is logically “(queue
+not empty) and (release quotum > 0)” but the RP requires that this condition is held in
+one Boolean variable that is updated whenever any part of the condition changes. Each
+call of Get decrements the release quotum. The release quotum is initialized to reflect
+the initially available downstream capacity. When the downstream capacity is
+replenished (e.g. buffer space is released), the release quotum is increased by means of
+a protected procedure Release of the queue object.
+4.7
+
+Complete Process Example
+
+We can now describe a complete PASW process, for example the execution of system
+log dump telecommands. When such a TC arrives, it is placed in a TC queue which
+initially has a release quotum of 1 (one). The first TC to arrive in the queue is thus
+immediately released and activates a “starter” task which starts to read the first block
+of system log data into a ring buffer in RAM. Even if there are more TCs in the queue,
+the “starter” task is not activated again because the release quotum is now zero.
+When a block of system log data has been read, the I/O interrupt activates the
+“continuer” task which passes the data to a “packet scanner” task and starts reading the
+next data block. The “packet scanner” divides the data stream into TM packets and
+sends them to a specific queue in the set of TM queues. The “sender” task selects
+packets from these queues according to a priority algorithm and transmits them on the
+I/O channel to the TM hardware.
+Each task in this chain is chiefly activated by the arrival of inputs from the
+upstream task, but the activation is inhibited until downstream capacity is available.
+Thus, the “sender” task is inhibited when the TM I/O channel is busy; the “packet
+scanner” task is inhibited when the TM queue for system log data is full; the
+“continuer” task is inhibited when the ring buffer is full and also when the system log
+has been fully read; and the “starter” task is inhibited (via the release quotum of the TC
+queue) until the “continuer” task has finished reading the system log. The RP one-entry
+limit means that the inhibition condition must be embedded in the barrier of the
+upstream entry and new protected procedures (such as Release) are needed by which
+the downstream tasks can control the inhibition.
+
+5 Summary and Conclusions
+We have described how the tasking design of the PASW has been influenced and
+constrained by the chosen tasking profile, which is the Ravenscar profile further
+limited to one suspension point per task and one call per protected entry. This profile
+was chosen to match the analysis tools supported by ESA and SSF.
+We expected the profile to complicate the design and the parametrization of the
+analysis, but the impact was larger than we thought, mainly because the singlesuspension-point rule limits procedural abstraction of suspending operations. This
+forces us to split tasks. The RP rules on protected objects increase the number of
+
+Impact of a Restricted Tasking Profile
+
+101
+
+protected objects. Our limit of one call per entry creates dynamic accesses to protected
+objects which complicates the static analysis of the call-graph and task interactions.
+The greater number of tasks demands more memory for task stacks. The number of
+task switches is not increased, but the CPU time for a switch may grow since the kernel
+data structures are larger. However, we do not expect this to be critical for the PASW.
+The increase in protected objects seems to have small time and space impact.
+Much more severe is the impact on the algorithm design. Because the tasking
+profile limits the syntax and control flow within a task, the designer often cannot use
+control flow to express algorithms, but must instead use data structures and state
+variables. What was a loop within a task body, clearly shown by “for” and “loop”
+keywords, now becomes a cycle of states with the loop-counter hidden in a protected
+object and often accessed by several tasks. The algorithms are harder to understand
+and it is harder to find loop-bounds by automatic analysis. We also suspect that WCET
+bounds may become more pessimistic because the actual execution paths will depend
+more on global data than on local control flow and local data. For functional
+verification, the structural test coverage metrics become less useful and may need to be
+supported by data-state coverage metrics.
+Splitting tasks also means splitting real-time requirements. A single function of the
+application, such as executing one telecommand, for which the user has a well-defined
+response-time requirement, is split into a process that invokes several tasks, possibly
+several times. The designer must manually define the real-time task attributes so that
+schedulability implies the required end-to-end response-time.
+We have described some design patterns that can help the designer. However, the
+impact of the single-suspension-point rule is so severe that we would really like to get
+rid of it in favour of the full RP (perhaps with the single-entry-call rule). This would
+require either better analysis tools, able to analyse an RP design, or a method to
+translate an RP Ada task-set into a set of “analysis-level” model tasks that obey the
+single-suspension-point rule and can be analysed by our current tools.
+Perhaps we were too ambitious and should have divided the PASW design into a
+hard-real-time part, using our strict profile, and a soft real-time part, using the RP. The
+problem here is that the same I/O channels are used by both parts, making it hard to
+analyse the parts separately.
+
+References
+1. http://www.xgc.com
+
+2. Burns, A., Dobbing, B., Vardanega, T.: Guide for the use of the Ada Ravenscar
+Profile in high integrity systems. University of York Technical Report YCS-2003348, January 2003
+3. Burns, A., Wellings, A.J.: HRT-HOOD: A design method for hard real-time Ada.
+Real-Time Systems, 6(1), 73-114, 1994
+4. http://www.bound-t.com
+5. Holsti, N., Långbacka, T., Saarinen, S.: Using a Worst-Case Execution Time Tool
+for Real-time Verification of the DEBIE Software. Proceedings of the Conference
+'DASIA 2000 - Data Systems in Aerospace', Montreal, Canada, 22-26 May 2000,
+(ESA SP-457, September 2000) 307-312
+
+

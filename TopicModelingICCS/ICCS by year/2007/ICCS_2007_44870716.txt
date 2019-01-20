@@ -1,0 +1,514 @@
+Latency-Optimized Parallelization of the FMM
+Near-Field Computations
+Ivo Kabadshow1 and Bruno Lang2
+1
+
+John von Neumann Institute for Computing,
+Central Institute for Applied Mathematics, Research Centre J¨
+ulich, Germany
+i.kabadshow@fz-juelich.de
+2
+Applied Computer Science and Scientiﬁc Computing Group,
+Department of Mathematics, University of Wuppertal, Germany
+
+Abstract. In this paper we present a new parallelization scheme for
+the FMM near-ﬁeld. The parallelization is based on the Global Arrays
+Toolkit and uses one-sided communication with overlapping. It employs a
+purely static load-balancing approach to minimize the number of communication steps and beneﬁts from a maximum utilization of data locality.
+In contrast to other implementations the communication is initiated by
+the process owning the data via a put call, not the process receiving the
+data (via a get call).
+
+1
+
+Introduction
+
+The simulation of particle systems is a central problem in computational physics.
+If the interaction between these particles is described using an electrostatic or
+gravitational potential ∼ 1/r, the accurate solution poses several problems.
+A straightforward computation of all pairwise interactions has the complexity O(N 2 ). The Fast Multipole Method (FMM) developed by Greengard and
+Rokhlin [1] reduces the complexity to O(N ). A detailed depiction of the FMM
+would be beyond the scope of this paper and can be found elsewhere [2]. We will
+only outline the most important details for the parallelization.
+The FMM proceeds in ﬁve passes.
+–
+–
+–
+–
+–
+–
+
+Sort all particles into boxes.
+Pass 1: Calculation and shifting of multipole moments.
+Pass 2: Transforming multipole moments.
+Pass 3: Shifting Taylor-like coeﬃcients.
+Pass 4: Calculation of the far-ﬁeld energy.
+Pass 5: Calculation of the near-ﬁeld energy.
+
+The most time-consuming parts of the algorithm are Pass 2 and Pass 5, each
+contributing approximately 45% to the overall computing time. Since we have
+diﬀerent calculation schemes for Pass 2 and 5, diﬀerent parallelization schemes
+are necessary. This paper deals with Pass 5 only, the direct (near-ﬁeld) pairwise
+interaction. The sequential version of the near-ﬁeld computation involves the
+following steps.
+Y. Shi et al. (Eds.): ICCS 2007, Part I, LNCS 4487, pp. 716–722, 2007.
+c Springer-Verlag Berlin Heidelberg 2007
+
+Latency-Optimized Parallelization of the FMM Near-Field Computations
+
+717
+
+– Create the particle–box relation ibox in skip-vector form (see Sec. 3.1).
+– Calculate all interactions of particles contained in the same box i (routine
+pass5inbox).
+– Calculate all interactions of particles contained in diﬀerent boxes i and j
+(routine pass5bibj).
+
+2
+
+Constraints for the Parallelization
+
+In order to match the parallelization of the remaining FMM passes and to achieve
+reasonable eﬃciency, the following constraints had to be met.
+1. Use the Global Arrays Toolkit (GA) for storing global data to preserve the
+global view of the data.
+GA provides a parallel programming model with a global view of data
+structures. GA uses the ARMCI communication library oﬀering one-sided
+and non-blocking communication. A detailed description of all GA features
+can be found in Ref. [4]. ARMCI is available on a wide range of architectures. Additionally GA comes with its own memory allocator (MA). To use
+the available memory eﬃciently, our implementation will allocate all large
+local scratch arrays dynamically by MA routines instead of direct Fortran
+allocation.
+2. Minimize the number of communication steps.
+All tests were performed on the J¨
+ulich Multi Processor (JUMP); a SMP
+cluster with 41 nodes with 32 IBM Power 4+ processors and 128 GB RAM
+per node. The nodes are connected through a high performance switch with
+peak bandwidth of 1.4GB/s and measured average latencies of ≈ 30μs.
+Shared memory can be accessed inside a node at the cost of ≈ 3μs.
+Ignoring the latency issue on such machines can have a dramatic impact
+on the eﬃciency; see Fig. 1
+3. To reduce the communication costs further, try to overlap communication
+and calculation and use one-sided communication to receive (ga get) and
+send (ga put) data.
+
+3
+
+Implementation
+
+In this section we describe some details of the parallel implementation. Related
+work and other implementation schemes can be found elsewhere [7,8,9].
+3.1
+
+Initial Data Distribution
+
+The most memory consuming data arrays are the Cartesian coordinates (xyz),
+the charges (q), the particle–box relation stored in the ibox vector, and two
+output arrays storing the data for the potential (fmmpot) and the gradient
+(fmmgrad). These arrays have to be distributed to prevent redundancy.
+The ibox vector is a special auxiliary data structure mapping all charges to
+the corresponding boxes. To enable fast access in a box-wise search this structure
+is stored in a skip-vector form (see Fig.2).
+
+718
+
+I. Kabadshow and B. Lang
+
+224
+
+Total speedup
+Ideal speedup
+
+192
+
+Speedup
+
+160
+128
+96
+64
+32
+0
+
+32
+
+64
+
+128
+96
+160
+Number of processors
+
+192
+
+224
+
+256
+
+Fig. 1. This ﬁgure highlights the latency bottleneck. The speedup for a system with
+87 ≈ 2 · 106 homogeneously distributed particles is shown. Communication is implemented using blocking communication. Each box is fetched separately. The latency
+switching from 3μs to 30μs can be clearly seen at 32 processors.
+
+3 3
+
+3
+
+4 4
+
+4
+
+4
+
+6 6
+
+6
+
+6
+
+7
+
+7
+
+9 9
+
+9
+
+9
+
+13 13 13 13
+
+-3 -2 -3 4 -3 -2 -3 6 -3 -2 -3 7 -1 9 -3 -2 -3 13 -4 -3 -2
+
+Fig. 2. The diagram illustrates the box management. Empty boxes (5,8,10,11,12) are
+not stored. The ibox vector associates the box number with each particle. To allow
+fast access to neighboring boxes the ibox vector is modiﬁed into a skipped form. Only
+the ﬁrst particle in a box holds the box number, all subsequent charges link forward
+to the ﬁrst particle of the next box. Finally, the last particle in a box links back to the
+ﬁrst particle of the same box.
+
+3.2
+
+Design Steps
+
+The parallel algorithm can be divided into 5 steps:
+– Align boxes on processors
+– Prepare and initiate communication
+– Compute local contributions
+
+Latency-Optimized Parallelization of the FMM Near-Field Computations
+
+719
+
+– Compute remote contributions
+– Further communication and computation steps, if small communication
+buﬀers make them necessary.
+Step 1 - Box Alignment. In Passes 1 to 4 of the FMM scheme the particles
+of some boxes may be stored in more than one processor. These boxes have to
+be aligned to only one processor. While this guarantees that the Pass 5 subroutine pass5inbox can operate locally, it may introduce load imbalance. However,
+assuming a homogeneous particle distribution, the load-imbalance will be very
+small, since the workload for one single box is very small.
+The alignment can be done as follows:
+– Compute size and indices of the “leftmost” and “rightmost” boxes (w.r.t.
+Morton ordering; cf. Fig. 3) and store this information in a global array of
+size O(nprocs).
+– Gather this array into a local array boxinfo containing information from
+each processor.
+– Assign every box such that the processor owning the larger part gets the
+whole box.
+– Reshape the irregular global arrays ibox, xyz, q, fmmgrad, fmmpot.
+– Update boxinfo.
+After alignment the pass5inbox subroutine can be called locally.
+
+P1
+
+P2
+
+P3
+
+P4
+
+P1
+
+P1
+
+P2
+
+Fig. 3. The data is stored along a Morton-ordered three-dimensional space ﬁlling curve
+(SFC)[6]. The diagram shows a 2D Morton-ordered SFC for the sequential version and
+a two and four processor parallel version. Since the data is distributed homogeneously
+the particle/box split is exactly as shown here.
+
+Step 2 - Prepare and Initiate Communication. Like in the sequential
+program, each processor determines the neighbors of the boxes it holds, i.e. the
+boxes which lie geometrically above, to the right or in front of the respective
+box. All other boxes do not need to be considered, since these interactions were
+already taken into account earlier. This is a special feature of the Morton-ordered
+
+720
+
+I. Kabadshow and B. Lang
+
+data structure. Boxes not available locally will be sent by the owner of the box to
+assure a minimal amount of communication steps. The remote boxes are stored
+in a local buﬀer. If the buﬀer is too small to hold all neighboring boxes, all
+considered interactions will be postponed until the buﬀer can be reused.
+In order to achieve the O(nprocs) latency, foreign boxes are put by the processor that holds them into the local memory of the processor requiring them. Each
+processor has to perform the following steps:
+–
+–
+–
+–
+–
+–
+
+Determine local boxes that are needed by another processor.
+Determine the processors they reside on.
+Compute the total number of ‘items‘ that every processor will receive.
+Check local buﬀer space against total size.
+If possible, create a suﬃciently large send buﬀer.
+Issue a ga_put() command to initiate the data transfer.
+
+Step 3 - Compute Local Contributions. Now, that the communication is
+started, the local portion of the data can be used for computation. All in-box and
+box–box interactions that are available locally are computed. All computations
+involving remote/buﬀered boxes are deferred to Steps 4/5. Step 3 comprises the
+the calculations of the total Coulomb energy Ec , the Coulomb forces F c (r k ) and
+the Coulomb potential φc (r k ). Let ni denote the number of particles in box i, let
+(i, k) be the kth particle in box i, and let qi,k and r i,k be its charge and position,
+respectively. Then the total Coulomb energy between all particles in boxes i and
+j, the total Coulomb forces of all particles in box j to a certain particle (i, k) in
+box i, and the corresponding Coulomb potential are given by
+Ec =
+
+1
+2
+
+ni
+
+nj
+
+k=1 l=1
+nj
+
+F c (r i,k ) = qi,k
+l=1
+nj
+
+φc (r i,k ) =
+l=1
+
+qi,k qj,l
+|r i,k − r j,l |
+
+qj,l
+(r i,k − r j,l )
+(r i,k − rj,l )3
+
+qj,l
+|r i,k − r j,l |
+
+(1)
+
+(2)
+
+(3)
+
+respectively. Note that for the in-box case, i = j, the terms corresponding to the
+interaction of a particle with itself must be dropped.
+Step 4/5 - Compute Remote Contributions. Since the communication
+request to ﬁll the buﬀer was issued before the start of step 3, all communication
+should be ﬁnished by now. After a global synchronization call ga_sync, the buﬀer
+is ﬁnally used to calculate interactions with the remote/buﬀered boxes.
+
+4
+
+Results
+
+Three diﬀerent test cases were studied. All test cases contain equally distributed
+particles (each box contains 8 particles). This guarantees that all boxes are occupied with particles and therefore all possible communication at the processors’
+
+Latency-Optimized Parallelization of the FMM Near-Field Computations
+
+721
+
+512
+Ideal speedup
+8^7 particles
+8^8 particles
+8^9 particles
+
+256
+128
+
+Speedup
+
+64
+32
+16
+8
+4
+2
+1
+
+1
+
+2
+
+4
+
+8
+
+32
+16
+Number of processors
+
+64
+
+128
+
+256
+
+512
+
+Fig. 4. Three diﬀerent test cases were computed. The speedup is almost independent
+from the number of particles even for larger processor numbers. Thus, especially the
+smallest test case with 87 particles beneﬁts from the reduced communication steps.
+
+border will indeed take place. This represents a worst case communication pattern for any number of processors since empty boxes would not be communicated
+over the network.
+The key features can be summarized as follows: All expensive operations
+(box search, calculation) are done locally. Especially gathering all needed data
+for each processor is done by the processor owning the data (ga_put), not by
+the processor receiving the data (ga_get). This saves unnecessary communication time and thus latency. Even for small test cases with few particles per
+processor the communication can be hidden behind the calculation. The static load-balancing approach outperforms the dynamic approach especially for
+clusters with long latency times. Compared to the model described in Sec. 1,
+this approach scales well beyond 32 processors. There is no visible break in
+the speedup at 32 processors.
+
+5
+
+Outlook
+
+The presented scheme assumes an approximately homogeneous distribution of
+the particles, but can be extended to handle inhomogeneous distributions by
+introducing “splitting boxes”, i.e., dividing large boxes further until a certain
+box granularity is reached; hence, the workload can again be distributed equally
+over all processors.
+
+722
+
+I. Kabadshow and B. Lang
+
+Table 1. Computation times in seconds/speedups for three diﬀerent particle systems.
+For 87 particles calculation was done with processor numbers up to 128, since the
+total computation time was already below 0.25 seconds and hence results with more
+processors would suﬀer from the low measurement precision. The upper limit of 512
+processors was due to limitations in our GA implementation.
+procs
+1
+2
+4
+8
+16
+32
+64
+128
+256
+512
+
+87 particles
+
+88 particles
+
+89 particles
+
+26.78
+12.51
+6.43
+3.33
+1.76
+1.11
+0.45
+0.21
+—
+—
+
+211.74
+107.92
+59.19
+26.44
+14.03
+8.25
+3.89
+2.13
+1.14
+0.52
+
+1654.13
+869.53
+409.70
+218.22
+105.01
+57.26
+28.59
+15.23
+8.41
+3.96
+
+—
+2.14
+4.16
+8.04
+15.22
+24.13
+59.51
+127.52
+—
+—
+
+—
+1.96
+3.58
+8.01
+15.09
+25.67
+54.43
+99.41
+185.74
+407.19
+
+—
+1.90
+4.04
+7.58
+15.75
+28.89
+57.86
+108.61
+196.69
+417.71
+
+Acknowledgements
+The authors acknowledge the support by H. Dachsel for his sequential FMM
+code, as well as B. Kuehnel for his work on the parallel code as a guest student
+at research centre J¨
+ulich.
+
+References
+1. L. Greengard and V. Rokhlin: A fast algorithm for particle simulations. J. Comput.
+Phys. 73, No.2 (1987) 325–348
+2. C. A. White and M. Head-Gordon: Derivation and eﬃcient implementation of the
+fast multipole method. J. Chem. Phys. 101 (1994) 6593–6605
+3. H. Dachsel: An error-controlled Fast Multipole Method. (in preparation)
+4. J. Nieplocha, B. Palmer, V. Tipparaju, M. Krishnan, H. Trease and E. Apra: Advances, Applications and Performance of the Global Arrays Shared Memory Programming Toolkit. IJHPCA, 20, No. 2, (2006) 203–231
+5. J. Nieplocha, V. Tipparaju, M. Krishnan, and D. Panda: High Performance Remote Memory Access Communications: The ARMCI Approach. IJHPCA, 20, No.
+2, (2006) 233–253
+6. M.F. Mokbel, W.G. Aref and I. Kamel: Analysis of multi-dimensional space-ﬁlling
+curves. Geoinformatica 7, No.3 (2003) 179–209
+7. L. Greengard and W.D. Gopp: A parallel version of the multipole method. Computers Math. Applic. 20, No. 7 (1990) 63–71
+8. J. Kurzak and B.M. Pettitt: Communications overlapping in fast multipole particle
+dynamics methods. J. Comput. Phys. 203 (2005) 731–743
+9. J. Kurzak and B.M. Pettitt: Massively parallel implementation of a fast multipole
+method for distributed memory machines. J. Par. Dist. Comp. 65 (2005) 870–881
+
+

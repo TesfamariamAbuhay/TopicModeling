@@ -1,0 +1,732 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 2251 – 2258
+
+International Conference on Computational Science, ICCS 2013
+
+High Performance Solvers for Implicit Particle in Cell Simulation
+Pawan Kumara,b,∗, Stefano Markidisc , Giovanni Lapentad , Karl Meerbergena , Dirk
+Roosea
+a Department
+
+of Computer Science, Celestijnenlaan 200A, 3001 Heverlee, Belgium
+Exascience Lab (Intel Labs Europe), Heverlee, Belgium
+c High Performance Computing and Visualization (HPCViz) Department, KTH Royal Institute of Technology, Stockholm, Sweden
+d Center for Plasma Astrophysics, Department of Mathematics, Celestijnenlaan 200B, Heverlee, Belgium
+b Flanders
+
+Abstract
+A three-dimensional implicit particle-in-cell (iPIC3D) method implemented by S. Markidis et. al. in [“Multiscale simulations
+of plasma with iPIC3D”, Mathematics and Computers in Simulation, 80(2010), 1509-1519] allows time steps at magnetohydrodynamics time scale. The code requires the solution of two linear systems: a Poisson system related to divergence cleaning,
+and a system related to a second order formulation of Maxwell equation. In iPIC3D, the former is the most costly.
+To reduce the cost of solving the Poisson system, a parallel matrix assembly and partitioning method are implemented,
+and conjugate gradient and algebraic multigrid (AMG) solvers from the Hypre library are called. The scalability of AMG as a
+solver is studied for 1D and 3D partitionings and compared to that of CG.
+Keywords: Implicit PIC; Algebraic multigrid; Krylov solvers; Distributed memory;
+
+1. Introduction
+A three-dimensional implicit massively parallel particle-in-cell (PIC) code, iPIC3D, implemented by S. Markidis
+et.al [1], allows plasma physics simulations with large time steps and grid spacing, making feasible simulations
+that are not possible with conventional explicit methods [2, 3]. The code is mainly used to simulate space plasmas
+and their interaction with planet magnetic ﬁelds with application to space weather prediction [4, 5].
+The code solves the equation of motion for millions of particles, mimicking plasma electron and ions, and two
+linear systems to determine the evolution of the electromagnetic ﬁeld. The method requires ﬁrst to solve a system
+with symmetric and positive deﬁnite matrix derived from Poisson equation (the so-called ”divergence cleaning”),
+and second a system with an unsymmetric and indeﬁnite matrix corresponding to the second order formulation of
+Maxwell equations.
+In the current implementation of the iPIC3D code [1], the conjugate gradient method (CG) is used to solve the
+Poisson system, while the generalized minimal residual method (GMRes) is used to solve the Maxwell system.
+This paper presents the implementation and performance study of a new Poisson solver for the iPIC3D code.
+We discuss the implementation of a parallel partitioning and assembly of the matrix corresponding to the Poisson
+∗ Corresponding
+
+author.
+E-mail address: pawan.kumar@cs.kuleuven.be.
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.396
+
+2252
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+problem. We explore eﬃcient algebraic multigrid (AMG) schemes available in the HYPRE library [6]. We study
+the weak scalability of AMG with 1D and 3D partitioning schemes and compare it with CG. We show that
+The paper is organized as follows. In section 2, we brieﬂy outline the steps involved in an implicit PIC
+cycle. In section 3, we describe the discretization schemes used, we explain the assembly and the partitioning
+scheme for zero and periodic boundary conditions, we also compare the communication overheads of 1D and 3D
+partitionings. In section 4, we compare the weak scalability of AMG and CG. Finally, section 5 concludes the
+paper.
+2. Model for plasma simulations
+The iPIC3D code [1] solves the Vlasov equation (here and thereafter in CGS units) that describes the evolution
+of the distribution function for the plasma particles:
+∂ fs
+v × B ∂ fs
+∂ fs qs
+E+
++v·
++
+·
+= 0,
+∂t
+∂x m s
+c
+∂v
+
+(1)
+
+and the Maxwell equations, that describe the evolution of the electromagnetic ﬁeld:
+1 ∂B
+= 0,
+c ∂t
+1 ∂E 4π
+∇×B−
+=
+J,
+c ∂t
+c
+∇ · E = 4πρ,
+∇ · B = 0.
+
+∇×E+
+
+where q s and m s are the charge and mass of the species respectively. Here, the distribution function f s (x, v, t)
+represents the number of particles of species s which have the velocity v at time t when they are near position x.
+The symbols E and B denote the electric and magnetic ﬁelds respectively.
+To solve the Vlasov equation (Eq. 1), the PIC method is used [7]. In this numerical technique, the distribution function is approximated with a very large number (typically millions) of particles, whose trajectories are
+calculated from the Newton equations of motion:
+dx p
+= vp,
+dt
+dv p
+vp × Bp
+qs
+Ep +
+=
+,
+dt
+ms
+c
+
+(2)
+(3)
+
+where x p , v p are the particle position and velocity and E p and B p are the electric and magnetic ﬁeld acting on the
+particle. In the PIC method, the Maxwell’s equation are solved on a grid. The charge and current densities, ρ, J
+(the source terms for Maxwell equations) are calculated from particles by interpolation into the grid. Once E and
+B, deﬁned on the grid, are known, the E p and B p are computed by interpolation from the grid values. In iPIC3D,
+linear functions are used for the interpolation.
+In iPIC3D, the Maxwell’s equations are used in their second order formulation. In fact, the ﬁrst order system
+of Maxwell’s equation above could be formulated as a coupled system of second order equations for electric ﬁeld
+E and magnetic ﬁeld B [8]. For the electric ﬁeld, the second order formulation is given as follows
+4π ∂J
+1 ∂2 E
+,
+=− 2
+2
+2
+c ∂t
+c ∂t
+∇(∇ · E − 4πρ) = 0,
+∇ · E = 4πρ,
+
+∇×∇×E+
+
+(4)
+
+along with the appropriate boundary conditions. The above equations are discretized implicitly in time as in Ref.
+[1] and solved with a GMRes linear solver.
+
+2253
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+Once the electric ﬁeld is computed from above, the magnetic ﬁeld is given by the Faraday’s law of induction
+∂B
+= −c∇ × E.
+∂t
+
+(5)
+
+Equations (4) and (5) lead to solutions that are consistent with the ﬁrst order equations [9].
+While using this numerical scheme, it is possible that Gauss’s law ∇ · E = 4πρ does not hold and a correction
+is required. This correction is often called ”divergence cleaning” because it ensures that the divergence equation
+∇ · E = 4πρ is satisﬁed in the Maxwell’s equations. It can be shown that ∇ · E = 4πρ is equivalent to the continuity
+equation for the charge density ∂ρ
+∂t + ∇ · J = 0 and for this reason a numerical scheme that does not satisfy the
+Gauss law is said not to conserve the charge [10].
+Once the electric ﬁeld is found, it must be corrected to ensure the charge density continuity equation is satisﬁed.
+In iPIC3D, we use a technique proposed by Boris [11]. A correction δE is calculated as follows:
+δE = −∇Φ,
+∇2 Φ = ∇ · En+1 − 4πρn
+
+(6)
+
+Once the correction is calculated, it is then applied to the value of the electric ﬁeld En+1 :
+En+1 = En+1 + δE.
+
+(7)
+
+Here ∇2 is the Laplacian, and we shall frequently refer to ∇ · En+1 − 4πρn as the right hand side. This paper
+presents a new implementation of the parallel solver for the ”divergence cleaning” in the iPIC3D code.
+3. Linear solvers in implicit particle in cell method
+As shown in section 2, the implicit PIC method requires the solution of two linear systems: one corresponding
+to the Maxwell system (4), and another one corresponding to the divergence cleaning (6). In iPIC3D, the solution
+of (4) is achieved by a GMRes iterative solver [12]. Here we focus on the solution of (6). The Laplacian operator
+in (6) is approximated by the classical second order ﬁnite diﬀerence approximation of the spatial derivatives at
+grid point (i, j, k) as follows
+∇2 Φ|i, j,k ≈
+
+Φi+1, j,k − 2Φi, j,k + Φi−1, j,k
+hx
+
+2
+
++
+
+Φi, j+1,k − 2Φi, j,k + Φi, j−1,k
+hy
+
+2
+
++
+
+Φi, j,k+1 − 2Φi, j,k + Φi, j,k−1
+hz 2
+
+,
+
+where h x , hy , and hz are the discretization step sizes along the spatial directions X, Y, and Z respectively and
+Φi, j,k = Φ(ih x , jhy , khz ). For simplicity, we assume that h x = hy = hz = h. Scaling both sides and absorbing the h2
+term in the right hand side, we have the following equation for each interior grid point
+Φi+1, j,k + Φi−1, j,k + Φi, j+1,k + Φi, j−1,k + Φi, j,k+1 + Φi, j,k−1 − 6Φi, j,k = h2 (∇ · En+1 − 4πρn )i, j,k
+We obtain the following linear system
+Ax = b
+where A is the discrete Laplacian, x is the discrete potential, and b is a discrete representation of h2 (En+1 − 4πρn )
+and the boundary conditions. We now explain the parallel assembly of matrix A.
+3.1. Parallel Partitioning and Matrix Assembly
+The iPIC3D code is written in the message passing programming model, using the MPI library for communication. Each MPI process is responsible for a part of the regular grid. Hence the grid must be partitioned.
+Partitioning leads to a renumbering of the grid points which aﬀects the convergence of the SOR smoother,
+hence aﬀects the multigrid solver. To make a comprehensive study, we consider the following two parallel partitioning strategies
+
+2254
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+• 1D partitioning: In this simple partitioning each partition consists of a set of consecutive planes and each
+partition belongs to one MPI process. Notice that this partitioning retains the lexicographic numbering of
+the original unpartitioned grid.
+• 3D partitioning: Here the partitions are geometrical cubical portions of the original grid, where each of
+these cubes are assigned to one MPI process as indicated below. A 3D partitioning into cube subdomains
+leads to minimal communication volume and better scalability.
+Let T seq be the execution time for the sequential algorithm, and let T par be the execution time for the parallel
+T seq
+algorithm with p processors, then the speedup is given by T par
+. Let T cal be the time spent in computation, and let
+T com be the time spent in communication, then we have T par = T cal + T com . Assuming a perfect load balance and
+no other overheads, we can write T seq = pT cal . The parallel eﬃciency E p is deﬁned as follows
+E=
+
+pT cal
+1
+1
+S
+=
+=
+=
+T
+com
+p
+p(T cal + T com ) 1 +
+1 + fc
+T cal
+
+where fc is the communication overhead. In a stencil based computation such as a sparse matrix vector product
+the number of grid points on the surface of the partition represents the amount of communication involved. Thus
+we have
+fc = O
+
+Number of grid points on the surface
+Number of grid points in the interior
+
+Let M be the total number of grid points and let n x × ny × nz be the number of grid points in each partition.
+1/3
+1/3
+For a 1D partitioning along X-direction n x = Mp , ny = nz = M 1/3 , and n x = ny = nz = Mp1/3 for the 3D
+partitioning. The communication overhead for the 1D partitioning is fc = O
+
+p
+M 1/3
+
+and for the 3D partitioning,
+
+p1/3
+M 1/3
+
+we have fc = O
+. Thus the communication overhead for a 3D partitioning grows at a much slower rate with
+increasing number of partitions compared to the 1D partitioning. See also [13].
+In Figure (1), we show the assembly of the matrix in the serial case for the lexicographic traversal of the grid.
+A grid point numbered i and its neighbor connections are placed on the row numbered i. If we assume a 3D
+M
+processor grid of size p x × py × pz , then each processor owns a cube with roughly Mpxx × pyy × Mpzz grid points. All
+the grid points of the interior cubes has full 7-point stencil regardless of the boundary conditions. For grid points
+on the boundary of non-interior cubes, appropriate connections are made corresponding to the given boundary
+conditions. For example, in Figure (2) due to periodicity along the Z-direction, grid point number 57 is connected
+to grid point number 246. Here we consider lexicographic ordering of the cubes on the processor grid, and a
+lexicographic ordering of the grid points within the cube.
+4. Implementation of Linear solvers
+Once the matrix is assembled, we pass the matrix to the HYPRE preconditioning library [6] which contains
+both preconditioners and solvers including algebraic multigrid. Each processor sets its own matrix entries row by
+row using the “HYPRE IJMatrixSetValues” routine of HYPRE. This interface allows to experiment with several
+coarsening and smoothing schemes of HYPRE.
+Algebraic multigrid (AMG) forms a hierarchy of matrices using prolongation operators Ikk+1 and restriction
+1
+2
+M
+operators Ik+1
+k . Let the matrices corresponding to the hierarchy be denoted by A = A, A , · · · , A , then the
+typical V-cycle (adapted from [14]) is shown in Algorithm (1). The setup phase includes the determination of the
+by partitioning the vertices of the underlying graph into coarse (C-) and ﬁne (F-)
+transfer operators Ikk+1 and Ik+1
+k
+T
+vertices [14]. The coarse grid matrices are constructed using Galerkin projection by setting Ikk+1 = (Ik+1
+k ) and
+k k
+A
+I
+.
+For
+the
+Poisson
+problem
+related
+to
+divergence
+cleaning,
+our
+numerical
+experiments
+suggest
+Ak+1 = Ik+1
+k
+k+1
+that the most eﬀective combination is the following
+• Hybrid Gauss-Siedel smoother: Each processor performs a lexicographic SOR smoother, but neglecting
+updates from data that belongs to the subdomains handled by another process. This smoother performed
+better than other smoothers including Jacobi, Gauss-Siedel, and CG available in [6].
+
+2255
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+0 1
+
+26
+
+17
+
+2 3
+
+4
+
+5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+
+1
+2
+3
+
+8
+
+24 25 26
+
+Nonzero connection if periodicity in X
+
+4
+5
+6
+
+23
+
+25
+
+7
+8
+
+7
+
+14
+
+16
+
+5
+
+Row 5
+
+9
+10
+11
+12
+13
+
+24
+
+13
+
+20
+
+22
+
+4
+
+11
+
+14
+
+2
+
+15
+16
+
+Row 13
+
+17
+18
+21
+
+19
+
+1
+
+10
+
+12
+
+19
+
+3
+
+20
+21
+X
+
+Y
+
+22
+23
+24
+
+0
+
+9
+
+18
+
+25
+26
+
+Z
+
+Fig. 1. Sequential assembly of matrix
+
+Order of traversal of cubes
+
+C66
+
+C246
+
+P0
+P1
+P2
+R57
+
+54
+
+56 57 58
+
+60
+
+246
+
+66
+Periodic boundary condition along Z
+
+70
+
+61
+
+67
+
+69
+
+60
+
+26
+
+25
+
+58
+
+23
+
+246
+64 33
+
+68 66
+
+59
+
+57 55 24
+
+65
+
+Y
+
+7
+
+14
+13
+
+27
+11
+
+Periodicity in Z
+Z
+
+54
+21
+
+16
+
+15
+
+X
+
+30 56
+
+63
+
+62
+
+22 20
+
+8
+
+17
+
+10
+
+12
+
+9
+
+19
+
+5
+
+53
+
+18
+
+6
+
+2
+
+4
+3
+
+1
+
+0
+
+Fig. 2. Left: 9 × 9 × 4 computational grid on 3 × 3 × 2 processor grid, Right: Corresponding Matrix, rows of same color belong to same
+processors
+
+2256
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+Algorithm 1 VCycle(k, xk , rk )
+if k = M then
+Set x M = (A M )−1 r M .
+else
+Relax μ1 times on Ak xk = rk .
+Perform coarse grid correction:
+k
+k k
+Set xk+1 = 0, rk+1 = Ik+1
+k (r − A x ).
+Solve on level k + 1 with VCycle(k + 1, xk+1 , rk+1 ).
+Correct the solution by xk ← xk + Ikk+1 xk+1 .
+Relax μ2 times on Ak xk = rk .
+end if
+• HMIS coarsening: One pass of Ruge-Stueben coarsening executed independently on each processor (or
+partition) followed by a parallel coarsening algorithm using independent sets. We tried various coarsening
+schemes available in [6].
+5. Numerical experiments
+The numerical experiments were performed in double precision arithmetic, the iPIC3D and HYPRE codes are
+written in C++ and C respectively. The code is compiled and run on Nehalem processors, quad core Xeon 5560
+with 24GB of RAM.
+The iterative procedure for solving the Poisson problem is stopped whenever the relative residual norm
+b − Axk
+< 10−3 .
+b
+All the production runs for space physics simulations with iPIC3D use 10−3 as error tolerance for the stopping
+criterium for both the GMRes and CG solvers [5] . This value was found to be a good trade-oﬀ between solution
+precision and computational cost. Since 10−3 is used in all the iPIC3D simulations, we chose it for our numerical
+experiments.
+The initial solution is set to zero and the source term b changes in each time step of iPIC3D. In our tests, we
+test the weak scalability of the solvers by keeping the problem size (i.e., the number of grid points) per processor
+to be 323 . We compare CG and AMG with HIMS coarsening denoted by AMG(10) [6] with both 1D and 3D
+partitioning. For all the test cases, we choose the initial boundary conditions to be zero. However, with other set
+of boundary conditions, the performance of the linear solvers is similar.
+For AMG, the coarsest matrix dimensions are 3, 6, and 9 for problem sizes 323 , 643 , and 1283 on 1, 8, and 64
+cores respectively. The system with coarsest matrix is solved by Gaussian elimination.
+In Table 1, we ﬁrst present the execution time for one iteration of the CG and one V-cycle of AMG methods. For AMG, we use hybrid Gauss-Siedel smoother and HMIS coarsening (see above). One pre- and one
+post-smoothing is applied, that is, we set μ1 = 1 and μ2 = 1. For CG, the communication overheads are both
+due to stencil based operations such as sparse matrix vector product, and reduction operations in calculating dot
+products. On the other hand, for AMG, there are communication overheads solely due to stencil based computations. We notice that AMG with 3D partitioning has lower communication overhead and scales better than the 1D
+partitioning.
+Table 1. Weak scalability execution time per V-cycle of AMG and per iterationof CG. Time shown in seconds.
+procs
+CG one iteration
+AMG(10)-1D V-cycle
+1
+0.00097
+0.005
+8
+0.0046
+0.024
+64
+0.0079
+0.047
+
+AMG(10)-3D V-cycle
+0.005
+0.028
+0.035
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+2257
+
+We need to solve a sequence of linear systems with same coeﬃcient matrix and diﬀerent right hand side. Since
+the setup phase of AMG depends only on the coeﬃcient matrix, we do the setup only once during the ﬁrst iPIC3D
+cycle and keep the setup data for subsequent iPIC3D cycles. In Table (2), we compare the weak scalability of the
+setup phase and the time taken by CG to do one Poisson solve. We observe that the setup time for AMG is of
+the same order of magnitude to the time taken by CG for one Poisson solve. It is well known that the number of
+Table 2. Weak scalability of the setup phase of AMG and one Poisson solve with CG. Time shown in seconds.
+procs
+CG Poisson solve
+AMG(10)-1D Setup
+1
+0.04
+0.15
+8
+0.41
+0.73
+64
+1.15
+1.2
+
+AMG(10)-3D Setup
+0.14
+0.49
+1.2
+
+CG iterations to reach a certain accuracy grows with the problem size. In Table (3), we compare the number of
+iterations needed by CG and AMG to solve the system. The iteration count for CG almost doubles with eight fold
+increase in the problem size. On the other hand, the iteration count for AMG is signiﬁcantly less, in particular,
+for AMG with 3D partitioning the number of iterations remains constant on 8 and 64 processors. Although both
+AMG schemes use the same set of parameters for the same problem, we observe a diﬀerence in iteration count.
+This is explained by the fact that both 1D and 3D partitioning leads to a renumbering (or coloring) of the grid
+points [15] that aﬀects relaxation schemes such as SOR.
+Table 3. Number of iterations needed by CG and AMG solvers.
+procs
+CG
+1
+41
+8
+88
+64
+144
+
+AMG(10)-1D
+2
+5
+13
+
+AMG(10)-3D
+2
+6
+6
+
+In Table (3), we compare the weak scalability of the execution time needed by CG and AMG to solve the
+system. On 64 cores, AMG(10)-3D is the fastest, and it is roughly 5 times faster than CG and three times faster
+than AMG(10)-1D. The slow convergence of AMG(10)-1D compared to AMG(10)-3D on 64 cores is both due to
+communication overhead and higher iteration count, see Table 3). However, on 8 cores, AMG(10)-1D is slightly
+faster than AMG(10)-3D due to lower iteration count, see Table (3).
+Table 4. Weak scalability of the solve phases. Time shown in seconds.
+procs
+CG
+1
+0.04
+8
+0.41
+64
+1.15
+
+AMG(10)-1D
+0.01
+0.12
+0.62
+
+AMG(10)-3D
+0.01
+0.17
+0.21
+
+References
+[1] S. Markidis, G. Lapenta, R. Uddin, Multi-scale simulations of plasma with ipic3d, Mathematics and Computers in Simulation 80 (7)
+(2010) 1509–1519.
+[2] G. Lapenta, J. U. Brackbill, P. Ricci, Kinetic approach to microscopic-macroscopic coupling in space and laboratory plasmas, Journal of
+computational physics 13 (055904).
+[3] G. Lapenta, S. Markidis, S. Poedts, D. Vucinic, Space weather prediction and exascale computing, Computing in Science and Engineering 99 (PrePrints) (2012) 1–1. doi:http://doi.ieeecomputersociety.org/10.1109/MCSE.2012.86.
+[4] Lapenta, Giovanni, Pierrard, Viviane, Keppens, Rony, Markidis, Stefano, Poedts, Stefaan, Sebek, Ondrej, Tr´avn´ıcek, Pavel M., Henri,
+Pierre, Califano, Francesco, Pegoraro, Francesco, Faganello, Matteo, Olshevsky, Vyacheslav, Restante, Anna Lisa, Nordlund, Åke,
+Frederiksen, Jacob Trier, Mackay, Duncan H., Parnell, Clare E., Bemporad, Alessandro, Susino, Roberto, Borremans, Kris, Swiﬀ: Space
+weather integrated forecasting framework, J. Space Weather Space Clim. 3 (2013) A05. doi:10.1051/swsc/2013027.
+URL http://dx.doi.org/10.1051/swsc/2013027
+[5] S. Markidis, G. Lapenta, A. Divin, M. Goldman, D. Newman, L. Andersson, Three dimensional density cavities in guide ﬁeld collisionless magnetic reconnection, Physics of Plasmas 19 (3) (2012) 032119. doi:10.1063/1.3697976.
+[6] R. Falgout, A. Cleary, J. Jones, E. Chow, V. Henson, C. Baldwin, P. Brown, P. Vassilevski, U. M. Yang, Hypre,
+https://computation.llnl.gov/casc/hypre/software.html.
+
+2258
+
+Pawan Kumar et al. / Procedia Computer Science 18 (2013) 2251 – 2258
+
+[7] R. Hockney, J. Eastwood, Computer Simulation Using Particles, Taylor & Francis, 2010.
+URL http://books.google.be/books?id=nTOFkmnCQuIC
+[8] B. N. Jiang, J. Wu, L. A. Povinelli, The origin of spurious solutions in computational electromagnetics, Journal of computational physics
+125 (1) (1996) 104–123.
+[9] P. Ricci, G. Lapenta, J. U. Brackbill, A simpliﬁed implicit maxwell solver, Journal of computational physics 183 (1) (2002) 117–141.
+[10] S. Markidis, G. Lapenta, The energy conserving particle-in-cell method, Journal of Computational Physics 230 (18) (2011) 7037–7052.
+[11] J. P. Boris, Relativistic plasma simulation-optimization of a hybrid code, Journal of computational physics 125 (1) (1996) 104–123.
+[12] Y. Saad, M. H. Schultz, Gmres: A generalized minimal residual algorithm for solving nonsymmetric linear systems, SIAM J. Sci. Stat.
+Comput. 7 (3) (1986) 856–869.
+[13] D. Roose, R. V. Driessche, Distributed memory parallel computers and computational ﬂuid dynamics, Tech. Rep. 1993-04, Von Karman
+Institute for Fluid Dynamics (1993).
+[14] V. E. Henson, U. M. Yang, Boomeramg: A parallel algebraic multigrid solver and preconditioner, Appl. Numer. Math. 41 (1) (2002)
+155–177.
+[15] L. M. Adams, H. F. Jordan, Is sor color blind?, SIAM J. Sci. Stat. Comput. 7 (2) (2002) 490–506.
+
+6. Conclusion
+We have implemented a parallel assembly and partitioning scheme for the matrix arising in the Poisson equation corresponding to the divergence cleaning in the implicit particle in cell code iPIC3D. The convergence and
+scalability of algebraic multigrid schemes is studied for 1D and 3D partitionings. We ﬁnd that a combination of
+a block Jacobi with lexicographic SOR as a smoother and HIMS coarsening scheme with 3D partitioning is the
+best strategy; this combination for AMG is roughly ﬁve times faster than the conjugate gradient method.
+Acknowledgements
+This work is funded by Intel and by the Institute for the Promotion of Innovation through Science and Technology in Flanders (IWT). We thank Arnaud Beck (Ecole polytechnique) for help with the iPIC3D code.
+
+

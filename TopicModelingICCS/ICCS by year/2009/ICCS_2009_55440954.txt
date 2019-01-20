@@ -1,0 +1,532 @@
+Pairwise Distance Matrix Computation for Multiple
+Sequence Alignment on the Cell Broadband Engine
+Adrianto Wirawan, Bertil Schmidt, and Chee Keong Kwoh
+School of Computer Engineering, Nanyang Technological University, Singapore 639798
+{adri0004,asbschmidt,asckkwoh}@ntu.edu.sg
+
+Abstract. Multiple sequence alignment is an important tool in bioinformatics.
+Although efficient heuristic algorithms exist for this problem, the exponential
+growth of biological data demands an even higher throughput. The recent
+emergence of accelerator technologies has made it possible to achieve a highly
+improved execution time for many bioinformatics applications compared to
+general-purpose platforms. In this paper, we demonstrate how the PlayStation®3,
+powered by the Cell Broadband Engine, can be used as a computational platform
+to accelerate the distance matrix computation utilized in multiple sequence
+alignment algorithms.
+Keywords: multiple sequence alignment, cell broadband engine.
+
+1 Introduction
+Multiple sequence alignment (MSA) of many nucleotides or amino acids is an
+important tool in bioinformatics. It can identify patterns or motifs to characterize
+protein families, and is therefore utilized to detect homology between sequences as
+well as to perform phylogenetic analysis. Many MSA heuristics have been proposed
+to reduce the exponential complexity of computing optimal MSAs. Heuristic MSA
+implementations include MSA[1], ClustalW[2], T-Coffee[3], MAFFT[4], DIALIGN
+P[5] and PRALINE[6]. ClustalW[2] has over 26,000 citations in the ISI Web of
+Science and is considered to be one of the most popular MSA tools. It is based on the
+progressive alignment method. Although not optimal, this method can produce
+reasonably good alignments at a good efficiency. However, the exponential growth of
+biological data demands an even better throughput. Thus, software approaches to
+improve the performance of ClustalW have been introduced, including caching[8, 9]
+and parallel processing[10-12].
+The recent emergence of accelerator technologies such as FPGAs, GPUs and
+specialized processors have made it possible to achieve an improvement in execution
+time for many bioinformatics applications compared to current general-purpose
+platforms at a low cost. Recent usage of easily accessible accelerator technologies to
+improve the ClustalW algorithm include FPGA[13] and GPU[14].
+Our profiling of ClustalW has revealed that distance matrix computation is the most
+time consuming stage and typically takes up more than 90% of the overall runtime.
+G. Allen et al. (Eds.): ICCS 2009, Part I, LNCS 5544, pp. 954–963, 2009.
+© Springer-Verlag Berlin Heidelberg 2009
+
+Pairwise Distance Matrix Computation for Multiple Sequence Alignment
+
+955
+
+Therefore, accelerating this phase would greatly improve the performance as a whole. In
+this paper, we investigate how the Cell Broadband Engine, a heterogeneous multi-core
+architecture, can be used as a computational platform to accelerate the distance matrix
+computation in ClustalW. By taking advantage of multiple processors as well as SIMD
+vectorization, we are able to achieve speedups of two orders of magnitude compared to
+the publicly available sequential ClustalW implementation.
+The rest of this paper is organized as follows. Section 2 highlights important
+features of the Cell Broadband Engine. Section 3 briefly describes the ClustalW
+algorithm. Section 4 presents our mapping of the distance matrix computation onto
+the Cell Broadband Engine. Experimental results are presented in Section 5. Section 6
+concludes the paper.
+
+2 Cell Broadband Engine
+The Cell Broadband Engine[15] (Cell BE) is a recently introduced single-chip
+heterogeneous multi-core processor, which is developed by Sony, Toshiba and IBM.
+The Cell BE offers a unique assembly of thread-level and data-level parallelization
+options. It is operating at the upper range of existing processor frequencies (3.2 GHz
+for current models). Several examples of bioinformatics applications that has been
+ported to the Cell BE architecture include Folding@Home[16], FASTA[17], SmithWaterman[18] and RAxML[19].
+The Cell BE combines an IBM PowerPC Processor Element (PPE) and eight
+Synergistic Processor Elements (SPEs)[20]. An integrated high-bandwidth bus called
+the Element Interconnect Bus (EIB) connects the processors and their ports to
+external memory and I/O devices. The block diagram of the Cell BE architecture is
+shown in Figure 1.
+
+Fig. 1. Block diagram of the Cell Broadband Engine Architecture
+
+956
+
+A. Wirawan, B. Schmidt, and C.K. Kwoh
+
+The PPE is a 64-bit Power Architecture core and contains a 64-bit general purpose
+register set (GPR), a 64-bit floating point register set (FPR), and a 128-bit Altivec
+register set. It is fully compliant with the 64-bit Power Architecture specification and
+can run 32-bit and 64-bit operating systems and applications. Each SPE is able to run
+its own individual application programs. Each SPE consists of a processor designed
+for streaming workloads, a local memory, and a globally coherent Direct Memory
+Access (DMA) engine. The EIB is a 4-ring structure, and can transmit 96 bytes per
+cycle, for a bandwidth of 204.8 Gigabytes/second. The EIB can support more than
+100 outstanding DMA requests.
+The most distinguishing feature of the Cell BE lies within the variety of the
+processors it has, i.e. the PPE and the SPEs. Heterogeneous multi-core systems can
+lead to decreased performance if both the operating system and application are
+unaware of the heterogeneity. The PPE is designed to run the operating system and, in
+many cases, the top-level control thread of an application, while the SPEs is
+optimized for compute intensive applications, hence, providing the bulk of the
+application performance.
+The SPE can access RAM through direct memory access (DMA) requests. The
+DMA transfers are handled by the Memory Flow Controller (MFC). The MFC
+provides the interface, by means of the EIB, between the local storage of the SPE and
+main memory. The MFC supports DMA transfers as well as mailbox and signalnotification messaging between the SPE and the PPE and other devices. Data
+transferred between local storage and main memory must be 128-bit aligned. The size
+of each DMA transfer can be at most 16 KB. DMA-lists can be used for transferring
+large amounts of data (more than 16 KB). A list can have up to 2,048 DMA requests,
+each for up to 16 KB.
+The PS3 uses the Cell Broadband Engine as its CPU, hence making it possible for
+users to create a high-powered computing environment for a fraction of the cost of a
+Cell Blade server. The PS3 utilizes seven of the eight SPEs, in which the eighth SPE
+is disabled to improve chip yields, i.e. chips do not have to be discarded if one of the
+SPEs is defective. Only six of the seven SPEs are accessible to developers as one is
+reserved by the operating system. Generally available PS3’s can be used for scientific
+high performance computing through installation of Linux (e.g. Fedora Core or
+Yellow Dog). Programs can be developed the using freely available C-based Cell BE
+SDK[21].
+
+3 Multiple Sequence Alignment
+ClustalW is highly popular sequential MSA software. It implements a progressive
+alignment method[22], i.e. it adds sequences one by one to the existing alignment to
+build a new alignment. The order of sequences to be added to the new alignment is
+indicated by a phylogenetic tree, which is called a guide tree. The guide tree is
+constructed from the similarity of all possible pairs of sequences stored in the distance
+matrix. Overall, the three stages of the ClustalW algorithm can be summarized as
+follows:
+
+Pairwise Distance Matrix Computation for Multiple Sequence Alignment
+
+1.
+
+2.
+
+3.
+
+957
+
+Distance matrix computation: each pair of sequences is aligned separately to
+calculate a respective distance value. These values are stored in a so-called
+distance matrix.
+Guide tree construction: the guide tree is calculated from the distance matrix
+using the neighbor-joining algorithm[23]. The guide tree defines the order
+which the sequences are aligned in the next stage.
+Progressive alignment: The sequences are progressively aligned in accordance
+to the guide tree.
+
+Given n number of sequences of length m, the distance matrix computation has a
+quadratic complexity of O(n2m2). Profiling the three stages of ClustalW using gprof
+shows that the distance matrix computation is the most computationally intensive
+phase and typically takes up more than 90% of the overall runtime. Hence, it can be
+concluded that accelerating the distance matrix computation would provide a good
+speed up for the ClustalW.
+Given a set of n sequences S = {S1, S2, …, Sn}. The distance of two sequences Si, Sj
+∈ S, is defined by Equation (1).
+
+d (S i , S j ) = 1 −
+
+nid ( S , S j )
+min{l i , l j }
+
+(1)
+
+where nid(Si,Sj) denotes the number of exact matches in the optimal local alignment
+of Si and Sj with respect to the given scoring system and li and lj denotes the length of
+Si and Sj, respectively.
+Liu et.al[14] states that given two sequences S1 and S2 with affine gap penalties α
+and β and the substitution table sbt, a matrix NA(i,j) (1≤ i ≤ l1, 1≤ j ≤ l2) can be
+recursively defined as shown in Equation 2.
+
+N A (i, j ) =
+if H A (i, j ) = 0
+0,
+⎧
+⎪ N A (i − 1, j − 1) + m(i, j ), if H A (i, j ) = H A (i − 1, j − 1) + sbt ( S1 [i ], S 2 [ j ])
+⎨
+N E (i, j − 1),
+if H A (i, j ) = E (i, j )
+⎪
+N
+i
+j
+(
+,
+),
+if
+H A (i, j ) = F (i, j )
+F
+⎩
+where
+⎧1, if S1 [i ] = S 2 [ j ]
+m(i, j ) = ⎨
+⎩0, otherwise
+if j = 1
+⎧0,
+⎪
+N E (i, j ) = ⎨ N A (i, j − 1), if E (i, j ) = H A (i, j − 1) − α
+⎪ N (i, j − 1), if E (i, j ) = E (i, j − 1) − β
+⎩ E
+
+(2)
+
+958
+
+A. Wirawan, B. Schmidt, and C.K. Kwoh
+
+if j = 1
+⎧0,
+⎪
+N F (i, j ) = ⎨ N A (i − 1, j ), if F (i, j ) = H A (i − 1, j ) − α
+⎪ N (i − 1, j ), if F (i, j ) = F (i − 1, j ) − β
+⎩ F
+
+HA
+
+⎧0,
+⎪ E (i, j ),
+⎪
+= max ⎨
+⎪ F (i, j ),
+⎪⎩ H A (i − 1, j − 1) + sbt ( S1 [i ], S 2 [ j ])
+
+E (i, j ) = max{H A (i, j − 1) − α , E (i, j − 1) − β }
+F (i, j ) = max{H A (i − 1, j ) − α , F (i − 1, j ) − β }
+Using the matrix NA(i,j), the distance value d(Si,Sj) can then be redefined as shown in
+Equation 3.
+d (S i , S j ) = 1 −
+
+NA(i max , j max )
+min{l i , l j }
+
+A more detailed explanation and proof of these formulas is described in[14].
+
+4 Mapping onto the Cell BE Architecture
+Figure 2 illustrates the mapping of distance matrix computation onto the Cell BE.
+
+Fig. 2. Mapping of our distance matrix computation algorithm onto the Cell B.E.
+
+(3)
+
+Pairwise Distance Matrix Computation for Multiple Sequence Alignment
+
+959
+
+The algorithm starts by reading the input dataset. The PPE then preprocesses and
+divides the dataset into equal size blocks for each SPEs to process. Since the blocks
+are independent of each other, no thread synchronization is necessary during the
+calculations. The mailbox functions spe_in_mbox_write and spu_read_in_mbox are
+used to ensure that all the SPEs obtain their respective contexts in their local memory.
+Using the context data, each SPE then transfers any required information and
+necessary sequences. To improve transfer efficiency, the database sequences in main
+memory and in the local storage are aligned within the cache line and data structures
+are initialized during the transfer of the sequence. Once it has finished calculating all
+its respective nid(Si,Sj) scores, each SPEs sends the scores to the PPE in the form of a
+list. The PPE compiles the lists, calculates the distance values, and stores them in the
+distance matrix. The matrix is then written to a text file. The SPE pseudocode is
+shown in Figure 3.
+Initialization;
+Fetch the context data from the mailbox;
+Fetch the set of sequences using DMA transfer;
+While there are sequences to be processed
+Calculate nid score;
+Compile the nid scores into a list nidlist;
+Send nidlist to PPE using DMA transfer;
+Fig. 3. Pseudocode of the SPE code
+
+The nid(Si,Sj) scores are computed in the SPEs in parallel using the Single
+Instruction Multiple Data (SIMD) registers using SPU intrinsics[24]. The pseudocode
+of the nid score calculation is shown in Figure 4.
+Based on Equation (3), nid(Si,Sj) can be computed without computation of the
+actual traceback, which can cost a lot of resources from storing the complete dynamic
+programming matrix especially for long sequences. Since all elements in the same
+minor diagonal of the dynamic programming matrix can be computed independent of
+each other in parallel, the computation is done in minor diagonal order. Given are the
+vector registers vH, vE, vF, vNA, vNE and vNF containing the values HA, E, F, NA, NE
+and NF, respectively. For each loop of c (1 ≤ c ≤ (l1+l2−1)), the values of HA, E, F, NA,
+NE and NF are computed. Calculations of the vH, vE, and vF vectors are done by
+utilizing the spu_cmpgt intrinsic, which compares each element of a vector with the
+corresponding element of another vector, to create vector masks. The masks are then
+used as patterns to generate the resulting vector using the spu_sel intrinsic, which
+selects the corresponding bit from either vector in accordance to a provided pattern
+vector. The masks used in the vE, vF and vH computations are used to determine the
+value of the corresponding vNE, vNF and vNA vectors, respectively.
+
+960
+
+A. Wirawan, B. Schmidt, and C.K. Kwoh
+
+Initialization;
+Load gOpen to vector vGapOpen;
+Load gExtend to vector vGapExtend;
+For c = 1 to l1+l2-1
+Load the necessary vector registers for
+minor diagonal computations;
+Calculate vector register of E vE;
+Calculate vector register of NE vNE;
+Calculate vector register of F vF;
+Calculate vector register of NF vNF;
+Calculate vector register of HA vH;
+Calculate vector register of NA vNA;
+Extract nid as NA(imax,jmax);
+Return nid;
+Fig. 4. Pseudocode of nid score calculation
+
+5 Performance Evaluation
+A set of experiments has been conducted using different numbers of protein
+sequences i.e. 400 sequences of average length 408, 600 sequences of average length
+462, 800 sequences of average length 454, and 1000 sequences of average length 446.
+The measured runtimes are then compared to the original ClustalW implementation
+and the GPU-ClustalW implementation described in[14].
+All experiments have been carried out on a standalone PS®3 with Fedora Core 9.0
+operating system and the Cell Software Development Kit (SDK) 3.1. The sequential
+ClustalW application, available online at http://www.bii.a-star.edu.sg/achievements/
+applications/clustalw/, was benchmarked on an Intel Pentium 4 3.0 GHz processor
+with 1 GB RAM running on Windows XP. The GPU-ClustalW implementation was
+conducted with Nvidia GeForce 7900 GTX graphic card with a 717 MHz engine
+clock speed, a 1.79 GHz memory clock speed, 8 vertex processors, 24 fragment
+processors, and a 512 MB memory, running on Pentium 4 3.0 GHz, 1 GB RAM with
+Windows XP.
+Table 1 shows the performance evaluation of our parallel algorithm using the
+above mentioned datasets. The term n(m) describes a dataset containing n sequences
+Table 1. Runtime comparison of distance matrix computation. The timing is measured in
+seconds.
+#sequences
+(average length)
+ClustalW
+GPU-ClustalW
+Playstation® 3
+
+400
+(408)
+833.1
+73.7
+11.0
+
+600
+(462)
+1697.0
+150.0
+20.4
+
+800
+(454)
+2966.6
+249.0
+29.5
+
+1000
+(446)
+4409.6
+368.8
+40.8
+
+Pairwise Distance Matrix Computation for Multiple Sequence Alignment
+
+961
+
+with an average length of m. By using all 6 SPEs available on the Playstation®3, our
+parallel algorithm achieves a runtime of 40.82 seconds for a dataset input of 1000
+sequences of average length 446.
+
+Fig. 5. Speed-up comparison of our implementation on the Playstation® 3 with ClustalW and
+GPU-ClustalW
+
+Figure 5 shows the speed-up obtained by our implementation compared to the
+ClustalW and GPU-ClustalW. Our implementation obtains an average speed-up of
+91.87x over all the datasets compared to the ClustalW implementation, with a peak
+speed-up of 108.03x for the 1000(446) dataset. The average speed-up of our
+implementation over the GPU-ClustalW is 7.87x, with a peak speed up of 9.03x for
+the 1000(446) dataset.
+Table 2. Detailed performance analysis of our parallel algorithm. The terms T and S describe
+the runtime and the speed-up compared to the previous row, respectively.
+#sequences
+(average length)
+
+Processor
+
+400
+(408)
+T
+S
+
+600
+(462)
+T
+S
+
+Baseline
+Pentium 4
+833.1 N.A 1697.0
+ClustalW
+3.0 GHz
+Baseline
+PPE
+667.86 1.24 1361.13
+ClustalW
+Non-vectorized
+PPE
+357.89 1.87 717.83
+code
+Vectorized code PPE+1SPE 57.15 6.26 113.41
+Vectorized code PPE+6SPEs 11.01 5.19 20.36
+
+800
+(454)
+T
+S
+
+1000
+(446)
+T
+S
+
+N.A
+
+2966.6
+
+N.A
+
+4409.6
+
+N.A
+
+1.24
+
+2379.0
+
+1.24
+
+3536.2
+
+1.24
+
+1.89 1702.08 1.80 1871.08 1.89
+6.33
+5.57
+
+168.54
+29.53
+
+7.83
+5.71
+
+237.12
+40.82
+
+7.89
+5.81
+
+962
+
+A. Wirawan, B. Schmidt, and C.K. Kwoh
+
+Table 2 shows a more detailed performance analysis of our parallel algorithm using
+the above mentioned datasets. It compares the runtimes of our implementation and the
+baseline ClustalW on various processors. The performance analysis breaks down the
+speedup obtained by each phase of the improvement made by our implementation.
+The non-vectorized code is implemented according to the algorithm described in
+section 3, without the use of SIMD vectorization. The vectorized code is implemented
+according to section 4.
+
+6 Conclusion
+We have presented a parallel algorithm on the Cell B.E. heterogeneous multi-core
+system for the distance matrix computation used in multiple sequence alignment
+algorithms. Our implementation on the Playstation®3 achieves an average speed-up
+of 91.87x compared to the publicly available sequential ClustalW implementation.
+
+References
+1. Lipman, D.J., Altschul, S.F., Kececioglu, J.D.: A tool for multiple sequence alignment.
+Proceedings of the National Academy of Sciences of the United States of America 86(12),
+4412–4415 (1989)
+2. Thompson, J.D., Higgins, D.G., Gibson, T.J.: CLUSTAL W: improving the sensitivity of
+progressive multiple sequence alignment through sequence weighting, position-specific
+gap penalties and weight matrix choice. Nucl. Acids Res. 22(22), 4673–4680 (1994)
+3. Notredame, C., Higgins, D.G., Heringa, J.: T-coffee: A novel method for fast and accurate
+multiple sequence alignment. Journal of Molecular Biology 302(1), 205–217 (2000)
+4. Katoh, K., Misawa, K., Kuma, K.I., Miyata, T.: MAFFT: A novel method for rapid
+multiple sequence alignment based on fast Fourier transform. Nucleic Acids
+Research 30(14), 3059–3066 (2002)
+5. Schmollinger, M., Nieselt, K., Kaufmann, M., Morgenstern, B.: DIALIGN P: Fast pairwise and multiple sequence alignment using parallel processors. BMC Bioinformatics, 5
+(2004)
+6. Simossis, V.A., Heringa, J.: PRALINE: A multiple sequence alignment toolbox that
+integrates homology-extended and secondary structure information. Nucleic Acids
+Research 33(suppl. 2), W289–W294 (2005)
+7. Thompson, J.D., Gibson, T.J., Plewniak, F., Jeanmougin, F., Higgins, D.G.: The
+CLUSTAL_X windows interface: flexible strategies for multiple sequence alignment aided
+by quality analysis tools. Nucl. Acids Res. 25(24), 4876–4882 (1997)
+8. Catalyurek, U., Stahlberg, E., Ferreira, R., Saltzt, J.: Improving Performance of Multiple
+Sequence Alignment Analysis in Multi-client Environments. In: Proceedings of the First
+International Workshop on High Performance Computational Biology 2002 (HiCOMB
+2002, IPDPS 2002) (2002)
+9. Catalyurek, U., Gray, M., Kurc, T., Saltzt, J., Stahlberg, E., Ferreira, R.: A componentbased implementation of multiple sequence alignment. In: Proceedings of the ACM
+Symposium on Applied Computing: 2003, pp. 122–126 (2003)
+10. Li, K.-B.: ClustalW-MPI: ClustalW analysis using distributed and parallel computing.
+Bioinformatics 19(12), 1585–1586 (2003)
+
+Pairwise Distance Matrix Computation for Multiple Sequence Alignment
+
+963
+
+11. Chaichoompu, K., Kittitornkun, S., Tongsima, S.: MT-ClustalW: Multithreading multiple
+sequence alignment. In: 20th International Parallel and Distributed Processing Symposium,
+IPDPS 2006 (2006)
+12. Luo, J., Ahmad, I., Ahmed, M., Paul, R.: Parallel multiple sequence alignment with
+dynamic scheduling. In: International Conference on Information Technology: Coding and
+Computing, ITCC 2005, pp. 8–13 (2005)
+13. Oliver, T., Schmidt, B., Nathan, D., Clemens, R., Maskell, D.: Multiple sequence
+alignment on an FPGA. In: Proceedings of the International Conference on Parallel and
+Distributed Systems - ICPADS 2005, pp. 326–330 (2005)
+14. Liu, W., Schmidt, B., Voss, G., Muller-Wittig, W.: Streaming Algorithms for Biological
+Sequence Alignment on GPUs. IEEE Transactions on Parallel and Distributed Systems
+(2007)
+15. Kahle, J.A., Day, M.N., Hofstee, H.P., Johns, C.R., Maeurer, T.R., Shippy, D.:
+Introduction to the Cell multiprocessor. IBM Journal of Research and Development 49(45), 589–604 (2005)
+16. Pande, V.: Folding@Home: Using Worldwide distributed computing to break fundamental
+barriers in molecular simulation. In: Proceedings of the IEEE International Symposium on
+High Performance Distributed Computing 2006, p. 4 (2006)
+17. Sachdeva, V., Kistler, M., Speight, E., Tzeng, T.-H.K.: Exploring the viability of the Cell
+Broadband Engine for bioinformatics applications. In: IEEE International Parallel and
+Distributed Processing Symposium 2007, 8 p. IEEE, Long Beach (2007)
+18. Wirawan, A., Kwoh, C.K., Hieu, N.T., Schmidt, B.: CBESW: Sequence alignment on the
+playstation 3. BMC Bioinformatics, 9 (2008)
+19. Stamatakis, A., Ludwig, T., Meier, H.: RAxML-II: A program for sequential, parallel and
+distributed inference of large phylogenetic trees. Concurrency Computation Practice and
+Experience 17(14), 1705–1723 (2005)
+20. Pham, D., Behnen, E., Bolliger, M., Hofstee, H.P., Johns, C., Kahle, J., Kameyama, A.,
+Keaty, J., Le, B., Masubuchi, Y., et al.: The design methodology and implementation of a
+first-generation CELL processor: a multi-core SoC. In: Proceedings of the IEEE 2005
+Custom Integrated Circuits Conference 2005, San Jose, CA, USA, pp. 45–49. IEEE, Los
+Alamitos (2005)
+21. International Business Machines: Software Development Kit 2.1 Accelerated Library
+Framework Programmer’s Guide and API Reference, Version 1.1. In: IBM
+developerWorks (2007)
+22. Feng, D.F., Doolittle, R.F.: Progressive sequence alignment as a prerequisitetto correct
+phylogenetic trees. Journal of Molecular Evolution 25(4), 351–360 (1987)
+23. Saitou, N., Nei, M.: The neighbor-joining method: a new method for reconstructing
+phylogenetic trees. Molecular biology and evolution 4(4), 406–425 (1987)
+24. IBM: C/C++ Language Extensions for Cell Broadband Engine Architecture v.2.5. In. IBM
+developerWorks (2008)
+
+

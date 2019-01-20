@@ -1,0 +1,799 @@
+Parallel Solvers for Flexible Approximation
+Schemes in Multiparticle Simulation
+Masha Sosonkina1 and Igor Tsukerman2
+1
+
+2
+
+Ames Laboratory/DOE, Iowa State University,
+Ames, IA 50011, USA
+masha@scl.ameslab.gov
+Department of Electrical and Computer Engineering,
+The University of Akron,
+Akron, OH 44325-3904, USA
+igor@uakron.edu
+
+Abstract. New ﬁnite diﬀerence schemes with ﬂexible local approximation are applied to screened electrostatic interactions of spherical colloidal particles governed by the Poisson-Boltzmann equation. Local analytical approximations of the solution are incorporated directly into
+the scheme and yield high approximation accuracy even on simple and
+relatively coarse Cartesian grids. Several parallel iterative solution techniques have been tested with an emphasis on suitable parallel preconditioning for the nonsymmetric system matrix. In particular, ﬂexible GMRES preconditioned with the distributed Schur Complement exhibits
+good solution time and scales well when the number of particles, grid
+nodes or processors increases.
+
+1
+
+Introduction
+
+The study described in this paper has three key ingredients: (1) A new class
+of ﬁnite diﬀerence (FD) schemes; (2) Eﬃcient parallel solvers; (3) Applications
+to the Poisson-Boltzmann equation (PBE) for electrostatics in solvents. These
+three components are intertwined: the new schemes are particularly suitable for
+electrostatic ﬁelds of dielectric particles (for other applications, see [1, 2]), and
+their practical use is facilitated greatly by suitable parallel solvers.
+Under the mean ﬁeld theory approximation, the electrostatic potential of multiple charged particles in a solvent is governed by the Poisson-Boltzmann equation (Sect. 2). Several routes are available for the numerical simulation. First, if
+particle sizes are neglected and the PBE is linearized, the solution is simply the
+sum of the Yukawa potentials of all particles. If the characteristic length of the
+exponential ﬁeld decay (the Debye length) is small, the electrostatic interactions
+are eﬀectively short-range and therefore relatively inexpensive to compute. For
+The work of M.S. was supported in part by the U.S. Department of Energy under
+Contract W-7405-ENG-82, NERSC, by NSF under grant NSF/ACI-0305120, and by
+University of Minnesota Duluth. The work of I.T. was supported in part by the NSF
+awards 0304453, 9812895 and 9702364.
+V.N. Alexandrov et al. (Eds.): ICCS 2006, Part I, LNCS 3991, pp. 54–62, 2006.
+c Springer-Verlag Berlin Heidelberg 2006
+
+Parallel Solvers for Flexible Approximation Schemes
+
+55
+
+weak ionic screening (long Debye lengths) Ewald-type methods [3] or the Fast
+Multipole Method [4] can be used. However, our goal is to develop algorithms
+that would be applicable to ﬁnite-size particles and extendable to nonlinear
+problems. Ewald-type methods and FMM are not eﬀective in such cases.
+An alternative approach is the Finite Element Method (FEM) and the Generalized Finite Element Method (GFEM) [5]. FEM requires very complex meshing
+and re-meshing even for a modest number of moving particles and quickly becomes impractical when the number of particle grows. In addition, re-meshing
+is known to introduce a spurious numerical component in force calculation (e.g.,
+[6]). GFEM relaxes the restrictions of geometric conformity in FEM and allows
+suitable non-polynomial approximating functions to be included in the approximating set. This has been extensively discussed in the literature [7], including
+our own publications [8, 5, 9]. Unfortunately, GFEM has a substantial overhead
+due to numerical quadratures and a higher number of degrees of freedom in
+generalized ﬁnite elements around the particles.
+A two-grid approach from computational ﬂuid mechanics has been adapted
+to colloidal simulation: a spherical mesh around each particle and a common
+Cartesian background grid [10, 11]. The potential has to be interpolated back
+and forth between the local mesh of each particle and the common Cartesian
+grid; the numerical loss of accuracy in this process is unavoidable. In contrast,
+the Flexible Local Approximation MEthod (FLAME) (Sect. 2, [1, 2]) has only
+one global Cartesian grid but incorporates local approximations of the potential
+near each particle into the diﬀerence scheme. The Cartesian grid can remain
+relatively coarse – on the order of the particle radius or even coarser. This is in
+stark contrast with classical FD schemes, where the grid size has to be much
+smaller than the particle radius to avoid the spurious ‘staircase’ eﬀects.
+
+2
+
+Formulation of the Problem
+
+The electrostatic ﬁeld of charged colloidal particles (‘macroions’) in the solvent
+is screened by the surrounding microions of opposite charge. If microion correlations are ignored (a good approximation for monovalent ions under normal
+conditions), the electrostatic potential is known to be governed by the PBE
+2
+s∇ u
+
+= −
+
+nα qα exp −
+α
+
+qα u
+kB T
+
+,
+
+(1)
+
+where summation is over all species of ions present in the solvent, nα is volume
+concentration of species α in the bulk, qα is the charge of species α; s is the
+(absolute) dielectric permittivity of the solvent; kB is the Boltzmann constant,
+and T is the absolute temperature. The right hand side of (1) reﬂects the Boltzmann redistribution of microions in the mean ﬁeld with potential u. Note that
+inside the colloidal particles the potential simply satisﬁes the Laplace equation.
+If the electrostatic energy qα u is smaller than thermal energy kB T , PBE can
+be approximately linearized to yield (after taking electroneutrality into account)
+
+56
+
+M. Sosonkina and I. Tsukerman
+1
+2
+
+∇ u − κ u = 0,
+2
+
+2
+
+− 12
+
+nα qα2
+
+with κ = ( s kB T )
+
+.
+
+(2)
+
+α
+
+(This value of the Debye-H¨
+uckel parameter κ corresponds to linearization about
+u = 0.)1 Typically, the sources of the electrostatic ﬁeld are surface charges
+on the colloidal particles. Standard boundary conditions apply on the particlesolvent interface: the potential is continuous, while the normal component of the
+displacement vector D = − ∇u has a jump equal to the surface charge density.
+The Dirichlet condition at inﬁnity is zero (in practice, the domain boundary is
+taken suﬃciently far away from the particles). Alternative boundary conditions
+(e.g. periodic) are possible but will not be considered here.
+The remainder of the paper deals only with the linearized equation and with
+the relevant FD schemes and parallel solvers for it. However, the numerical procedure can be extended to the nonlinear PBE by applying the Newton-RaphsonKantorovich method to the continuous problem [1, 2].
+Flexible Local Approximation MEthods (FLAME). The accuracy of classical Taylor-based FD schemes deteriorates substantially if the solution is not
+smooth enough (e.g. at material interfaces where one or more components of
+the ﬁeld are discontinuous). In FLAME schemes [1, 2], the Taylor expansions of
+classical FD are replaced with local basis functions that in many important cases
+provide very accurate and physically meaningful approximation. In the ‘Treﬀtz’
+version of FLAME, these basis functions are chosen as local solutions of the
+underlying diﬀerential equation. Various examples ranging from the Schr¨
+odinger
+equation to PBE to electromagnetic scattering are given in [1, 2].
+Let rα (α = 1, 2, . . . , M ) be the node positions of an M -point grid stencil;
+usually a regular Cartesian grid is used. Further, let ψβ (β = 1, 2, . . . , m) be a
+set of local approximating functions which (in Treﬀtz-FLAME) satisfy the underlying diﬀerential equation; the number m of these functions is typically equal
+to M − 1. First, let the underlying linear diﬀerential equation be homogeneous
+(no sources) in the vicinity of the stencil. Then the FLAME scheme is a coeﬃcient vector s ∈ RM such that s ∈ Null(N T ), where matrix N comprises the
+nodal values of all basis functions on the stencil: Nαβ = ψβ (rα ), 1 ≤ α ≤ M ,
+1 ≤ β ≤ m. As shown in [2], consistency of FLAME schemes follows directly
+from the approximation properties of the basis set.
+For the electrostatic problem governed by the linearized PBE (2), a FLAME
+scheme on a global Cartesian grid is obtained in the following way. First, one
+chooses a suitable grid stencil (standard seven-point grid stencils are used in the
+numerical experiments reported in Sect. 4; higher-order schemes on expanded
+stencils will be considered elsewhere. In the vicinity of a given particle, TreﬀtzFLAME basis functions – local solutions of the electrostatic problem – can be
+generated by matching harmonic expansions inside and outside the particle:
+ψnm (r, θ, φ) =
+1
+
+rn Ynm (θ, φ),
+(anm jn (iκr) + bnm nn (iκr))Ynm (θ, φ),
+
+r ≤ rp
+,
+r ≥ rp
+
+For a systematic account of “optimal” linearization procedures, see [12, 13].
+
+(3)
+
+Parallel Solvers for Flexible Approximation Schemes
+
+57
+
+where Ynm are the spherical harmonics, rp is the radius of the particle, and
+the coeﬃcients anm , bnm can be determined from the boundary conditions. The
+spherical Bessel functions jn (iκr) and nn (iκr) in (3) are expressible in terms of
+hyperbolic sines / cosines and hence relatively easy to work with. The actual
+expressions for the coeﬃcients anm , bnm are given in [1]. For the seven-point
+stencil, one gets a valid FLAME scheme by adopting six basis functions: one
+‘monopole’ term (n = 0), three dipole terms (n = 1) and any two quadrupole
+harmonics (n = 2). Away from the particles, the classical seven-point scheme
+for the Helmholtz equation is used for simplicity. For inhomogeneous equations,
+the FLAME scheme is constructed by splitting the potential up into a particular
+(i)
+(i)
+solution uf of the inhomogeneous equation and the remainder u0 satisfying the
+homogeneous one [1, 2]. For the linearized PBE, the inhomogeneous part can be
+taken as the Yukawa potential that satisﬁes the PBE in the solvent, the Laplace
+equation (in a trivial way) inside the particle, and the boundary conditions:
+−1
+
+uY ukawa =
+
+q [4π s rp (κrp + 1)] ,
+−1
+q exp(−κ(r − rp )) [4π s r(κrp + 1)] ,
+
+r ≤ rp
+.
+r ≥ rp
+
+(4)
+
+To summarize, the FLAME scheme in the vicinity of charged particles is constructed in the following way: (i) compute the FLAME coeﬃcients for the homogeneous equation; for each grid stencil, this gives the nonzero entries of the
+corresponding row of the global system matrix; (ii) apply the scheme to the
+Yukawa potential to get the entry in the right hand side.
+
+3
+
+Parallel Solution Methods
+
+Realistic multiparticle simulations require three-dimensional grids with millions
+of grid points, which renders direct solvers infeasible. Iterative methods provide
+a suitable alternative. FLAME matrices have a regular sparsity structure (7diagonal if the standard 7-point stencil is used) but are not symmetric and
+not in general diagonally dominant. This increases the importance of parallel
+preconditioning in making the iterative solution scalable with respect to problem
+size and the number of processors.
+In parallel iterative methods, each processor holds a set of equation and the
+associated unknowns. The resulting distributed sparse linear system may be
+solved using techniques similar to those of Domain Decomposition [14]. Three
+types of variables are distinguished: (1) Interior variables coupled only with local
+variables; (2) Inter-domain interface variables coupled with external as well as
+the local ones; and (3) External interface variables that belong to neighboring
+processors. These external interface variables must be ﬁrst received from neighboring processor(s) before a distributed matrix-vector product can be completed.
+Each local vector of unknowns xi (i = 1, . . . , p) is also split into two parts: the
+sub-vector ui of interior variables followed by the sub-vector yi of inter-domain
+interface variables. The right-hand side bi is conformally split into sub-vectors fi
+and gi . The local matrix Ai residing in processor i is block-partitioned according
+to this splitting. The equations assigned to processor i can be written as follows:
+
+58
+
+M. Sosonkina and I. Tsukerman
+
+Bi
+Ei
+
+ui
+yi
+
+Fi
+Ci
+
++
+
+0
+j∈Ni Eij yj
+
+=
+
+fi
+gi
+
+.
+
+(5)
+
+The term Eij yj is the contribution to the local equations from the neighboring
+sub-domain number j, and Ni is the set of sub-domains that are neighbors to
+sub-domain i.
+Additive Schwarz and Schur Complement Preconditioning. Additive
+Schwarz (AS) procedures are the simplest parallel preconditioners available.
+They are easily parallelized and incur communications only in the exchange
+of interface variables, which may be the same as communications during a distributed matrix vector product and must precede the update of the local residual
+vector. This vector is used as the right-hand side for the local system to ﬁnd the
+local update. There are several options for solving the local system: a (sparse)
+direct solver, a standard preconditioned Krylov solver, or a forward-backward
+solution associated with an accurate ILU preconditioner [14, 15].
+Schur complement (SC) methods iterate on the inter-domain interface unknowns only, implicitly using interior unknowns as intermediate variables. SC
+systems are derived by eliminating the variables ui from (5):
+Eij yj = gi − Ei Bi−1 fi ≡ gi ,
+
+Si y i +
+
+(6)
+
+j∈Ni
+
+where Si is the “local” SC, Si = Ci −Ei Bi−1 Fi . Equations (6) for all sub-domains
+i (i = 1, . . . , p) constitute a global system of equations Sy = g involving only
+the inter-domain interface unknown vectors yi . Once the global SC system is
+(approximately) solved, each processor computes the u-part of the solution vector
+by solving the system Bi ui = fi − Ei yi obtained by substitution from (5) [16].
+
+4
+
+Numerical Results
+
+We have used parallel iterative methods as implemented in the pARMS package
+[17, 18]. The pARMS package contains several state-of-the-art algebraic parallel
+preconditioning techniques, such as several distributed SC algorithms. For the
+subdomain solution, pARMS has a wide range of options including the Algebraic
+Recursive Multilevel Solver (ARMS) [19]. The following is a subset of pARMS
+preconditioners used here for the numerical experiments: add ilu(k) denotes an
+AS procedure described in Sect. 3. The local system is solved approximately by
+applying incomplete LU factorization with level k ﬁll-in (called ILU(k)) as solver.
+add arms is similar to add ilu(k) but ARMS is used as an approximate solver
+for local systems. sch ilu(k) consists of solving the (global) SC system, associated with the inter-domain interface variables, with a few iterations of GMRES
+preconditioned by Block-Jacobi, in which ILU(k) is used locally on inter-domain
+interface variables. sch arms is the same as sch ilu(k) but ARMS acts as local
+solver for the Block-Jacobi preconditioner. In the pARMS package, typical input
+parameters, such as the maximum number of iterations, convergence tolerance,
+
+Parallel Solvers for Flexible Approximation Schemes
+12 Particles; 40x40x40 Grid
+
+12 Particles; 40x40x40 Grid
+
+40
+
+120
+add_arms, κ = 1
+add_arms, κ = 10
+add_arms, κ = 100
+sch_arms, κ = 1
+sch_arms, κ = 10
+sch_arms, κ = 100
+
+100
+
+59
+
+add_arms, κ = 1
+add_arms, κ = 10
+sch_arms, κ = 1
+sch_arms, κ = 10
+
+35
+
+30
+
+SP seconds
+
+Iterations
+
+80
+
+60
+
+25
+
+20
+
+15
+
+40
+
+10
+20
+
+5
+
+0
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+Processors
+
+Fig. 1. Iterations for add arms and
+sch arms and various κ values
+
+0
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+Processors
+
+Fig. 2. Timings for add arms and
+sch arms
+
+and the restart value (for GMRES), are augmented with the parameters that
+ﬁne-tune the preconditioners. To estimate these parameters, consider that the
+FLAME matrices for PBE are non-symmetric and the weight of the main diagonal, deﬁned as the weak diagonal dominance, depends on the Debye-H¨
+uckel
+parameter κ in (2). For example, for the 60 × 60 × 60 grid the relative weak
+diagonal dominance is 99% when κ = 10 but decreases by 10% when κ = 1. We
+have investigated the preconditioners described earlier with a diﬀerent amount
+of ﬁll governed by the input parameter lfil. It means either the level of ﬁll,
+for the (local) ILU(k) preconditioner or the number of entries to be retained in
+the L and U factors of ARMS. or the latter, the drop tolerance has been deﬁned
+as 10−3 . The problems have been solved using ﬂexible GMRES (FGMRES) [15]
+with the restart value 20 and tolerance 10−9 . Flexible GMRES allows preconditioners containing inner iterations and thus changing for each outer iteration.
+In particular, the sch arms preconditioner is set to perform ﬁve inner iterations,
+which is a rather small number taken to accelerate the convergence without
+large increases of the execution time. The experiments have been performed on
+the IBM SP RS/6000 supercomputer at NERSC, which has 6,080 processors on
+16-way SMP nodes interconnected by the IBM proprietary switching network.
+Each processor has the peak performance of 1.5 GFlops and shares between 16
+and 64 GBytes of main memory.
+For a 3D 12-particle problem with 40 grid nodes in each direction, Fig. 1
+shows outer iterations to convergence for add arms and sch arms when diﬀerent
+κ values are used and lfil=25. Although the iteration numbers grow as κ
+decreases for both add arms and sch arms, the latter exhibits a more scalable
+behavior as the number of processors increases. Since sch arms performs inner
+iterations and solves the global system at each step, it is somewhat more costly
+than add arms (Fig. 2) for a small number of processors. To study the eﬀect
+of the amount of ﬁll, we have varied the lfil parameter for the same twelveparticle problem. Figures 3 and 4 indicate that, even for small κ, decreasing ﬁll-in
+yields acceptable convergence and may reduce the execution time. Thus for large
+
+60
+
+M. Sosonkina and I. Tsukerman
+12 Particles; 40x40x40 Grid; κ = 1
+
+12 Particles; 40x40x40 Grid; κ = 1
+
+40
+
+120
+
+110
+
+add_arms, lfil=25
+add_arms, lfil=10
+sch_arms, lfil=25
+sch_arms, lfil=10
+
+35
+
+100
+
+30
+
+SP seconds
+
+Iterations
+
+90
+
+80
+add_arms, lfil=25
+add_arms, lfil=10
+sch_arms, lfil=25
+sch_arms, lfil=10
+
+70
+
+60
+
+25
+
+20
+
+15
+
+50
+
+10
+40
+
+5
+
+30
+
+20
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+0
+
+35
+
+0
+
+5
+
+10
+
+Processors
+
+Fig. 3. Iteration numbers of add arms
+and sch arms for two ﬁll-in amounts
+
+30
+
+35
+
+and
+
+35
+
+add_arms, lfil=25
+add_arms, lfil=10
+add_ilu(0)
+
+300
+
+30
+
+25
+
+Speedup
+
+250
+
+SP seconds
+
+25
+
+2 Particles; 80x80x80 Grid; κ = 10
+
+2 Particles; 80x80x80 Grid; κ = 10
+
+200
+
+150
+
+20
+
+15
+
+100
+
+10
+
+50
+
+5
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+0
+
+35
+
+add_arms, lfil=25
+add_arms, lfil=10
+add_ilu(0)
+linear
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+Processors
+
+Processors
+
+Fig. 5. Timings for a large problem
+with diﬀerent ﬁll-in values in add arms
+
+Fig. 6. Speedup of add arms for diﬀerent ﬁll-in amounts on a large problem
+2 Particles; 80x80x80 Grid; κ = 10
+
+2 Particles; 80x80x80 Grid; κ = 10
+35
+
+130
+add_arms, lfil=25
+add_arms, lfil=10
+add_ilu(0)
+sch_arms, lfil=25
+sch_arms, lfil=10
+sch_ilu(0)
+
+120
+
+110
+
+30
+
+25
+
+100
+
+90
+
+Speedup
+
+Iterations
+
+20
+
+Fig. 4. Timings of add arms
+sch arms for two ﬁll-in amounts
+
+350
+
+0
+
+15
+
+Processors
+
+80
+
+70
+
+60
+
+20
+
+15
+
+10
+
+50
+
+sch_arms, lfil=25
+sch_arms, lfil=10
+sch_ilu(0)
+linear
+
+5
+40
+
+30
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+Processors
+
+Fig. 7. Iteration numbers for a twoparticle large problem with diﬀerent ﬁll
+
+0
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+35
+
+Processors
+
+Fig. 8. Speedup of sch arms for diﬀerent ﬁll-in amounts on a large problem
+
+Parallel Solvers for Flexible Approximation Schemes
+
+61
+
+problem sizes, it may be beneﬁcial to very small ﬁll-in, as in arms ilu(0), on
+smaller numbers of processors. Figure 5 presents a comparison of the execution
+times for a two-particle problem on an 803 grid. For AS with diﬀerent amounts
+of ﬁll, the speedups are shown in (Fig. 6). Note that the speedup is deﬁned as
+the ratio of the execution time of the corresponding sequential algorithm to the
+parallel execution time. Due to a rather drastic increase, by 38% on average, in
+the number of iterations from sequential to parallel execution for AS (Fig. 7),
+the best speedup is only 84% of the ideal (linear) case. On the other hand, the
+speedups for sch arms are almost linear for a suﬃcient amount of ﬁll (Fig. 8).
+
+5
+
+Conclusion
+
+Several parallel iterative solvers have been applied to linear FLAME systems for
+PBE, with the goal of ﬁnding the best methods and preconditioning techniques
+in parallel environments for varying problem diﬃculty and size. It has been
+observed that Schur Complement preconditioning with a small amount of ﬁll
+and a few inner iterations scales well and becomes competitive with Additive
+Schwarz for large number of processors, while attaining almost linear speedup.
+The number of iterations and the computational time depends only mildly on
+the Debye parameter. Overall, the parallel distributed Schur Complement solver
+is promising for the simulation of colloidal suspensions, as well as polymer and
+protein molecules in solvents.
+
+References
+1.
+2.
+3.
+4.
+5.
+6.
+7.
+8.
+9.
+10.
+11.
+12.
+13.
+14.
+
+15.
+
+Tsukerman, I. IEEE Trans. Magn. 41 (2005) 2206–2225
+Tsukerman, I. J. Comput. Phys. 211 (2006) 659–699
+Salin, G., Caillol, J.M. J. Chem. Phys. 113 (2000) 10459–10463
+Greengard, L.F., Huang, J. J. Comput. Phys. 180 (2002) 642–658
+Plaks, A., Tsukerman, I., Friedman, G., Yellen, B. IEEE Trans. Magn. 39 (2003)
+1436–1439
+Tsukerman, I. IEEE Trans. Magn. 31 (1995) 1472–1475
+Strouboulis, T., Babuˇska, I., Copps, K. Comput. Meth. Appl. Mech. Eng. 181
+(2000) 43–69
+Proekt, L., Tsukerman, I. IEEE Trans. Magn. 38 (2002) 741–744
+Basermann, A., Tsukerman, I. Volume LNCS 3402., Springer (2005) 325–339
+Fushiki, M. J. Chem. Phys. 97 (1992) 6700–6713
+Dobnikar, J., Haloˇzan, D., M.Brumen, von Gr¨
+unberg, H.H., Rzehak, R. Comput.
+Phys. Comm. 159 (2004) 73–92
+Deserno, M., von Gr¨
+unberg, H.H. Phys. Review E 66 (2002) 15 pages
+Bathe, M., Grodzinsky, A.J., Tidor, B., Rutledge, G.C. J. of Chem. Phys. 121
+(2004) 7557–7561
+Smith, B., Bjørstad, P., Gropp, W.: Domain Decomposition: Parallel Multilevel
+Methods for Elliptic Partial Diﬀerential Equations. Cambridge University Press,
+New York (1996)
+Saad, Y.: Iterative Methods for Sparse Linear Systems. SIAM (2003)
+
+62
+16.
+17.
+18.
+19.
+
+M. Sosonkina and I. Tsukerman
+Saad, Y., Sosonkina, M. SIAM J. Sci. Comput. 21 (1999) 1337–1356
+Li, Z., Saad, Y., Sosonkina, M. Numer. Lin. Alg. Appl. 10 (2003) 485–509
+Sosonkina, M., Saad, Y., Cai, X. Future Gen. Comput. Systems 20 (2004) 489–500
+Saad, Y., Suchomel, B. Numer. Lin. Alg. Appl. 9 (2002) 359–378
+
+

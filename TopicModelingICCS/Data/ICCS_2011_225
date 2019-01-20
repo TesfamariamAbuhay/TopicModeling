@@ -1,0 +1,642 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 2017–2026
+
+International Conference on Computational Science, ICCS 2011
+
+A Framework for Running the ADCIRC Discontinuous Galerkin
+Storm Surge Model on a GPU
+Michael DuChenea,∗, Anna Maria Spagnuolob , Ethan Kubatkoc , Joannes Westerinkd , Clint Dawsone
+a Department
+
+of Computer Science and Engineering, University of Notre Dame, Notre Dame, IN 46556, USA
+of Mathematics and Statistics, Oakland University, Rochester, MI 48309, USA
+c Department of Civil and Environmental Engineering and Geodetic Science, The Ohio State University, Columbus, OH 43210, USA
+d Department of Civil Engineering and Geological Science, University of Notre Dame, Notre Dame, IN 46556, USA
+e Institute for Computational Engineering and Sciences, The University of Texas at Austin, Austin, TX 78712, USA
+b Department
+
+Abstract
+Hybrid architectures utilizing GPUs provide a unique opportunity in a high performance computing environment.
+However, there are many legacy codes, particularly written in Fortran, that can not take immediate advantage of
+GPUs. Furthermore, many of these codes are under active development and so completely rewriting the code may
+not be an option. The advanced circulation and storm surge ﬁnite element model (ADCIRC) is one such code base.
+In this paper we present our semi-automatic methodology for porting portions of ADCIRC to run on the GPU and
+some preliminary scaling results of these subroutines. We have implemented a C++ array class and pre-processor
+macros to create a type of application framework to simplify the conversion and maintenance tasks. This allows the
+C++ syntax to be similar to Fortran, to provide for a more straight forward syntactical conversion from the original
+Fortran to C++ and simpliﬁed calling conventions between the two. After the necessary subroutines are converted
+to the C++ framework, the CUDA library can be easily used and also we are able to provide a simpliﬁed abstraction
+layer for accessing basic GPU functionality. For example, the problem of transferring the correct data on/oﬀ the GPU
+is addressed by our framework by a one time code change and a script to resolve data dependencies. Although it is
+currently speciﬁc to ADCIRC, our framework provides a starting point for utilizing GPUs with legacy Fortran codes,
+from which more speciﬁc GPU optimizations can be implemented.
+Keywords: GPU, ADCIRC
+
+1. Introduction
+ADCIRC is a computational model for solving time-dependent, free surface circulation and transport problems
+in two- and three-dimensions. The model employs a ﬁnite element method to solve the so-called shallow water
+equations, which are extensively used to model ﬂows for processes such as tides, storm surge, and ﬂows within ocean
+basins, on shelves, in bays, through inlets, in lakes, in rivers, and adjacent ﬂood-plains. The “operational” version of
+the ADCIRC model, though still a research code, has been extensively used by a number of agencies including the
+∗ Corresponding
+
+author
+Email address: duchene.3@nd.edu (Michael DuChene)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.220
+
+2018
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+U.S. Army Corps of Engineers, the Federal Emergency Management Agency, the National Oceanic and Atmospheric
+Agency, and the LSU Hurricane Center to name a few. ADCIRC model predictions have shown good agreement
+with measured ﬁeld data for a number of applications, including hind-casts of high water marks for many historic and
+recent storms in Southern Louisiana; see, for example, [1, 2, 3].
+Over the past several years, a “next-generation” ADCIRC model has been in development that uses a discontinuous
+Galerkin (DG) ﬁnite element approach. The goal of the DG ADCIRC model development has been to incorporate and
+substantially improve upon the best features of the present “operational” ADCIRC model, which uses a continuous
+Galerkin (CG) approach. DG methods have been shown to be particularly robust and highly accurate in advection
+dominated ﬂow scenarios, such as those encountered in ﬂow through inlets and channels in coastal regions [4, 5]
+and have exhibited excellent parallel scalability and eﬃciency on up to thousands of processors [6, 7]. One notable
+enhancement in terms of numerics is a p reﬁnement option that has been implemented using a family of orthogonal,
+hierarchical basis functions that allow the use of any order of approximation p over an element, which can vary
+element-by-element and which be adapted dynamically in time [5]; dynamic p-adaptivity has been studied in [7]. The
+DG code has also been veriﬁed on a number of analytic test cases and validated on a number of ﬁeld scale applications
+— most recently it has been used to simulate Hurricane Ike in the Gulf of Mexico [8].
+In this paper, we will describe our semi-automatic method for porting the depth-integrated, two-dimensional DG
+ADCIRC model using linear (p = 1) elements[5, 9] to a GPU. In the process of doing this, we have developed a
+framework from which we can further optimize the ADCIRC model on the GPU. We will also consider a na¨ıve case
+of parallelization, to examine what might happen by automatically generating CUDA kernels from the computational
+subroutines in ADCIRC. To assess this parallelization, we consider the scalability of each of the diﬀerent subroutines.
+Figure 1 shows an overview of the work-ﬂow that we followed to ultimately generate our output ﬁles. The Fortran
+source code ﬁles of the computational subroutines that need to be run on the GPU are converted to C++ by the
+f2c.sh script and is discussed in Section 2. The Fortran source code ﬁles of the computational subroutines and the
+Fortran modules are used as input to the ﬁndeps.sh script to generate a series of header ﬁles to help automate variable
+declarations and data transfers to/from the GPU, and is discussed in Section 3. The other three header ﬁles help to form
+a part of our framework and simplify the development of the ﬁndeps.sh and f2c.sh scripts. The AllocatableArray.h
+header ﬁle is discussed in Section 2.2.1. All of these ﬁles are used to link a ﬁnal binary of ADCIRC that will utilize
+the GPU and the overall strategy for how these ﬁles will work in conjunction is discussed in Section 4. Finally, the
+results of the simple parallelization example are discussed in Section 5.
+
+Figure 1: The work-ﬂow that we followed to generate all the ﬁles necessary to begin executing ADCIRC on a GPU.
+
+2. Porting Methodology
+The overall porting strategy is divided into three phases: converting the relevant subroutines from Fortran to C++,
+adding the appropriate CUDA library calls, and ﬁnally a preliminary parallelization eﬀort. At this point, the preexisting structure of ADCIRC is the guiding decision maker for how to accomplish these tasks. A simpliﬁed function
+call graph of ADCIRC is shown in in Figure 2.
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+2019
+
+Figure 2: Function callgraph of ADCIRC and the partitioning between the CPU and the GPU.
+
+ADCIRC has six computational subroutines that need to be ported to the GPU: ocean edge hydro, land edge hyd
+internal edge hydro, rhs dg hydro, numerical flux, llf flux1 .
+2.1. Alternative Methods
+It should be emphasized that our goal is not to create a general method for automatically using Fortran code with
+a GPU. Rather, we are acknowledging the fact that to fully realize the GPU’s potential requires problem-speciﬁc
+decisions and optimizations. Therefore, our goal is to create a framework (which is currently more speciﬁc than not
+to ADCIRC) that can be used so that the development time can be spent on optimizing the GPU code rather than
+developing infrastructure code. The following are some other methods that were considered for porting ADCIRC to
+use the GPU.
+The PGI accelerator [10] is a commercial product that uses source code annotations (like OpenMP) to specify
+which loops will execute on the GPU. Initially, the use of this product seemed promising, however, it lacked the
+(essential) feature to share data across subroutine calls, resulting in poor performance due to excessive GPU/CPU
+data transfer2 . Also, some subroutines simply could not be made to run faster on the GPU, and at that point it is not
+clear what to change because you do not really know what the compiler is doing behind the scenes and also because
+you are only provided the limited set of PGI compiler directives, until they release the next version of the compiler,
+hopefully supporting newer features.
+F2C-ACC [11] still requires annotations, but is unable to cope with certain Fortran syntax (especially relating to I/
+O), does not support sharing data across subroutines, and the resulting C code becomes less legible (which is contrast
+to our method of attempting to hide certain syntax behind C++ classes and pre-processor macros). Therefore, it
+seemingly does not oﬀer any advantage over the PGI accelerator, at least in our case.
+PGI CUDA-Fortran [12] is another commercial product that allows CUDA kernels to be written and used directly
+in the Fortran code, removing the need to even translate the code to C/C++. Initially this product was unstable,
+but now it simply lacks any sort of cost beneﬁt. Our methodology is simpliﬁed to such a degree that maintaining a
+commercial license for CUDA-Fortran has no cost (or time) beneﬁt to our project. Furthermore, as heterogeneous
+architectures become increasingly popular, we are constantly looking for “standardized” solutions (such as OpenCL),
+so it is not even clear that CUDA will even be the viable long term solution, increasing the risk in investing in this
+type of software (and again, without any perceived beneﬁt).
+Corrigan et al. [13, 14] have implemented semi-automatic porting script for the legacy CFD code FEFLO. It is
+mentioned here because it is in nearly all ways relevant to our work. However, just as our methodology is somewhat
+proprietary to ADCIRC, theirs is speciﬁc to FEFLO. It relies upon the consistent syntax used in the FEFLO code and
+the OpenMP annotations, therefore it would not be possible to directly use their script, even with minor modiﬁcations.
+Additionally, their python script is not generally available, so it is not possible to even try to modify it. However, there
+is a good description of their methodology and they are acknowledged here for their inspiration and ideas.
+1 For
+
+this paper we are only considering the use of the local Lax-Fredrichs ﬂux.
+the time of initial testing, the feature to share (reﬂected) data across subroutines has been added to the product3 .
+3 Since the time this feature has been added to the product, the 15 day trial license has expired.
+2 Since
+
+2020
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+2.2. Fortran to C++ Conversion
+The relevant subroutines of ADCIRC were syntactically translated from Fortran to C++ by using a sed script.
+While perhaps this lacks some ﬂexibility, its advantage is simplicity. More speciﬁcally, the script was created and
+used after a couple hours of development, and there are no subtle bugs to worry about because the translation is
+limited to simple (and easily extensible) search/replace cases and so the resulting output will generally either work or
+result in a syntax error during compilation. This technique is obviously not meant to cover all of the Fortran syntax,
+but ADCIRC does not utilize esoteric Fortran syntax. ADCIRC does, however, use a mixture of FORTRAN 77 and
+Fortran 90.
+Brieﬂy, we dealt with the translation in the following way:
+1. Clean up the input source a bit to make regular expression processing easier. Remove line continuations (including the actual newline, to make it easier to add semicolons later). Trim excess line space. Convert comments
+(“!” and “C” to “//”). Remove unneeded syntax (“::”). Convert upper case to lower case. Convert operators
+(“.eq.” to “==”, etc).
+2. Convert do loops by parsing the arguments with regular expressions.
+3. Convert if statements by translating “then” to “{”, “else” to “} else {”, “end if” to “}”, etc.
+4. Convert variable type names to pre-named typedefs (“real(8)” to “T DOUBLE”, “real(4)” to “T SINGLE”,
+etc). Also take care of “allocatable” arrays by converting “(:,:,:)” to “(3)”, so that the dimension gets
+passed as an argument to the AllocatableArray class constructor.
+5. Convert numbers (exponents in Fortran are speciﬁed after a “d”, while in C they are speciﬁed after an “e”).
+6. Attempt to deal with “**”. This is diﬃcult to do for the general case in regular expressions and without a proper
+parser. However, ADCIRC only uses pow a single time in the computational subroutines.
+7. Convert remaining Fortran statements such as return/stop/exit, type casting such as dble/int, remaining
+program statements such as program/end/subroutine/end subroutine, etc. Most of these are just converted back to uppercase and a pre-processor function-like macro is deﬁned to provide similar functionality
+(stop becomes STOP becomes abort()). Subroutine declarations have their arguments preﬁxed with & so that
+all of the variables are automatically passed by reference (to match Fortran’s calling standard), and hence none
+of the call statements needs to be changed. The use statement gets converted to an #include statement,
+while implicit gets removed.
+8. Add semicolons. Basically at this point anything without a # at the beginning of a line or a { at the end of a line
+would need a semicolon. A ﬁnal pass can be made to remove extraneous semicolons.
+9. (Optional). Run the resulting output through something like astyle to make it look pretty.
+As previously stated, this script obviously will not deal with all of the Fortran syntax. However, this relatively
+short script was suﬃcient enough to convert the computational subroutines of ADCIRC. The point here is that other
+subroutines (such as I/O, which can not only have complicated syntax, but also diﬀerent back end semantics) can be
+left to execute from the original Fortran code. Also, as it was shown, another thing that allowed us to simplify the
+translation was the (ab)use of C pre-processor macros.
+2.2.1. AllocatableArray Class
+AllocatableArray is the templated C++ class that we implemented to provide some speciﬁc key features to assist in porting ADCIRC to the GPU. The class itself is not very sophisticated and the primary aspect of the implementation is to overload all relevant operators so that the variables of type AllocatableArray can be used syntactically
+similar to how the variables are used in Fortran. Na¨ıvely this means overloading the () operator so that the underlying
+memory is properly accessed in unit stride by automatically transposing the array indices, however, there are a few
+more advantages.
+The = operator was overloaded to provide Fortran 90 style assignment syntax, again, helping to simplify the earlier
+code conversion. Furthermore, the = operator was optimized for both array to array and scalar to array assignments,
+by iterating directly over the array memory, rather than computing for multi-dimensional array oﬀset addresses. If
+desired, this class can also check array bounds to more closely mimic Fortran, and this support can also be left out
+for performance. Additionally, because the class functions are all inlined, there is no negative eﬀect on performance.
+Finally, all of the class functions are declared with both host and device , because having a uniform C++
+code that runs the same on both the CPU and GPU made debugging and veriﬁcation easier.
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+2021
+
+3. CUDA Calls
+Relevant CUDA library calls need to be added at the appropriate parts in the code. In our framework, this entails
+adding calls to properly transfer data to/from the GPU.
+3.1. Automatic Data Transfer
+A basic script was written to do a data dependency analysis to automatically determine which data would need to
+be copied to/from the GPU. This is necessesary because nearly all of the variables in ADCIRC (even ones that would
+be considered local to a subroutine) are declared in Fortran modules. If we simply copied all the variables named
+in the module to the GPU then this would cause two major problems. First, a lot of time would be wasted in doing
+unnecessary data transfers; for example, many temporary/intermediate variables and loop counters would be copied
+back and forth, in addition to unused variables, which the compiler would have no way of optimizing since these
+are explicit copies. Second, and perhaps more importantly, accessing these variables would always incur a global
+memory access (since they are pointers to globally allocated memory) on the GPU and even prevent further optimization; locally declared variables are generally assigned to registers in the GPU, which the nvcc compiler aggressively
+optimizes. Furthermore, the data dependency analysis was simpliﬁed because of the simpliﬁed call structure (Figure
+2) and also because the only data that are passed as explicit arguments are passed to the numerical flux subroutine
+(which is not a kernel itself, but rather is called as a device subroutine from an existing kernel). There we must
+consider how pointers to relevant data are to be passed to the CUDA kernel calls.
+One of the limitations of calling CUDA kernels is that they can only receive up to 256 bytes of arguments. The
+way ADCIRC is organized is that there are many global data structures that must be accessed in the various subroutines. This can lead to two problems, the potential of running out of argument space and possibly the ineﬃciency of
+constantly passing pointers to the exact same memory locations. Therefore, struct Gpuargs was created to store
+pointers to all of the relevant data structures and the single pointer to this data structure is the only argument passed to
+all of the kernel calls. Two copies of this struct are created, one on the host (host gpuargs) and one on the GPU
+(dev gpuargs). The pointers in host gpuargs are set to point to the Fortran data, and the pointers in dev gpuargs
+are initialized via cudaMalloc. As the subroutine declarations are converted from Fortran to C++, references to these
+structs are inserted into the subroutine’s argument list4 .
+The ﬁnal step is to insert calls to cudaMemcpy to transfer the data to/from the GPU. The initialized data will be
+transferred a single time to the GPU prior to the start of the time stepping. The data will only be transferred back
+to the host when they are needed to output time series data. For our testing we typically output every 172, 800 time
+steps, or one day of simulation time.
+The script that does the data dependency actually helps generate a series of header ﬁles for performing one of
+four operations on all of the dependent data. These ﬁles basically generate code to perform the desired actions for
+each variable of interest. As part of creating these ﬁles, actual dependency information is considered, as a means of
+optimization. For example, if a variable is never written in any of the CUDA kernels, then no output is created for this
+variable in the dev2host.h ﬁle, to prevent unnecessarily transferring data (that will never change) back to the host.
+3.2. declare.h
+This ﬁle will only be included a single time in a “.cu” ﬁle and serves two purposes. The ﬁrst is to create a device
+pointer to a similarly named variable (by appending gpu on to the variable name), which will be the pointer used
+for future calls to cudaMalloc and cudaMemcpy. The second is to create a similarly named variable (by appending
+host) to reference the original Fortran data for use by the host and by future calls to cudaMemcpy. Recalling that
+Fortran appends an underscore to exported names (and also has a fancy naming scheme for variables declared in
+modules), the declaration in this ﬁle is accomplished by creating a C++ reference to the identically named variable
+with an underscore appended to the name (this appending is done via pre-processor macros). The Fortran variable
+must also be declared as extern so the compiler does not complain, and of course the linker will resolve this. As an
+example:
+4 Technically, the empty subroutine argument list “()” is just replace with a predeﬁned argument list of “(Gpuargs & gpuargs)”, since (as it
+was already stated) there are no arguments passed to the original subroutine calls.
+
+2022
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+e x t e r n REAL
+global MOD example ;
+REAL ∗ & e x a m p l e h o s t =
+global MOD example ;
+# i f d e f i n e d ( USE GPU )
+REAL ∗ e x a m p l e d e v i c e ;
+# endif
+
+3.3. use.h
+This header ﬁle is intended to be included inside every subroutine converted to C++ and it provides the named
+declaration of the variable so that the subroutine can use the same name as was used in Fortran, otherwise it would
+be necessary (and messy) to rename the Fortran variables in the C++ code, and hence would further complicated the
+Fortran to C++ translation. As an example:
+# i f d e f i n e d ( USE GPU )
+A l l o c a t a b l e A r r a y <t y p e , d i m e n s i o n > e x a m p l e ( g p u a r g s −>example , I , J , K ) ;
+#else
+A l l o c a t a b l e A r r a y <t y p e , d i m e n s i o n > e x a m p l e ( e x a m p l e h o s t ) , I , J , K ) ;
+# endif
+
+would be used to bring the variable example, of type REAL * (i.e. an array, possibly multi-dimensional) from the
+Fortran module global into the current scope. The constructor for AllocatableArray uses the reference to the
+data and does not allocate anything, or perform any external functionality that would be disallowed by a device
+function.
+3.4. host2dev.h
+This header ﬁle is included once. It generates the code to allocate the memory on the GPU and it transfers the
+corresponding (preprocessed) data from the host to the GPU. A self explanatory example is:
+/ / macros i n c l u d e d as p a r t of a l l . h
+# d e f i n e GPU MALLOC( name , l e n ) CUDA CALL( c u d a M a l l o c (&name ## gpu , l e n ) )
+# d e f i n e GPU HOST2DEV ( name , l e n ) \
+CUDA CALL( cudaMemcpy ( name ## gpu , name ## h o s t , l e n , cudaMemcpyHostToDevice ) )
+# d e f i n e GPU ADD ARRAY( name ) h o s t g p u a r g s −>name = name ## g p u
+// ...
+GPU MALLOC( example , LEN∗ s i z e o f (REAL ) ) ;
+GPU HOST2DEV ( example , LEN∗ s i z e o f (REAL ) ) ;
+GPU ADD ARRAY( e x a m p l e ) ;
+
+Pre-processor macros in a ﬁle called all.h help to make this type of code more readable.
+3.5. dev2host.h
+This header ﬁle is included wherever the relevant data need to be copied back to the host. A self explanatory
+example is:
+/ / macros i n c l u d e d as p a r t of a l l . h
+# d e f i n e GPU DEV2HOST ( name , l e n ) \
+CUDA CALL( cudaMemcpy ( name ## h o s t , name ## dev , l e n , cudaMemcpyDeviceToHost ) )
+// ...
+GPU DEV2HOST ( example , LEN∗ s i z e o f (REAL ) ) ;
+
+4. Execution Strategy
+The new execution scheme for ADCIRC on the GPU is shown in Figure 3. The read input, prep, and
+write results subroutines are left to run in Fortran, because ADCIRC has standardized ﬁle formats for the input and output that must be adhered to; keeping these subroutines in Fortran signiﬁcantly reduces the time spent on
+porting ADCIRC, and is one less thing that needs to be maintained. The strategy being employed here is to minimize the time spent transferring data between the CPU and GPU. That is, rather than using a strict “accelerator”
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+2023
+
+Figure 3: The new execution scheme for ADCIRC on the GPU (previously everything was executed on the CPU in Fortran). The I/O routines
+remain in Fortran to facilitate compatibility with the standardized ADCIRC ﬁle formats.
+
+approach, the data should be left on the GPU for as long as possible, and only copy data for I/O or inter-process
+communications[15].
+Since the timestep subroutine still resides on the CPU, obviously some amount of ﬁne-grained “control” data
+must be transferred between the host and the GPU for every time step. Our framework does not currently deal with
+this and so the code to copy these data (there are currently only three such variables) to the GPU must be manually
+inserted into the timestep subroutine.
+4.1. Parallelization
+One issue that needs to be addressed is how to break down the computational subroutines in to CUDA kernels for
+parallelization. Our framework makes no assumptions as to how this should be done. However, to try and understand
+what would happen in a simple case of automation, a wrapper subroutine (as inspired from [13]) is easily generated, at
+least for every named subroutine and an example is shown in Listing 1. This could even be generalized to generating a
+wrapper for all loops; it would be up to the developer to decide whether or not to actually turn the loop in to a CUDA
+kernel, but if not then the extra subroutine calls would be optimized out by the compiler and so there would be no loss
+in doing this type of automation.
+Listing 1: A wrapper subroutine can be generated, at least for the original subroutine, so that the developer can manually implement the proper
+CUDA kernel. It can be possible to extend this method to generating wrappers for each loop as well.
+# i f d e f i n e d ( USE GPU )
+global
+# endif
+void r h s d g h y d r o 1 ( Gpuargs ∗ gpuargs ) {
+# include ” s i z e s u s e . h”
+# include ” global use . h”
+# include ” dg use . h”
+# i f d e f i n e d ( USE GPU )
+/ / i n s e r t CUDA c o d e h e r e
+#else
+/ / o r i g i n a l s u b r o u t i n e body h e r e
+# endif
+}
+int rhs dg hydro () {
+# i f d e f i n e d ( USE GPU )
+dim3 t h r e a d s p e r b l o c k = dim3 ( FILL ME IN ) ;
+dim3 n u m b l o c k s = FILL ME IN ;
+dim3 ( c e i l ( o u t e r l o o p v a r / t h r e a d s p e r b l o c k . x ) ) ;
+r h s d g h y d r o 1 <<<numblocks , t h r e a d s p e r b l o c k >>> ( d e v g p u a r g s ) ;
+#else
+rhs dg hydro1 ( host gpuargs ) ;
+# endif
+return 0;
+}
+
+One diﬃculty with generating wrapper functions to kernel calls (as also discussed in [13]) is that data dependencies must be tracked through subroutine calls, which is very diﬃcult if standardized naming conventions cannot be
+relied upon. Generating wrapper subroutines for each loop would compound this problem. However, our framework
+
+2024
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+helps simplify this problem, because of the struct Gpuargs that gets passed to any generated subroutines (and the
+corresponding use.h header ﬁle to bring variable names in to the current scope) contains pointers to any required
+data on the GPU – meaning all variables are technically accessible from all generated subroutines, and unused variable names will simply be optimized out by the compiler. Listing 2 is an example of what the generated code might
+actually look like.
+Listing 2: A double nested for loop and the parallelized CUDA equivalent.
+# i f d e f i n e d ( USE GPU )
+global
+# endif
+void update1 ( Gpuargs ∗ gpuargs ) {
+# include ” s i z e s u s e . h”
+# include ” global use . h”
+# include ” dg use . h”
+# i f d e f i n e d ( USE GPU )
+INTEGER k = b l o c k I d x . x ∗ blockDim . x + t h r e a d I d x . x + 1 ;
+INTEGER j = b l o c k I d x . y ∗ blockDim . y + t h r e a d I d x . y + 1 ;
+i f ( j <= mne ) {
+i f ( k <= d o f ) {
+#else
+f o r ( INTEGER j = 1 ; j <= mne ; ++ j ) {
+f o r ( INTEGER k = 1 ; k <= d o f ; ++k ) {
+# endif
+ze ( k , j , 1) = ze ( k , j , nrk + 1 ) ;
+qx ( k , j , 1 ) = qx ( k , j , n r k + 1 ) ;
+qy ( k , j , 1 ) = qy ( k , j , n r k + 1 ) ;
+}
+}
+}
+
+5. Subroutine Scaling
+As an example of how our framework can be useful as a basis for converting ADCIRC to the GPU, we will
+convert the subroutines to use our framework, na¨ıvely parallelize them, and then assess the scaling properties of the
+subroutines on an NVIDIA GTX-480 GPU. We will consider the increase in run time per time step of the subroutines
+as a ﬁnite element mesh is reﬁned; eﬃcient use of the GPU is indicated by less than linear scaling.
+5.1. Parallelizing The Subroutines
+5.1.1. internal edge hydro
+This subroutine is diﬃcult to parallelize because each internal edge will be touching two elements, and so there is
+a data contention problem if two concurrently running threads attempt to update the same entry in the right-hand side.
+It turns out that, at least in our test case, the proper ordering of the nodes (and hence edges), will prevent most of the
+contention problems. However, this is not the case in general, especially for an unstructured mesh and also there are
+still problems with our numbering scheme that caused errors to increase, however the model still remained stable.
+5.1.2. ocean edge hydro and land edge hydro
+These two subroutines are very similar to parallelize because they only touch one element; they implement two
+diﬀerent boundary conditions. Therefore, they do not suﬀer from the contention problem that internal edge hydro
+had. However, the layout of the mesh can have an impact on these assumptions, because in the test mesh that was used
+for these results, one element in each corner shared two diﬀerent boundary conditions, which reduced the accuracy of
+the solution.
+5.1.3. rhs dg hydro
+This subroutine was the easiest to parallelize because it loops over all of the elements and at a coarse grained level
+there is no synchronization necessary because there is no contention when constructing the right-hand side.
+
+2025
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+5.1.4. numerical flux
+This subroutine is not actually parallelized because it is called by an existing CUDA kernel.
+5.2. The Problem
+For testing purposes, we consider a simple test case proposed by Lynch and Gray [16]. The domain of the problem
+examined is a rectangle given by [x1 , x2 ] × [0, L]. The boundaries at y = 0, y = L, and x = x1 are land or no-normal
+ﬂow boundaries (corresponding to “land edges” in the mesh), and at x = x2 a surface elevation is prescribed by a
+periodic tidal forcing function (corresponding to “ocean edges” in the mesh). In our numerical tests, we take the
+width of the domain in the y-direction to be L = 45 km, and in the x-direction, we take x2 − x1 = 2L. We consider a
+quadratic bathymetric proﬁle and use a tidal amplitude of ζ0 = 0.5 m, with a frequency of ω ≈ 0.0001405 s−1 , which
+corresponds to an M2 tide. A linear friction factor of τb f = 0.0001 s−1 is used. For the purposes of scaling, the mesh
+is successively reﬁned by dividing both the horizontal and vertical spacing in half and is summarized in Table 1(b).
+Table 1: The experimental setup of the Lynch and Gray test case used in the scaling experiment.
+(b) Parameters of the successively reﬁned grids.
+
+(a) The parameters used in the simulations.
+Parameter
+Δt
+T
+n
+h0
+x1
+x2
+L
+
+Value
+1
+172,800
+2
+1.111 E-9
+60,000
+150,000
+45,000
+
+Description
+
+Name
+
+# of Elements
+
+# of Nodes
+
+h
+
+Timestep (seconds)
+Total timesteps
+Quadratic Bathymetry
+Bathymetric coeﬃcient
+x-coordinate for domain boundary
+x-coordinate for domain boundary
+width of the domain
+
+grid1
+grid2
+grid3
+grid4
+grid5
+grid6
+grid7
+
+144
+576
+2304
+9216
+36864
+147456
+589824
+
+91
+325
+1225
+4753
+18721
+74305
+296065
+
+7500
+3750
+1875
+937.5
+468.75
+234.375
+117.1875
+
+5.3. Results
+The scaling results are shown in Figure 4. All of the subroutines were using 256 threads per block, and the
+suﬃcient number of blocks to perform the computation. Prior to any subroutine parallelization, all of the curves grew
+linearly as the number of elements increased. After parallelization, the subroutines have nearly constant scaling until
+approximately 4, 000 elements are used, at which point the rhs dg hydro and internal edge hydro subroutines
+begin to show linear scaling, while land edge hydro and ocean edge hydro remain ﬂat.
+2097152
+524288
+Wall Time [ms]
+
+131072
+32768
+
+updatea2
+
+8192
+
+updatea1
+
+2048
+
+rhs_dg_hydro
+
+512
+
+internal_edge_hydro
+
+128
+
+land_edge_hydro
+
+32
+
+ocean_edge_hydro
+
+8
+64
+
+512
+
+4096
+
+32768
+
+262144
+
+Number of Elements
+
+Figure 4: The results.
+
+The poor results for the updatea1 and updatea2 subroutines indicates that manual intervention is required to
+tune these kernels. These subroutines are responsible for updating data structures related to the Runge-Kutta timestepper. One reason land edge hydro and ocean edge hydro remain ﬂat is because they are computing on only
+twice as many edges as the mesh is reﬁned by a factor of four, as shown in Table 2. The other subroutines do better
+with the rudimentary parallelization, but still are going to require hand tuning. One factor to consider is that the Fermi
+architecture has a data cache, which is deﬁnitely helping with these subroutines since most of the memory accesses
+are not yet properly coalesced and pitched memory is not being used.
+
+2026
+
+Michael DuChene et al. / Procedia Computer Science 4 (2011) 2017–2026
+
+Table 2: The number of edges/elements being processed by each subroutine as the computational mesh is successively reﬁned by a factor of 4.
+Subroutine
+ocean edge
+land edge
+rhs dg
+internal edge
+
+hydro
+hydro
+hydro
+hydro
+
+Number of Edges/Elements Processed
+grid1
+6
+30
+144
+198
+
+grid2
+12
+60
+576
+828
+
+grid3
+24
+120
+2,304
+3,384
+
+grid4
+48
+240
+9216
+13,680
+
+grid5
+96
+480
+36,864
+55,008
+
+grid6
+192
+960
+147,456
+220,608
+
+6. Conclusions
+We have shown a method to assist in the porting of a legacy Fortran ﬁnite element code (ADCIRC) to utilize
+a GPU. This includes the use of a specialized C++ framework and several supporting scripts. The C++ framework
+relaxes the syntax requirements of the C++ code to help simplify and hence automate the code translation from Fortran
+to C++, and provides for some optimizations. Additionally, the framework provides a mechanism to help transfer
+data to/from the GPU. The framework was developed speciﬁcally for ADCIRC, however there are some concepts that
+could easily be generalized to other numerical codes. It should be emphasized that the approach we have taken is not
+a substitute for hand crafting the ﬁnal GPU design, but rather to supplement that eﬀort and potentially allow for easier
+co-development between the main code branch and the GPU version; the scaling results verify this.
+7. Acknowledgements
+The authors were supported on the NSF grant entitled, “Collaborative Research: Hurricane Storm Surge Modeling
+on Petascale Computers.” Anna Maria Spagnuolo and Michael DuChene were supported on OCI-749017, Joannes
+Westerink was supported on OCI-0746232, and Clint Dawson and Ethan Kubatko were supported on OCI-0749015.
+8. References
+[1] S. Bunya, J. Dietrich, J. Westerink, B. Ebersole, J. Smith, J. Atkinson, R. Jensen, D. Resio, R. Luettich, C. Dawson, V. Cardone, A. Cox,
+M. Powell, H. Westerink, H. Roberts, A high resolution coupled riverine ﬂow, tide, wind,wind wave and storm surge model for southern
+louisiana and mississippi: Part i–model development and validation, Monthly Weather Review 138 (2) (2010) 345–377.
+[2] J. Dietrich, S. Bunya, J. Westerink, B. Ebersole, J. Smith, J. Atkinson, R. Jensen, D. Resio, R. Luettich, C. Dawson, V. Cardone, A. Cox,
+M. Powell, H. Westerink, H. Roberts, A high resolution coupled riverine ﬂow, tide, wind, wind wave and storm surge model for southern
+louisiana and mississippi: Part ii–synoptic description and analysis of hurricanes katrina and rita, Monthly Weather Review 138 (2) (2010)
+378–404.
+[3] J. Westerink, J. Feyen, J. Atkinson, R. Luettich, C. Dawson, H. Roberts, M. Powell, J. Dunion, E. Kubatko, H. Pourtaheri, A basin to channel
+scale unstructured grid hurricane storm surge model applied to southern louisiana, Monthly Weather Review 136 (3) (2008) 833–864.
+[4] E. Kubatko, J. Westerink, C. Dawson, An unstructured grid morphodynamic model with a discontinuous galerkin method for bed evolution,
+Ocean Modeling 15 (2006) 71–89.
+[5] E. Kubatko, J. Westerink, C. Dawson, hp discontinuous galerkin methods for advection dominated problems in shallow water ﬂow, Computer
+Methods in Applied Mechanics and Engineering 196 (2006) 437–451.
+[6] C. Dawson, J. Westerink, E. Kubatko, J. Proft, C. Mirabito, Parallel ﬁnite element models for hurricane storm surges, in: Proceedings of the
+Teragrid ’08 Conference, Teragrid ’08, Las Vegas, NV, 2008.
+[7] E. Kubatko, S. Bunya, C. Dawson, J. Westerink, C. Mirabito, A performance comparison of continuous and discontinuous ﬁnite element
+shallow water models, Journal of Scientiﬁc Computing 40 (2009) 1573–7691.
+[8] C. Dawson, E. Kubatko, J. Westerink, C. Trahana, C. Mirabito, C. Michoskia, N. Panda, Discontinuous galerkin methods for modeling
+hurricane storm surge, Advances in Water ResourcesIn press.
+[9] E. Kubatko, Development, implementation, and veriﬁcation of hp-discontinuous galerkin models for shallow water hydrodynamics and
+transport, Ph.D. dissertation, University of Notre Dame (2006).
+[10] The portland group: PGI accelerator compilers, http://www.pgroup.com/resources/accel.htm.
+[11] F2c-acc, http://www.esrl.noaa.gov/gsd/ab/ac/F2C-ACC.html.
+[12] The portland group: PGI CUDA fortran compiler, http://www.pgroup.com/resources/cudafortran.htm.
+[13] A. Corrigan, F. Camelli, R. L¨ohner, F. Mut, Semi-automatic porting of a large-scale fortran CFD code to GPUs, manuscript (November 2010).
+[14] A. Corrigan, Porting large fortran codebases to GPUs, presented at SC10: High Performance Computing with CUDA (November 2010).
+[15] T. Shimokawabe, T. Aoki, C. Muroi, J. Ishida, K. Kawano, T. Endo, A. Nukada, N. Maruyama, S. Matsuoka, An 80-fold speedup, 15.0 TFlops
+full GPU acceleration of non-hydrostatic weather model ASUCA production code, in: Proceedings of the 2010 ACM/IEEE International
+Conference for High Performance Computing, Networking, Storage and Analysis, SC ’10, IEEE Computer Society, Washington, DC, USA,
+2010, pp. 1–11.
+[16] D. R. Lynch, W. G. Gray, Analytic solutions for computer ﬂow model testing, Journal of the Hydraulics Division 104 (10) (1978) 1409–1428.
+
+

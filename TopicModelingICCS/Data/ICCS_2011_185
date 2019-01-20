@@ -1,0 +1,728 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 1475–1484
+
+International Conference on Computational Science, ICCS 2011
+
+An OpenMP-enabled parallel simulator for particle transport in
+ﬂuid ﬂows
+Wenjie Weia,∗, Omar al-Khayata , Xing Caia,b
+a Computational
+
+Geoscience, CBC, Simula Research Laboratory, P.O. Box 134, 1325 Lysaker, Norway
+of Informatics, University of Oslo, P.O. Box 1080 Blindern, 0316 Oslo, Norway
+
+b Department
+
+Abstract
+By using C/C++ programming and OpenMP parallelization, we implement a newly developed numerical strategy
+for simulating particle transport in sparsely particle-laden ﬂuid ﬂows. Due to its highly dynamic property of the chosen
+numerical framework, the implementation needs to properly handle the moving, merging and splitting of a large
+number of particle lumps. We show that a careful division of the entire computational work into a set of distinctive
+tasks not only produces a clearly structured code, but also allows taskwise parallelization through appropriate use of
+OpenMP compiler directives. The performance of the OpenMP-enabled parallel simulator is tested on representative
+architectures of multicore-based shared memory, by running a large case of particle transport in a pipe ﬂow. Attention
+is also given to a number of performance-critical features of the simulator.
+Keywords: particle-laden ﬂuid ﬂow, lumped particle modeling, NUMA shared memory, OpenMP
+
+1. Introduction
+The evolution of particles that are suspended in a ﬂowing ﬂuid is of great interest to geoscientists and engineers.
+An example is sediment-laden turbulent ﬂows in a river, which can result in sediment deposition with complex patterns
+on the riverbed [1]. Another case involves the transport of particles in long tubes, where many diﬀerent physical eﬀects
+such as Brownian movement and lift forces occur [2]. The main concern of this paper is the eﬃcient simulation of
+particle transport in a ﬂuid, which has a given ﬂow velocity proﬁle. (In this paper, a non-dense spread of particles is
+assumed, so the ﬂuid ﬂow inﬂuences the particle transport, not the other way around. Also, no collision is assumed
+between the particles.)
+Numerical simulation of particle transport can be very challenging due to high spatial-temporal resolution requirements and the involvement of many interacting physical processes and forces. An idealized numerical strategy is to
+track each particle individually [3], but is often prohibitively expensive with respect to the amount of computation.
+Instead, we will adopt the lumped particle modeling framework from [4], which is based on a mesoscopic hybrid
+continuum-particle approach. Most importantly, particles are organized as particle lumps and instead of tracking the
+∗ Corresponding
+
+author
+Email addresses: wenjie@simula.no (Wenjie Wei), omark@simula.no (Omar al-Khayat), xingca@simula.no (Xing Cai)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.160
+
+1476
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+individual dynamics of each particle, spatial averaging procedures are used to evolve the particle lumps in the computational domain. Moreover, during each time step, the particle lumps are dynamically splitting and merging, which
+serves to model dispersion and diﬀusion.
+Although the lumped particle approach signiﬁcantly reduces the computing eﬀort compared with individual particle tracking, the required computation can still be extensive. This is especially true for (1) large and geologically
+relevant cases, and (2) small-scale particle transport in pipe ﬂows. Both call for parallel computing. Consequently,
+this paper will focus on developing a parallelization scheme for the lumped particle modeling framework.
+Parallelization via distributed-memory programming (such as using MPI) is possible, but will need to address
+the challenge of frequent load re-balancing and inter-processor data shuﬄe. This is because of the dynamics of the
+particle lumps, and will likely give rise to a considerable amount of overhead. In comparison, an assumption of shared
+memory will eliminate the need of data shuﬄe, and load balancing is relatively easy to achieve by using, in particular,
+OpenMP compiler directives. In respect of hardware, modern multicore processors have made shared memory widely
+available. One common example is a PC with dual quad-core Intel Xeon processors, whereas another more high-end
+example is a node of Cray’s XT6 system, consisting of two 12-core AMD processors. We have therefore decided to
+adopt OpenMP for shared-memory parallelization in the present paper.
+The paper is organized as follows. We start with a short overview of the lumped particle model, with emphasis
+on the algorithmic structure of its core procedures. Then, we describe the data structure, software tasks and OpenMP
+parallelization of a C/C++ implementation. Thereafter, the evolution of micron-sized particles in a pipe ﬂow is
+simulated by numerical experiments. Detailed time measurements on three shared-memory systems are used to study
+the parallel performance of the OpenMP code. Finally, we provide a few comments on some performance-critical
+issues and the physical interpretation of the simulation results.
+2. Numerical method
+In this section, we will quickly review the lumped particle method, with the aim of providing the reader with some
+background knowledge that is needed for understanding its implementation in Section 3. A detailed explanation of
+the numerical method can be found in [4].
+2.1. Basic principles
+Particles are grouped into small lumps, which constitute the computational entities. The number, size, position and
+velocity of the particle lumps all evolve with time, as they move along the ﬂuid ﬂow with the possibility of merging
+and splitting. The physical eﬀects considered include (1) advection due to the background ﬂow velocity ﬁeld and the
+eﬀect of gravity and buoyancy, (2) dispersion that accounts for the varying individual particle velocities and positions
+within each particle lump, and (3) diﬀusion that accounts for the Brownian motion, i.e., elastic and random collision
+between particles and ﬂuid molecules.
+The spatial domain of interest is covered with a ﬁxed regular lattice, where each computational cell is a rectangle
+in 2D or a box in 3D. The temporal domain is divided into discrete time levels, on which the location and velocity
+of each particle lump are sought as the numerical solution. Only particles within the same cell can be considered
+for lumping, i.e., grouping a number of individual particles together to possess a weight-averaged lump velocity and
+position. From one discrete time level to the next, the particle lumps can take a combination of three types of actions:
+moving, merging and splitting.
+The amount of computation depends on three factors: (1) the number of discrete time levels, (2) the number of
+particle lumps, and (3) the number of cells that are occupied by particle lumps. It is worth noticing that the latter two
+factors are highly time-varying and are dependent on the spatial mesh resolution. On the other hand, the amount of
+computation does not depend directly on the total number of particles. For realistic simulations where the number and
+spread of occupied cells vary greatly with time, an important remark is that the actual computing speed also depends
+on the use of cache and memory. In the context of single-thread computing, the important issues are the design of data
+structure and memory visit. In the context of multi-thread computing, we also have to consider issues like scheduling,
+granularity, and NUMA (if the shared memory consists of several memory units).
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+1477
+
+2.2. Three computational tasks per time step
+Three computational tasks are carried out per time step, accounting for the physical processes of advection, dispersion and diﬀusion.
+1. Dispersion-advection:
+At the beginning of each time step, with Δt = t − t −1 as the time step size, each cell is assumed to contain a
+ﬁxed small number of particle lumps, so-called quasi-particles. Each quasi-particle moves based on its latest
+velocity v −1 , position x −1 and the following formulas:
+v −v
+Δt
+
+−1
+
+x −x
+Δt
+
+−1
+
+=
+
+−
+
+=
+
+1
+v
+τp
+
+v +v
+2
+
+−1
+
+−u + 1−
+
+f
+
+g,
+
+(1)
+
+p
+−1
+
+.
+
+(2)
+
+We note that formula (1) is a ﬁrst-order explicit solver of a simpliﬁed Bassinet-Boussinesq-Oseen equation
+(see [4] for more details), where u denotes the ﬂuid velocity, τ p is a measure of a particle’s response to the
+diﬀerence between its own velocity and u, g denotes the gravitational acceleration, while p and f denote the
+particle and ﬂuid density, respectively. Formula (2) is Heun’s method used to advect a quasi-particle for a time
+period of Δt.
+2. Recombination-splitting:
+When the new position x and velocity v are computed for each quasi-particle, we can use x to ﬁnd out whether
+a quasi-particle remains in its current occupied cell or moves to another one. From the perspective of a cell, the
+number of its occupant particle lumps may change from the previous time level, due to either a net “inﬂow” or a
+net “outﬂow”. One extreme situation is that a previously occupied cell becomes completely empty of particles.
+Another special situation is that a previously empty cell becomes occupied due to particle inﬂow.
+Once the quasi-particles have been advected, a recombination procedure is used inside each non-empty cell to
+merge all its current occupant quasi-particles (both old remaining and new incoming) into a new single lump
+of particles. Mathematically, this is achieved by a weighted averaging of all the quasi-particle velocities and
+positions. For example, one key variable is the weight-averaged centroid position of the merged single particle
+lump, which is deﬁned as follows:
+ˆ =
+dS
+
+m
+i=1 Ni dSi
+,
+m
+i=1 Ni
+
+(3)
+
+where m is the number of quasi-particles that occupy the cell prior to recombination, and Ni denotes the number
+of particles inside quasi-particle i, with dSi as its centroid position. More details about recombination can be
+found in [4].
+Then, to account for the variation of velocity and position among the quasi-particles before the recombination,
+the newly merged single lump is again split into a ﬁxed small number of quasi-particles. (In 2D each cell has
+three quasi-particles, whereas the number of quasi-particles per cell is typically ﬁve in 3D. When, however, a
+cell contains too few particles, the number of resulting quasi-particles can be smaller.) The new quasi-particles
+inside a cell are given diﬀerent velocities, where one quasi-particle inherits the weight-averaged velocity from
+the single parent lump, and the other quasi-particles are assigned with velocities that are perturbed from the
+weight-averaged velocity. Observe that these diﬀerent velocities give the dispersion directions during the next
+time step. The mathematical details of splitting can be found in [4]. Figure 1 illustrates the action of recombination and splitting.
+3. Diﬀusion:
+After recombination-splitting, and if the eﬀect of Brownian diﬀusion is desired, the following action is carried
+out. Each particle lump is divided symmetrically and the resulting smaller quasi-particles are moved to the
+nearest neighboring cells, as illustrated in Figure 2. Then, all the non-empty cells repeat the above action of
+recombination-splitting, as a way to limit the number of resulting particle lumps per cell. We also remark that
+the diﬀusion procedure is essentially a symmetric dispersion involving interaction between neighboring cells.
+
+1478
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+Figure 1: An illustration of recombination and splitting. Left: a number of particle lumps arrive in a cell after movement due to dispersion and
+advection. Middle: one new big particle lump is formed after the recombination procedure. Right: the new single lump is again split into three
+quasi-particles.
+
+Figure 2: An illustration of Brownian diﬀusion acted on a particle lump.
+
+3. Implementation and parallelization
+Having brieﬂy explained the lumped particle method in the preceding section, we are now ready to present its
+implementation and parallelization. In this context, there are a couple of noteworthy remarks. First, for every occupied
+cell, the number of quasi-particles after recombination-splitting is a small constant, unlike the number of incoming
+particle lumps per cell, which can be arbitrarily large immediately after dispersion-advection. Second, the number
+and distribution of occupied cells in the lattice may change greatly with time.
+3.1. Base data structure
+The following minimalistic data structure is chosen to represent the quasi-particles inside a 2D cell:
+struct QuasiParticle {
+double vx, vy;
+// velocity in x- and y-direction
+double dsx, dsy; // centroid position
+};
+struct Cell {
+QuasiParticle c[3]; // 3 quasi-particles per 2D cell
+};
+
+The reason for adopting C struct instead of C++ class for QuasiParticle and Cell is to avoid unnecessary
+memory overhead associated with a large number of C++ class objects. We have also chosen not to place an integer
+inside QuasiParticle to record the number of particles within each quasi-particle, to avoid the memory overhead
+due to alignment padding.
+As we have mentioned earlier, cell occupancy changes with time, meaning that there may be a large number of
+empty cells at any given time level. It is thus unwise with respect to memory usage to assign an object of Cell to
+each lattice cell. Instead, if we can roughly estimate the maximum number of occupied cells throughout an entire
+simulation, say, max num occupied cells, we can allocate two relatively short arrays of Cell objects as follows:
+Cell* cell_array = new Cell[max_num_occupied_cells];
+Cell* cell_array_new = new Cell[max_num_occupied_cells];
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+1479
+
+We note that two arrays of Cell objects are necessary in programming both task recombination-splitting and task
+diﬀusion. In both tasks, a new array of Cell objects, having a diﬀerent topology and number of occupied cells, will
+be computed based on the latest cell array.
+Finally, to complete the base data structure, we need an integer array cell ids, which associates each Cell
+object in cell array with its corresponding cell position in the lattice. For example, cell ids[i] contains the
+global cell ID in the lattice for cell array[i]. In addition, another array of integers, with name lookup and of
+length equal to the total number of cells in the lattice, is used for the frequent task of checking whether a speciﬁc
+cell is occupied or not. This check is important for building up a new topology of occupied cells, needed in both
+recombination-splitting and diﬀusion. The chosen convention for entries of lookup is that the value of -1 means an
+empty cell, whereas a non-negative value of lookup[j] means that cell j of the lattice is occupied and that the data
+of its three quasi-particles are contained in cell array[lookup[j]]. The mapping relationship between cell ids
+and lookup can be expressed as lookup[cell ids[i]]==i.
+3.2. Software tasks and parallelization
+1. During the task of dispersion-advection, each Cell object in cell array can independently calculate formulas (1)-(2) for its three quasi-particles. That is, the values of vx, vy, dsx and dsy are updated inside each
+QuasiParticle object. Moreover, the majority of non-empty cells have three quasi-particles each. (A rare
+exception is that a cell may have too few particles to form three quasi-particles.) This ideal parallelism with
+even load balance among the Cell objects can be exploited in OpenMP by inserting the omp parallel for
+directive, using the static scheduler and a suitable chunk size.
+2. The actual movement of a quasi-particle from one cell to another is, however, only easy on paper. This is
+because a cell may receive a large number of incoming quasi-particles after dispersion-advection, while the data
+structure of a Cell object has only space for three QuasiParticles. Our software solution to this problem
+is to use an assisting data structure. More speciﬁcally, each upcoming cell in cell array new uses a stack,
+programmed as a simple C++ class, to register for each incoming quasi-particle a unique ID. This particle
+ID is suﬃcient for tracking back to the actual QuasiParticle object stored inside cell array. (Note that
+this additional memory requirement per quasi-particle is only one integer, considerably less than the memory
+requirement of an object of QuasiParticle.) At the same time, we also need to reﬁll the cell ids and
+lookup arrays, because the topology of non-empty cells changes due to dispersion-advection. The OpenMP
+implementation is as follows:
+// lookup is assumed to be already cleared up, with -1 for each entry
+#pragma omp master {
+counter = 0;
+for (q_id=0; q_id<3*num_occupied_cells; q_id++)
+if ((cell_id=destination_cell_ids[q_id])>=0) {
+if (lookup[cell_id]==-1) {
+cell_ids[counter] = cell_id;
+// new global cell ID inside lattice
+lookup[cell_id] = counter;
+// index with respect to cell_array_new
+++counter;
+}
+destination_cell_ids[q_id] = lookup[cell_id]; // record the index wrt cell_array_new
+}
+}
+#pragma barrier
+int id_lower = (thread_id*counter)/num_threads;
+int id_upper = ((thread_id+1)*counter)/num_threads;
+for (q_id=0; q_id<3*num_occupied_cells; q_id++)
+if ((cell_id=destination_cell_ids[q_id])>=0 && id_lower<=cell_id && cell_id<id_upper)
+info_stacks[cell_id].push(q_id);
+
+In the above code segment, the ﬁrst for-loop renews the cell ids and lookup arrays. It can only be executed
+by one thread to avoid race conditions (associated with updating counter). The second for-loop, for adding
+each q id to its destination cell’s the assisting information stack, can be executed by all the threads, which divide
+the memory writes (separated via thread id among threads). There is therefore very limited parallelism in this
+pure software task, for which we have chosen topology-rebuild as its name.
+3. When the task of topology-rebuild is done as above, the work of task recombination-splitting can again be
+carried out in parallel. That is, an OpenMP thread is assigned to compute a subset of the cell array new
+
+1480
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+array, while making use of the entire cell array and the assisting data structure info stacks in the shared
+memory. Noting that the work needed per Cell object in cell array new is not a constant (because the
+number of incoming quasi-particles may vary greatly), we have chosen the dynamic scheduler associated with
+omp parallel for.
+4. Next, before the task of diﬀusion can be executed, another pure software task is needed. That is because
+diﬀusion will inevitably increase the number of non-empty cells, and IDs of the new occupied cells have to be
+added to cell ids, while the corresponding entries of lookup change from -1 to a non-negative value. The
+actual work starts with marking those occupied cells that have at least one empty neighboring cell. (An empty
+neighboring cell to an occupied cell is bound to receive incoming particles, due to the symmetric dispersion
+property of diﬀusion.) This process of cell marking can be carried out in parallel by the threads. However, the
+subsequent action of updating cell ids and lookup has to resort to a single thread for execution, for the same
+reason discussed for topology-rebuild. This entire software task is named topology-update.
+5. Finally, the task of diﬀusion again possesses parallelism, because the computation for each non-empty cell is
+independent of each other. Nevertheless, due to a non-constant number of occupied neighboring cells (some
+cells have all eight neighbors with particles while others have fewer), we have to use the dynamic scheduler
+when parallelizing the involved for-loop.
+To summarize, the three computational tasks that constitute the numerical algorithm all possess good parallelism.
+More speciﬁcally, task dispersion-advection can use the static scheduler, whereas task recombination-splitting and
+task diﬀusion must resort to the dynamic scheduler. The two pure software tasks, topology-rebuild and topologyupdate, have limited parallelism.
+4. Case study
+In this section, the transport of Brownian particles is studied in a tube that has a fully developed laminar ﬂow
+velocity. These particles are usually micrometer-sized, with a Brownian diﬀusion coeﬃcient D 10−6 –10−8 . The
+small diﬀusion coeﬃcient requires a very ﬁne spatial resolution to satisfy D = Δx2 /(6Δt). Speciﬁcally, Δx2 must
+be of the order ∼ 10−7 Δt. Hence, this case study requires the full machinery of the lumped particle model, and will
+constitute a highly intensive computation. We will use numerical experiments to verify the physical correctness and
+parallel capability of our implementation.
+4.1. Simulation setup
+The spatial domain is chosen as (x, y) ∈ [0, 0.2] × [0, 0.05]m, which is divided into 8000 × 2000 grid cells. This
+corresponds to a grid spacing of Δx = Δy = 2.5 · 10−5 m. Moreover, the relaxation time is calculated to be τ p = 0.146s,
+and the size of time step is chosen as Δt = 0.005s. These values correspond to modeling particles with a very small
+Brownian diﬀusion coeﬃcient of D = 2.08 · 10−8 .
+To avoid the boundary eﬀects, the particles are initially placed far away from the boundary walls. More speciﬁcally, 40 million particles are randomly distributed inside a small rectangular region (x, y) ∈ [0.01, 0.02]×[0.02, 0.03]m
+at t = 0, as shown in Figure 3. All the particles have a radius of r = 1.0·10−6 m, each assigned a random initial velocity
+direction and a constant velocity magnitude of 0.005m/s. In contrast, the velocity proﬁle of the ﬂuid has a classical
+parabolic shape:
+(4)
+u f = (u x , uy ) = (C · y · (L − y), 0) ,
+where C = 2.5 and L = 0.2.
+4.2. Simulation results
+The eﬀect of gravity is studied by two numerical experiments: one with neutrally buoyant particles, the other with
+the eﬀect of gravity turned on. Snapshots from these two simulations, both between t = 0 and t = 100s, can be seen
+in Figures 3-4.
+One measure for characterizing ﬂows with Brownian diﬀusing particles is the P`eclet number (Pe), which is a
+dimensionless quantity deﬁned as the ratio of the time required by Brownian diﬀusion to move a particle its own size
+to the time needed by the shear ﬂow. The ﬂow we are studying is characterized by a high value of Pe, since the
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+(a) Neutrally buoyant particles (no gravity eﬀect)
+
+1481
+
+(b) Gravity-aﬀected particle transport
+
+Figure 3: Two experiments of Brownian particles transport in a viscous ﬂuid.
+
+(a) Neutrally buoyant particles
+
+(b) Gravity-aﬀected particle transport
+Figure 4: Zoomed-in follow-up of particle evolution from Figure 3.
+
+diﬀusional eﬀect is quite large compared with the shear particle movement. In the neutrally buoyant case, we can see
+that the particles distribute along the middle line of the domain, while simultaneously diﬀusing in a cone-like pattern.
+We observe that this ﬂow conﬁguration is consistent for a large Pe with a high volume fraction, see [5]. When we
+include the eﬀect of gravity, as shown in Figure 4(b), we can observe a faster particle distribution. Consequently,
+the results show that particles of this size deposit in a highly dispersed manner, in comparison with much larger
+particles. This is consistent with the qualitative behaviour of very small particles, which tend to deposit very ﬁnely on
+surfaces [6].
+4.3. Parallel performance
+4.3.1. Hardware and software speciﬁcation
+We have chosen three diﬀerent shared-memory systems (two with NUMA architecture, one with UMA architecture) for studying the parallel performance of our implementation:
+• Modula, which has two quad-core 2.0 GHz Xoen E5504 processors. NUMA memory size: 4 × 2GB. The
+memory bandwidth measured by the STREAM [7] copy benchmark using 8 threads is 13 GB/s. OS: Linux
+modula 2.6.32-26-server. Compiler: g++ (Ubuntu 4.4.3-4ubuntu5) 4.4.3, with optimization ﬂag -O3.
+
+1482
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+• Njord, which has eight dual-core 1.9 GHz POWER5 processors. UMA memory size: 32GB. The memory
+bandwidth measured by the STREAM [7] copy benchmark using 16 threads is 61 GB/s. OS: IBM AIX 5L
+(Linux aﬃnity), version 5.3. Compiler: XL C/C++ for AIX, V10.1, with optimization ﬂags: -O3 -qsmp=omp
+-qcache=auto -qarch=auto -qtune=auto.
+• HECToR, which has two 12-core 2.1 GHz Opteron processors. NUMA memory size: 4 × 8GB. The memory
+bandwidth measured by the STREAM [7] copy benchmark using 24 threads is 30 GB/s. OS: Linux hector-xe6-5
+2.6.27.48-0.1.1 1.0301.5616-cray gem s. Compiler: PGI pgCC 10.9-0, with optimization ﬂag -O3.
+4.3.2. Speedup study
+Table 1 summarizes the time usage of our OpenMP-enabled parallel simulator on the three shared-memory systems. In particular, we have dissected the time usage respective to the ﬁve software tasks discussed in Section 3.2. As
+can be seen in the table, both recombination-splitting and diﬀusion show satisfactory scalability, whereas dispersionadvection shows less favorable speedup on Modula and HECToR. This is because dispersion-advection is not equally
+computationally intensive. The use of the dynamic scheduler for the two computationally intensive tasks proves to be
+important, by comparison with experiments (not shown here) using the static scheduler. The best choices of chunk
+size seem to be between 256 and 1024. We have also used PAPI [8] to conﬁrm that the three tasks are ﬂoating-point
+intensive (not memory-bound). On the other hand, topology-rebuild and topology-update do not scale, because each
+has a serial portion in its implementation (see Section 3.2). It should also be mentioned that the total time measurements in Table 1 comprise all the ﬁve software tasks, plus the auxiliary cost of a sorting procedure (to be discussed in
+Section 4.3.3).
+
+Threads
+1
+2
+4
+8
+
+Disper-advec
+36.33
+18.92
+9.93
+6.96
+
+Threads
+1
+2
+4
+8
+16
+
+Disper-advec
+60.97
+30.30
+15.21
+7.65
+3.93
+
+Threads
+1
+2
+6
+12
+18
+24
+
+Disper-advec
+81.87
+42.92
+15.94
+8.82
+6.24
+4.74
+
+Time measurements on Modula
+Topology-rebuild Recombi-split Topology-update
+24.55
+102.34
+22.90
+19.76
+52.34
+17.46
+17.55
+26.39
+14.26
+17.60
+14.07
+12.68
+Time measurements on Njord
+Topology-rebuild Recombi-split Topology-update
+38.68
+157.52
+64.50
+28.32
+78.09
+45.24
+22.68
+39.59
+35.30
+19.82
+20.10
+30.37
+18.33
+10.31
+27.88
+Time measurements on HECToR
+Topology-rebuild Recombi-split Topology-update
+43.11
+105.29
+39.45
+35.26
+56.16
+29.54
+28.73
+20.88
+22.45
+28.94
+13.25
+21.27
+29.00
+11.24
+20.61
+28.88
+9.73
+20.13
+
+Diﬀusion
+354.08
+184.17
+92.82
+47.43
+
+Total time
+545.54
+298.33
+166.71
+105.18
+
+Diﬀusion
+558.76
+280.03
+143.63
+74.04
+37.48
+
+Total time
+885.80
+467.28
+261.72
+157.22
+103.27
+
+Diﬀusion
+505.22
+265.60
+92.93
+50.40
+34.62
+26.68
+
+Total time
+779.16
+433.79
+185.22
+127.43
+106.59
+95.12
+
+Table 1: Dissection of time usage related to the number of used OpenMP threads on three shared-memory systems.
+
+4.3.3. Impact of sorting the cell ids array
+During our experiments, we have seen that the order of reading and writing entries in the huge lookup array
+is of vital importance, which is frequently encountered in topology-rebuild, topology-update and diﬀusion. Task
+recombination-splitting is also indirectly aﬀected. A random “jumping-back-and-forth” order for visiting the entries
+
+1483
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+of lookup is obviously not memory- and cache-friendly. For the task of topology-rebuild, shown in the code segment
+of Section 3.2, it is virtually impossible to ﬁnd beforehand the most eﬃcient order for updating the chosen entries of
+lookup. This is because of the non-deterministic topology of the upcoming new non-empty cells. In topology-update
+and diﬀusion, however, the traversal sequence of lookup is determined by the order of entries in cell ids. This
+has prompted us to program a sorting procedure for cell ids, with a re-shuﬄe of the Cell objects in cell array
+afterwards.
+To improve the traversal sequence of lookup, while limiting the associated overhead, this sorting procedure for
+cell ids has only been invoked between a number of time steps in all the simulations reported in Table 1. To see
+the impact of this sorting procedure, we list in Table 2 time usages measured on Njord, of simulations that never
+invoke sorting of the cell ids array. It can be seen that not using this sorting procedure has a noticeably negative
+performance impact.
+Threads
+1
+2
+4
+8
+16
+
+Disper-advec
+61.46
+30.59
+15.31
+7.72
+4.02
+
+Topology-rebuild
+44.82
+34.57
+29.12
+26.14
+24.92
+
+Recombi-split
+157.89
+78.43
+40.00
+20.48
+10.51
+
+Topology-update
+75.45
+51.54
+40.40
+34.57
+31.61
+
+Diﬀusion
+837.06
+418.71
+216.69
+113.75
+58.18
+
+Total time
+1176.67
+613.83
+341.52
+202.66
+129.23
+
+Table 2: Dissection of time usage on Njord for simulations that never invoke sorting of the cell ids array. The loss of performance can be seen
+by comparing with Table 1.
+
+4.3.4. Impact of parallel ﬁrst-touch
+On a shared-memory system with NUMA architecture, it is preferable that data lies on the closest memory unit
+connected to the processing CPU core. This is of course extremely diﬃcult to achieve for our implementation that
+has a highly dynamic character. One simple approach, though, is to let each OpenMP thread “touch” a portion of
+the data structure in the beginning, so that the entire data structure is at least distributed across the diﬀerent memory
+units (instead of located on a single memory unit). A simple example of parallel ﬁrst-touching the lookup array is as
+follows:
+#pragma omp parallel for schedule(static, 2048)
+for (int i=0; i<total_num_cells; i++)
+lookup[i] = -1;
+
+We can mention that all the simulations reported in Table 1 have used parallel ﬁrst-touch for lookup, cell array
+and cell array new. To see the performance penalty induced by not invoking parallel ﬁrst-touch, Table 3 shows
+such time measurements obtained on HECToR. As shown in Table 3, the performance of 1,2,6 threads is the same as
+in Table 1, because six threads are connected to the same memory unit on HECToR. The loss of performance due to
+not having parallel ﬁrst-touch is clear when 12,18,24 threads are used. On the other hand, simulations without parallel
+ﬁrst-touch do not suﬀer any performance loss on the UMA-system Njord (not shown here).
+Threads
+1
+2
+6
+12
+18
+24
+
+Disper-advec
+81.99
+42.86
+15.87
+11.71
+11.50
+10.97
+
+Topology-rebuild
+42.96
+35.02
+28.45
+28.94
+29.12
+29.15
+
+Recombi-split
+105.23
+56.18
+20.81
+18.40
+18.53
+18.58
+
+Topology-update
+39.53
+29.53
+22.47
+21.34
+20.46
+20.06
+
+Diﬀusion
+508.78
+266.49
+93.42
+52.88
+38.66
+36.23
+
+Total time
+783.27
+434.90
+185.84
+138.08
+123.07
+119.81
+
+Table 3: Dissection of time usage on HECToR for simulations that do not use parallel ﬁrst-touch. The loss of performance with 12,18,24 OpenMP
+threads can be seen by comparing with Table 1.
+
+1484
+
+Wenjie Wei et al. / Procedia Computer Science 4 (2011) 1475–1484
+
+5. Concluding remarks
+The numerical experiments served to test the lumped particle method and its OpenMP-enabled parallelization in
+a computationally demanding setting. For the speciﬁc case of Brownian motion of small particles, the computed
+distribution corresponds qualitatively well with the observed behaviour of such particles. However, more detailed
+simulations are required in future for a full veriﬁcation of these results. To fully test the framework, additional factors
+must be included. For instance, once other forces such as the Saﬀman lift force [9] are considered, quantitative comparisons to experimental data can be accomplished. This will also require a careful examination of wall deposition
+and boundary eﬀects. Consequently, future work will consist of the application of the framework on large-scale simulations of geological outcrop formation and turbulent pipe ﬂow. A high spatial resolution is of paramount importance
+to the simulation of physical processes.
+With respect to the parallel implementation, a number of questions remain unanswered. For example, it is a puzzle
+why Modula greatly outperforms both Njord and HECToR using up to 8 cores, while the hardware speciﬁcations do
+not give this association. Data locality is naturally the key to high performance, also on shared-memory systems. We
+need therefore to do a closer study of issues such as appropriate choices of the chunk size parameter in association
+with both parallel ﬁrst-touch and the involved parallel for-loops. The sorting procedure for cell ids is only a simple
+approach, more investigations are needed for further improving the traversal sequence of lookup. In the latter context,
+the possibility of creating a more compact data structure that replaces the huge and mostly empty lookup array should
+also be considered. This will at least reduce the memory footprint of lookup. Last but not least, the topic of cache
+sharing and competition among threads also requires close attention.
+Acknowledgement
+The NOTUR computing facilities were used to carry out some of the numerical simulations of this paper. This
+work also made use of HECToR through UK’s national high-performance computing service, which is provided by
+UoE HPCx Ltd at the University of Edinburgh, Cray Inc and NAG Ltd, and funded by the Oﬃce of Science and
+Technology through EPSRC’s High End Computing Programme. Part of this work was carried out under the HPCEUROPA2 project (project number 228398) with the support of the European Commission Capacities Area - Research
+Infrastructures Initiative.
+[1]
+[2]
+[3]
+[4]
+[5]
+[6]
+[7]
+[8]
+[9]
+
+G. Middelton, Sediment deposition from turbidity currents, Annual Review of Earth Planetary Science 21 (1994) 89–114.
+A. Guha, Transport and Deposition of Particles in Turbulent and Laminar Flow, Annual Review of Fluid Mechanics 40 (1) (2008) 311–341.
+M. Maxey, J. Riley, Equation of motion for a small rigid sphere, Physical Fluids 24 (4) (1983) 883–889.
+O. Al-Khayat, A. M. Bruaset, H. P. Langtangen, A lumped particle modeling framework for simulating particle transport in ﬂuids, Communications in Computational Physics 8 (1) (2010) 115–142.
+M. Frank, D. Anderson, E. Weeks, J. Morris, Particle migration in pressure-driven ﬂow of a brownian suspension, Journal of Fluid Mechanics
+493 (2003) 363–378.
+C. Marchioli, M. Picciotto, A. Soldati, Inﬂuence of gravity and lift on particle velocity statistics and transfer rates in turbulent vertical channel
+ﬂow, International Journal of Multiphase Flow 33 (3) (2007) 227–251.
+STREAM: Sustainable memory bandwidth in high performance computers, http://www.cs.virginia.edu/stream/.
+PAPI: Performance application programming interface, http://icl.cs.utk.edu/papi/.
+P. G. Saﬀman, The lift on a small sphere in a slow shear ﬂow, Journal of Fluid Mechanics 22 (02) (1965) 385–400.
+
+

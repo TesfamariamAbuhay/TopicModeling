@@ -1,0 +1,762 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 1848–1857
+ICCS 2015 International Conference On Computational Science
+
+Developing A Large Time Step, Robust, and Low
+Communication Multi-Moment PDE Integration Scheme
+for Exascale Applications
+Matthew R. Norman
+Oak Ridge National Laboratory, Oak Ridge ,TN, USA
+normanmr@ornl.gov
+
+Abstract
+The Boundary Averaged Multi-moment Constrained ﬁnite-Volume (BA-MCV) method is derived, explained, and evaluated for 1-D transport to assess accuracy, maximum stable time
+step (MSTS), oscillations for discontinuous data, and parallel communication burden. The
+BA-MCV scheme is altered from the original MCV scheme to compute the updates of point
+wise cell boundary derivatives entirely locally. Then it is altered such that boundary moments
+are replaced with the interface upwind value. The scheme is stable at a maximum stable CFL
+(MSCFL) value of one no matter how high-order the scheme is, giving signiﬁcantly larger time
+steps than Galerkin methods, for which the MSCFL decreases nearly quadratically with increasing order. The BA-MCV method is compared against a SE method at varying order, both
+using the ADER-DT time discretization. BA-MCV error for a sine wave was comparable to
+the same order of accuracy for a SE method. The resulting large time step, multi-moment, low
+communication scheme is of great interest for exascale architectures.
+Keywords: MCV , multi-moment, ﬁnite-volume, ADER, transport
+
+1
+
+Introduction
+
+For exascale applications, improvement in computing infrastructure alone is not going to cut it.
+If anything, given the increase in the hierarchical nature of emerging computing and especially
+the rising cost of data movement, the need for new numerical integration algorithms is now
+paramount. Yet, the constraints on new algorithms are often conﬂicting. Making a choice to
+address one constraint often poorly aﬀects another. Developing a method that balances these
+constraints in a new way can be elusive.
+For reasons of data reuse and compute intensity, higher-order methods are likely better
+suited for current and emerging platforms. However, for unresolved ﬂows with discontinuities
+and / or shocks, these methods must be able to be limited in a way that gives sharp resolution of
+discontinuities as well as high-order convergence for smoother sections of ﬂow. Often, however,
+1848
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.413
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Norman
+
+limiting comes at high cost in terms of accuracy and parallel communication. Neighboring information is always necessary, and accuracy is reduced for the sake of robustness. Furthermore,
+multi-moment high-order methods are of interest for future architectures because reconstruction
+of intra-cell variation can be performed without any parallel communication. They also experience exponential increase in accuracy with increasing order more quickly than single-moment
+methods because the DOFs are closer to the region of sampling. However, they tend to come
+at the cost of drastically reduced time steps and more cumbersome limiting techniques.
+
+Multi-moment schemes have come in increasing varieties in recent decades. Traditionally,
+there was the Finite-Element method, but it suﬀers the problem of global support in the basis
+functions, requiring a global linear solve. Galerkin methods bring signiﬁcantly greater locality
+to the multi-moment realm by decoupling the basis functions such that they have local support
+only [1, 3, 6]. Many Galerkin schemes also exhibit a minimal parallel data transfer property
+in that, when properly constructed, only the boundary moments must be communicated to
+perform an update. All Eulerian, time-explicit, Galerkin schemes suﬀer a nearly quadratic
+reduction in the MSTS with increasing element order.
+
+There are also Spectral Volume (SV) [12] schemes, which often deliver larger MSTSs than
+comparable-order Galerkin methods. Still, the MSTS decreases somewhere between quadratically and linearly for each of these methods. There are Constrained Interpolation Proﬁle (CIP)
+[13] and Multi-moment Constrained ﬁnite-Volume (MCV) [5] schemes as well, many of which
+show positive time step properties that are larger than comparable-order Galerkin schemes,
+but the MSTS still decreases with increasing order for Eulerian formulations. There do exist
+semi-Lagrangian and characteristics-based MCV schemes, which do not suﬀer the same time
+step degradation [4], but they can only be applied to non-linear multi-dimensional systems via
+dimensional splitting, and a more widely applicable technique is desired. The Multi-Moment
+Finite-Volume (MMFV) [9, 8] method has the fortunate property that the MSTS remains at the
+linear CFL criterion of 1/D, where D is the spatial dimensionality, no matter how high-order
+it is. However, it also oscillates wildly for even remotely non-smooth ﬂows, likely due to how
+loosely coupled the DOFs are as they’re evolved.
+
+The goal of this study is to introduce a new multi-moment method, the Boundary-Averaged
+Multi-moment Constrained ﬁnite-Volume (BA-MCV), which has a Maximum Stable CFL
+(MSCFL) value of one in 1-D no matter how high-order, has low parallel data transfer requirements, and is robust without explicit limiting even for discontinuous data in the linear
+case. It is easily tensored into multiple dimensions for non-linear systems due to its strictly
+Eulerian formulation. Rather than simply deﬁning the method, the goal is to demonstrate how
+various design choices aﬀected the overall scheme. The focus is on the spatial operator, and
+therefore the temporal operator for all methods implemented and tested will be the ADER-DT
+time discretization, which is a scalable single-stage, single-step arbitrarily high-order time integrator that cheaply forms space-time polynomials of all PDE terms, removing the need for
+quadrature [8, 11, 9]. Also, with ADER-DT, the temporal order of accuracy always matches
+the spatial. The 1-D transport equation will be the testbed as well, to allow for a more in depth
+view of the schemes. While the BA-MCV scheme can be limited, at least with WENO [10, 7],
+limiting is also outside the scope of this study.
+1849
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Order
+MSCFL
+BA-MCV Mult
+
+2
+1
+1x
+
+3
+0.41
+2.4x
+
+4
+0.23
+4.35x
+
+5
+0.14
+7.1x
+
+6
+0.099
+10.1x
+
+7
+0.072
+13.9x
+
+Norman
+
+8
+0.055
+18.2x
+
+9
+0.043
+23.3x
+
+10
+0.034
+29.4x
+
+Table 1: MSCFL values for diﬀerent orders of accuracy for the ADER-DT SE method as well
+as the factor by which the BA-MCV time step is larger.
+
+2
+
+Numerical Methods
+
+2.1
+
+Reference SE Scheme
+
+For reference, an SE scheme is implemented up to tenth-order accuracy. A test function is
+ﬁrst applied to the PDE. Then, it is then integrated over the global domain, and the periodic boundary conditions rid the need to apply the boundary Dirichlet ﬂux terms. Then, the
+variational constraint is kept globally by applying it to a series of individual elements. Next,
+the test function is assumed to belong to a series of unit Lagrange interpolating polynomials
+set on a Gauss-Legendre-Lobatto (GLL) grid within each element. The solution is assumed to
+belong to the same space as the test function, and the mass and stiﬀness matrices are approximated using GLL quadrature on the same GLL grid. This leads to an inexact and diagonal
+mass matrix. Finally, boundary values are replaced with the average from adjacent elements
+after the fact to facilitate communication between elements. While this violates conservation,
+it does not signiﬁcantly aﬀect accuracy, and it increases the MSTS by 30-50% when coupled
+with the ADER-DT time integrator. Also, one could implement a mimetic averaging operator
+that maintains continuity, but this doesn’t signiﬁcantly aﬀect accuracy, so it is not considered
+herein. The MSCFL values for the ADER-DT SE scheme are listed in Table 1. The MSCFL
+values for BA-MCV and SE in Table 1 are computed through a harmonic stability analysis.
+
+2.2
+
+Variations of the MCV Scheme
+
+Consider a PDE system in 1-D: ∂q/∂t + ∂f /∂x = 0, subject to the initial condition q (x, 0) =
+q0 (x), on a periodic domain. A uniform, Cartesian grid is composed of non-overlapping cells,
+Ωi ∈ xi−1/2 , xi+1/2 , where xi±1/2 = xi ± Δx/2. The discrete degrees of freedom are cellintegrated averages and a series of point values and derivatives located at cell interfaces. They
+are deﬁned as:
+ˆ
+1
+∂ m q (x, tn )
+(m)±
+q i,n =
+q (x, tn ) dx ; qi,n =
+; m≥0
+(1)
+Δx Ωi
+∂xm
+x=xi±1/2
+2.2.1
+
+Original MCV Scheme
+
+The original MCV scheme does not directly evolve the DOFs deﬁned in (1). Rather, it evolves
+∗
+a set of nodal point values deﬁned on a regularly spaced grid, qi,ξ
+, where ξ ∈ {1, . . . , N } and
+N is the order of accuracy of the scheme. Here, GLL point values are used, but this has no
+substantive diﬀerence in the solution, since it is determined by the constraints, not the nodal
+point locations. The local variation is reconstructed by interpolating Lagrange polynomials
+∗
+from qi,ξ
+. The DOFs themselves would typically be evolved as follows:
+q i,n+1 = q i,n −
+1850
+
+Δt
+Fi+1/2,n − Fi−1/2,n
+Δx
+
+;
+
+(m)±
+
+(m)±
+
+qi,n+1 = qi,n
+
+(m+1)
+
+− ΔtFi±1/2,n
+
+;
+
+m≥0
+
+(2)
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Norman
+
+(m)
+
+where Fi−1/2,n is the the upwind, time-averaged, mth-order derivative of the ﬂux that is computed from a local space-time polynomial of the ﬂux, fi,n (x, t), which itself is computed using
+Diﬀerential Transforms (DTs), see [9, 2, 8]. A third-order-accurate MCV scheme, for instance,
+(0)−
+(0)+
+would constrain the DOFs, q i,n , qi,n , and qi,n . A ﬁfth-order-accurate scheme would con(0)−
+
+(0)+
+
+(1)−
+
+(1)+
+
+strain q i,n , qi,n , qi,n , qi,n , and qi,n . Higher-order schemes are constructed likewise, by
+constraining higher- and higher-order pointwise derivatives of q at the boundary. The schemes
+will be denoted as MCV-M -N , where M is the number of unique DOFs and N is the order
+of accuracy. Note that the cell average is evolved in weak form and the pointwise derivatives,
+(m)±
+qi,n , are evolved in strong form via spatial derivatives of the PDE. This is why all MCV
+schemes are exactly mass conserving. Since a set of nodal values are being evolved instead of
+(m+1)
+these DOFs, however, the tendencies, − (Δt/Δx) Fi+1/2,n − Fi−1/2,n and −ΔtFi±1/2,n , are
+computed and then cast into tendencies for the nodal points via a matrix-vector multiply. See
+[5] for more details. The nodal points are then updated directly via the transformed tendencies.
+Because of the FV constraint, the method is locally mass conserving, and the nodal points are
+convenient for applying physics and other treatments since it is just a set of nodal point values.
+One of the downsides to this formulation of the scheme is that it is highly oscillatory for
+discontinuous data when implemented at higher-than-ﬁfth-order accuracy, as shown in Figure
+1a. The ﬁfth-order-accurate scheme is well-bounded, but the seventh-order-accurate scheme is
+far too oscillatory. So some measures must be taken to introduce more implicit diﬀusion if the
+scheme is going to be useful at higher orders of accuracy.
+2.2.2
+
+Directly Evolving the DOFs
+
+In order to take these measures, the scheme ﬁrst must be cast such that it directly evolves
+the same DOFs that it constrains. Therefore, the scheme is altered such that the evolution
+equations (2) are used directly. This gives results that diﬀer from nodal points by a relative
+order of 10−12 in the L1 error norm, showing the equivalence of directly evolving DOFs versus
+evolving nodal values, as well as the equivalence of where these point values are placed.
+2.2.3
+
+Averaging Boundary Pointwise Moments
+
+To facilitate a tighter coupling between cells, the boundary pointwise derivatives were averaged
+together to ensure they are shared between cells at each time step. A straightforward linear
+average is used. The reduction in oscillations is substantial when using this technique, and
+it is shown in Figure 1b. Most notably, the oscillations do not propagate as far from the
+discontinuity. However, they are still fairly large for this order of accuracy.
+In truth, all that is necessary for boundary DOFs to be shared between adjacent cells is that
+they merely be equal at the beginning. This is because they share a common ﬂux. However,
+if one wished to locally limit the DOFs using something such as WENO, for instance, then
+boundary DOFs are no longer guaranteed to be equal, and they must be averaged after every
+step.
+2.2.4
+
+Using Upwind Averaging
+
+Therefore, given how upwinding usually introduces a measure of implicit diﬀusion into the
+solution, instead of using straightforward average, an upwind value is used at each interface. In
+non-linear systems, this would correspond to the locally frozen Godunov state. This decreases
+1851
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+2
+
+2
+
+1
+
+1
+q(x)
+
+3
+
+q(x)
+
+3
+
+Norman
+
+0
+
+0
+
+-1
+
+-2
+
+-1
+Exact
+5th
+7th
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+-2
+
+0.7
+
+(a) MCV-3-5 and MCV-4-7
+
+Exact
+7th Orig
+7th Avg
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+0.7
+
+(b) MCV-4-7 (“Orig”) and the same scheme with
+(m)±
+linear averaging of qi,n
+(“Avg”).
+
+3
+
+2
+
+q(x)
+
+1
+
+0
+
+-1
+
+-2
+
+Exact
+7th Avg
+7th Upwind
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+0.7
+
+(m)±
+
+(c) MCV-4-7 with linear averaging of qi,n
+and then using upwind values of
+
+(m)±
+qi,n
+
+(“Avg”)
+
+(“Upwind”).
+
+Figure 1: Plots of square wave revolved three times about the domain using 50 cells using a
+CFL value of 0.9 with varying numerical methods.
+
+oscillations much further still without aﬀecting accuracy for smoother ﬂows, as shown in Figure
+1c.
+
+2.2.5
+
+Entirely Local Pointwise Updates
+
+The downside to using averaging in the ﬁrst place is that it introduces extra parallel communication. When averaging, one must communication 2M − 1 diﬀerent values per cell interface,
+where M is the number of unique moments, and the order of accuracy is N = 2M − 1. This
+is because M values must be communicated for interface ﬂuxes to the constraints, and M − 1
+extra values must be communicated for the averaging of the boundary pointwise derivatives.
+If the updates for the pointwise derivatives are computed entirely locally, however, instead of
+using upwind ﬂuxes, the scheme’s parallel communication is reduced by almost 2x and becomes
+simply M values per time step per interface. Also, this does not appreciably aﬀect the solution,
+as it only changes by a relative order of 10−13 in experiments. Therefore, in the ﬁnal scheme,
+the pointwise interface derivatives are updated using only the local polynomial.
+1852
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+BA-MCV Order
+Equivalent SE Order
+
+3
+3-4
+
+5
+5
+
+7
+6-7
+
+9
+8
+
+Norman
+
+11
+9-10
+
+Table 2: Roughly equivalent SE orders of accuracy for a given BA-MCV order of accuracy.
+
+3
+
+Results and Discussion
+
+For evaluating the BA-MCV schemes, the linear transport equation, ∂t q + ∂x q = 0, will be
+used. Unless otherwise speciﬁed, each simulation will advect a square wave three times about
+the domain of [0, 1]. The BA-MCV schemes will use a CFL value of 0.9 is all simulations. The
+SE schemes will use CFL values at 90% of the values reported in Table 1.
+
+3.1
+
+Accuracy
+
+A single-period sine wave is advected across the periodic domain three times. The BA-MCV
+method exhibits exponential error decrease with increasing order, as would be expected of
+any multi-moment method. In fact, it increases at a rate substantially faster than SE when
+comparing the number of unique DOFs per cell (see Figure 2a). However, when comparing
+error to the order of accuracy, then BA-MCV errors and SE errors behave similarly, and the
+BA-MCV errors are somewhat less accurate. Though it depends heavily on the smoothness of
+the data at hand, one can establish a rough equivalence between the two schemes in terms of
+error and order of accuracy for this test at least. This is given in Table 2.
+
+3.2
+
+Oscillations / Robustness
+
+In Figure 3, a plot of the square wave advected three times about the periodic domain is
+given for each of the BA-MCV and SE schemes in order to show the magnitude of oscillations
+that develop from each of the schemes. The BA-MCV schemes are very well behaved up to
+ninth-order accuracy. At eleventh-order accuracy, the oscillations become somewhat larger,
+up to about 50% of the jump magnitude. At thirteenth- and ﬁfteenth-order accuracy, the
+oscillations become signiﬁcantly larger. The SE method’s oscillations do not become much
+larger with increasing order. Note that when the square wave is slightly relaxed as in Figure
+4, the oscillations quickly reduce for the eleventh- through ﬁfteenth-order-accurate functions.
+So any limiting method used to reduce oscillations for these methods should maintain the high
+resolution of steep data proﬁles.
+
+3.3
+
+Parallel Considerations
+
+An N th-order-accurate BA-MCV scheme must transfer (N + 1) /2 values per cell interface per
+time step across a domain decomposition boundary. While this is not the optimal case of only
+having to communicate the boundary values per time step as is the case with the SE method, it
+is still low, and it is only nearest neighbor communication. Given the time step, the BA-MCV
+scheme has substantially less communication per length of simulation time than the SE method.
+There is also potential for communication overlap, even within a single cell. The updates for
+the boundary DOFs are entirely local, and they do not depend on one another. Therefore, the
+transfer of one boundary DOF can be performed as soon as it is updated, and that transfer can
+be overlapped with the local update of the next boundary DOF in a staged manner.
+1853
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Norman
+
+(a) L1 error as a function of the number of unique DOFs.
+
+(b) L1 error as a function of the order of accuracy.
+
+Figure 2: p-reﬁnement plots for SE and BA-MCV schemes for three revolutions of a singleperiod sine wave about the domain using three cells. y-axes are log-scaled, and straight lines
+denote exponential error reduction.
+
+1854
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+1.5
+
+Norman
+
+3
+
+2
+1
+
+q(x)
+
+q(x)
+
+1
+0.5
+
+0
+
+0
+
+-0.5
+
+Exact
+BA-MCV-2-3
+BA-MCV-3-5
+BA-MCV-4-7
+BA-MCV-5-9
+0.3
+
+0.4
+
+-1
+
+0.5
+x location
+
+0.6
+
+Exact
+BA-MCV-6-11
+BA-MCV-7-13
+
+-2
+
+0.7
+
+0.3
+
+(a) BA-MCV-2-3, BA-MCV-3-5, BA-MCV-4-7, and
+BA-MCV-5-9
+
+0.4
+
+0.5
+x location
+
+0.6
+
+0.7
+
+(b) BA-MCV-6-11 and BA-MCV-7-13
+
+1.5
+8
+6
+1
+4
+
+q(x)
+
+q(x)
+
+2
+0
+
+0.5
+
+-2
+0
+
+-4
+-6
+-8
+
+Exact
+BA-MCV-8-15
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+-0.5
+
+0.7
+
+(c) BA-MCV-8-15
+
+Exact
+2nd
+3rd
+4th
+5th
+6th
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+0.7
+
+(d) SE methods at 2nd thorugh 6th-order accuracy.
+
+1.5
+
+q(x)
+
+1
+
+0.5
+
+0
+
+-0.5
+
+Exact
+7th
+8th
+9th
+10th
+0.3
+
+0.4
+
+0.5
+x location
+
+0.6
+
+0.7
+
+(e) SE methods at 7th thorugh 10th-order accuracy.
+
+Figure 3: Plots of square wave revolved three times about the domain using 50 cells with varying
+methods. Note that each subﬁgure has a diﬀerent scale on the y-axis.
+
+1855
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Norman
+
+1.5
+
+q(x)
+
+1
+
+0.5
+
+0
+
+-0.5
+
+Exact
+BA-MCV-6-11
+BA-MCV-7-13
+BA-MCV-8-15
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+x location
+
+Figure 4: 11th- through 15th-order BA-MCV using 0.5 [tanh (m (x − 0.4)) − tanh (m (x − 0.6))]
+with m = 400 as initial data with 50 cells and three revolutions.
+
+4
+
+Conclusions
+
+The BA-MCV scheme has been developed and explained in regard to how it diﬀers from existing
+MCV methods and why certain design choices were made in the algorithm. In all, it has been
+shown to be exponentially convergent and roughly as accurate as the SE method, given the same
+order of accuracy. However, the BA-MCV time step remains at a MSCFL value of one no matter
+how high-order the scheme is and no matter how many unique DOFs per cell are evolved. The
+BA-MCV scheme remains well bounded up to eleventh-order accuracy as well, and past that,
+hyperdiﬀusive and other limiters must be applied to control oscillations when discontinuous
+data is present. This scheme is particularly useful because of the time step remaining constant
+with p-reﬁnement. For instance, one can construct an eleventh-order-accurate BA-MCV scheme
+that is almost as accurate as a tenth-order-accurate SE method but with almost a 30x larger
+time step, resulting in a signiﬁcantly cheaper method with comparable accuracy. This gives
+much greater motivation to pursuing p-reﬁnement for throughput and eﬃciency purposes as
+well as parallel scalability arguments through compute intensity and threading potential on
+accelerated devices.
+In future work, the ﬁrst task is to implement the BA-MCV method in two spatial dimensions
+and see if it maintains these positive time step properties compared to the one-dimensional
+versions presented herein. Further, HWENO limiters will be applied to demonstrate that,
+when altering local DOFs using HWENO approximations, the overall scheme greatly reduces
+spurious oscillations in the presence of discontinuous data for linear and non-linear ﬂow. Finally,
+the method will be applied to non-linear systems of conservation laws to test accuracy and
+robustness in a more challenging context.
+
+Acknowledgments
+This study used the Sage open-source mathematical software system, a free, GPL-licensed,
+open-source codebase.
+This research used resources of the National Center for Computational Sciences at Oak
+Ridge National Laboratory, which is supported by the Oﬃce of Science of the U.S. Department
+of Energy under Contract No.DE-AC05-00OR22725.
+1856
+
+Large Time Step, Low Communication Multi-Moment Scheme for Exascale
+
+Norman
+
+References
+[1] Bernardo Cockburn and Chi-Wang Shu. TVB runge-kutta local projection discontinuous galerkin
+ﬁnite element method for conservation laws. II. general framework. Mathematics of Computation,
+52(186):411–435, 1989.
+[2] Hal Finkel. An iterated, multipoint diﬀerential transform method for numerically evolving partial
+diﬀerential equation initial-value problems. Computational Science & Discovery, 5(1):014001, 2012.
+[3] Jan S. Hesthaven and Tim Warburton. Nodal discontinuous Galerkin methods: algorithms, analysis, and applications, volume 54. Springer, 2007.
+[4] Satoshi Ii and Feng Xiao. CIP/multi-moment ﬁnite volume method for euler equations: A semilagrangian characteristic formulation. Journal of Computational Physics, 222(2):849–871, 2007.
+[5] Satoshi Ii and Feng Xiao. High order multi-moment constrained ﬁnite volume method. part i:
+Basic formulation. Journal of Computational Physics, 228(10):3669–3707, 2009.
+[6] George Karniadakis and Spencer Sherwin. Spectral/hp element methods for computational ﬂuid
+dynamics. Oxford University Press, 2013.
+[7] Xu-Dong Liu, Stanley Osher, and Tony Chan. Weighted essentially non-oscillatory schemes. Journal of computational physics, 115(1):200–212, 1994.
+[8] M. R. Norman. Algorithmic improvements for schemes using the ADER time discretization.
+Journal of Computational Physics, 243(15):176–178, 2013.
+[9] M. R. Norman and H. Finkel. Multi-moment ADER-taylor methods for systems of conservation
+laws with source terms in one dimension. Journal of Computational Physics, 231(20):6622–6642,
+2012.
+[10] Matthew R. Norman. Hermite WENO limiting for multi-moment ﬁnite-volume methods using
+the ADER-DT time discretization for 1-d systems of conservation laws. Journal of Computational
+Physics, 2014.
+[11] Matthew R. Norman. A WENO-limited, ADER-DT, ﬁnite-volume scheme for eﬃcient, robust, and
+communication-avoiding multi-dimensional transport. Journal of Computational Physics, 2014.
+[12] Zhi Jian Wang. Spectral (ﬁnite) volume method for conservation laws on unstructured grids. basic
+formulation: Basic formulation. Journal of Computational Physics, 178(1):210–251, 2002.
+[13] Takashi Yabe, Feng Xiao, and Takayuki Utsumi. The constrained interpolation proﬁle method for
+multiphase analysis. Journal of Computational Physics, 169(2):556–593, 2001.
+
+1857
+
+

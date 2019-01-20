@@ -1,0 +1,559 @@
+Evaluating the Jaccard-Tanimoto Index on
+Multi-core Architectures
+Vipin Sachdeva1 , Douglas M. Freimuth2 , and Chris Mueller3
+1
+
+3
+
+IBM Future Technologies Design Center, Indianapolis, IN
+vsachde@us.ibm.com
+2
+IBM Watson Research Center, Hawthorne, NY
+dmfreim@us.ibm.com
+Pervasive Technologies Labs and University Information Technology Services,
+Indiana University, Bloomington, IN
+chemuell@cs.indiana.edu
+
+Abstract. The Jaccard/Tanimoto coeﬃcient is an important workload,
+used in a large variety of problems including drug design ﬁngerprinting,
+clustering analysis, similarity web searching and image segmentation.
+This paper evaluates the Jaccard coeﬃcient on three platforms: the Cell
+Broadband EngineTM processor Intel R Xeon R dual-core platform and
+Nvidia R 8800 GTX GPU. In our work, we have developed a novel
+parallel algorithm specially suited for the Cell/B.E. architecture for all-to-all Jaccard comparisons, that minimizes DMA
+transfers and reuses data in the local store. We show that our
+implementation on Cell/B.E. outperforms the implementations on comparable Intel platforms by 6-20X with full accuracy, and from 10-50X in
+reduced accuracy mode, depending on the size of the data, and by more
+than 60X compared to Nvidia 8800 GTX. In addition to performance,
+we also discuss in detail our eﬀorts to optimize our workload on these
+architectures and explain how avenues for optimization on each architecture are very diﬀerent and vary from one architecture to another for our
+workload. Our work shows that the algorithms or kernels employed for
+the Jaccard coeﬃcient calculation are heavily dependent on the traits of
+the target hardware.
+
+1
+
+Introduction
+
+Recent years have seen a resurgence in the number of hardware choices available
+to programmers. Multi-core processor architecture cores, which have multiple
+processing elements on a single chip are now the norm of the industry [1]. A
+vast number of hardware choices are now available to a high-performance computing programmer: general-purpose processors available from IBM, AMD and
+Intel have upto 8 cores, Cell/B.E. architecture has 8 special vector cores called
+SPEs and a PPC core called PPE, and more recently GPUs, capable of running hundreds of threads, primarily meant for graphics processing tasks are
+also being evaluated for high-performance computing. This has very important
+implications for many industries, which could now accelerate their workloads
+G. Allen et al. (Eds.): ICCS 2009, Part I, LNCS 5544, pp. 944–953, 2009.
+c Springer-Verlag Berlin Heidelberg 2009
+
+Evaluating the Jaccard-Tanimoto Index on Multi-core Architectures
+
+945
+
+using these multi-core chips, and thus not relying only on single-thread performance. One such workload, which could beneﬁt from multi-core technology
+is the Jaccard-Tanimoto index [2], which is is a correlation coeﬃcient for
+determining the similarity between two binary strings, or bit vectors. Jaccard
+coeﬃcient ﬁnds it’s application in a wide variety of areas such as drug design
+[3], similarity searching on the Internet [4], ﬁnancial applications [5] and social
+network analysis [6].
+
+2
+
+Jaccard Coeﬃcient: Sequential and Parallel Algorithm
+
+The Jaccard coeﬃcient is mathematically deﬁned as follows: given two equal
+length bit vectors x and y, with entries indexed from 0 to n, the Jaccard index
+computes:
+c
+Jaccard =
+a+b+c
+Computationally for 2 vectors x and y, c is the number of bits set in the and
+product , and a + b is the number of bits set in the xor product of the 2 vectors
+x and y.
+
+Algorithm 1: Jaccard Index: All-to-all kernel computation
+Data : (1) n vectors S1 , S2 , . . . . Sn each of length b
+Result: The Jaccard index J(i, j) obtained by computing the Si vector
+with the Sj vector, i ≤ n, j ≤ n.
+begin
+k=0
+(1) for (i = 0; i ≤ n; i = i + 1) do
+(2) for (j = i + 1; j ≤ n; j = j + 1) do
+(2.1) J(k) = J(Si , Sj )
+k =k+1
+end
+
+Algorithm 1 shows the overall Jaccard computation, in which every binary
+vector is being compared with every other vector; henceforth, we will refer to
+the computation in Algorithm 1 as the Jaccard workload. As can be seen,
+the Jaccard workload does not have any dependence among the values being
+stored at the diﬀerent locations, since we can precompute the address of storing
+−
+of any coeﬃcient Jij independently; the index for storing the (i, j) is ni− i(i+1)
+2
+i − 1 + j.
+Algorithm 2 shows an optimal parallel load-balanced approach which assigns
+all the vector comparisons of n elements in a queue, and divides the queue
+elements equally among the processing elements p.
+
+946
+
+V. Sachdeva, D.M. Freimuth, and C. Mueller
+
+Algorithm 2: Parallel Jaccard Algorithm
+Data : (1) n vectors S1 , S2 , . . . . Sn each of length b
+(2) Threads having ID’s 1, 2 .... thread max
+(3) An output array J for storing the Jaccard coeﬃcients
+(4) A queue Q of length n(n−1)
+2
+Result: The Jaccard index S(i, j) obtained by aligning the Si vector with
+the Sj vector, i ≤ n, j ≤ n.
+begin
+k=0
+queue length = n(n−1)
+2
+(1) for (i = 0; i ≤ n; i = i + 1) do
+(2) for (j = i + 1; j ≤ n; j + 1) do
+(2.1) Q[k].f irst = Si
+(2.2) Q[k].second = Sj
+(2.3) Q[k].f irst element = i
+(2.4) Q[k].second element = j
+(2.5) k + +
+(2) for (i = thread id; i ≤ queue length; i = i + thread max) do
+(2.1) i = Q[i].f irst element
+(2.2) j = Q[i].second element
+− i − 1 + j] = J(Q[i].f irst, Q[i].second)
+(2.3) J[ni − i(i+1)
+2
+end
+
+3
+
+Jaccard Index on Multi-core Architectures
+
+3.1
+
+Jaccard Index on the Cell/B.E. Architecture
+
+The Jaccard-Tanimoto kernel for two vectors x and y, essentially consists of
+summing the bits in the and product and the xor product of the two vectors
+over their entire lengths, and dividing the bits set in the and product by this
+sum, in single precision. Mathematically,
+Jaccard =
+
+count bits(x and y)
+count bits(x and y) + count bits(x xor y)
+
+where count bits speciﬁes the number of bits set to 1 in the vector. This kernel
+can be thus broken up into 4 primary operations:
+– Computing the and (and xy) and the xor (xor xy) product of the 2 vectors
+along their entire lengths, where and xy and xor xy are the vectors denoting
+the and and the xor product of the two vectors.
+– Counting the bits set in and xy and xor xy, to obtain bits and xy and
+bits xor xy.
+
+Evaluating the Jaccard-Tanimoto Index on Multi-core Architectures
+
+947
+
+– Summing bits and xy and bits xor xy to obtain bits sum xy.
+– Divide bits and xy by bits sum xy, and typecast the value as float to obtain
+jaccard xy.
+SPEs have instruction support for 128-bit and and xor products, which can then
+be used for the ﬁrst operation, deﬁned previously. Step 2 is the pop-count operation used in several important kernels, along with Jaccard coeﬃcient. There are
+several known algorithms for pop-count on general-purpose purpose processors,
+as we discuss in Section 4, but we make use of the cntb [7] instruction which is
+part of the SPE instruction set. The cntb counts the number of ones in a byte,
+which can then be used to count the bits in the and and the xor product of
+the two vectors. The cntb instruction applies to 128-bit values, and for a 128-bit
+number x will return 16 8-bit values in the 128-bit result, each 8-bit value denoting the number of ones in the 8-bits of the input vector. The vectors bits and xy
+and bits sum xy need to be then summed across their 128 bit lengths to count
+the total number of ones in the entire 128-bit vector.
+Our current implementation for summing the bits uses sumb instruction across
+two vectors (in our case bits and xy and bits xor xy), with appropriate shuﬄing
+using the si shufb instruction In case the length of the input vectors is more
+than 128 bits (in our case it is 256 bits), this process needs to be repeated in
+blocks of 128 bits each, until the entire input vector length is ﬁnished. Using
+this approach, we are able to compute two vectors of type vector short, the last
+elements of which are total bits and xy and total bits xor xy respectively. cuflt
+instruction, to change the vector int vectors to the vector float types. We extract
+the last elements of each of the sum vectors using the instruction shli, and then
+perform a scalar division, to return the result. This scalar division operation takes
+up more than 50% of the cost of the entire kernel in the SPE pipeline, excluding
+the DMA costs. We could also return the results to a lesser accuracy upto 12
+bits, and then keep the entire kernel fully SIMDized: this could be implemented
+by computing the reciprocal estimate of the vector containing total bits xor xy,
+and then multiplying it by the vector containing total bits and xy, to ﬁnd an
+approximated Jaccard coeﬃcient. The advantage of this strategy is that the
+kernel is fully SIMDized, however at the expense of accuracy. . We show the
+results for both these approaches in the Section 6.
+A Novel Parallel Jaccard Algorithm on Cell/B.E. architecture. Our
+parallel algorithm on Cell/B.E. for all-to-all comparisons ﬁnds a substantially
+optimal parallel solution through a runtime comparison of work allocated to
+every SPE.
+Given n vectors numbered 0 to n − 1, we divide the Jaccard workload as
+follows: The vectors are divided amongst the SPEs by allocating nvecs to each
+SPE in a round-robin fashion. A result vector of size nvecs ﬂoating point values
+is also allocated in the each of the SPU local store. When the ﬁrst nvecs (we call
+them master vectors) are DMAed to the SPE local store, the SPE computes the
+Jaccard coeﬃcient within each pair of the nvecs vectors. The result array for
+each ith vector (comparisons from (i+1)th to (nvecs−1) vectors) is stored to the
+
+948
+
+V. Sachdeva, D.M. Freimuth, and C. Mueller
+
+PPU memory, before the computation for vector i + 1 begins. Each of the result
+values of (i, j) Jaccard comparison are actually 16-bytes to allow DMAs from
+any (i, j) value to the PPE memory. Before these all-to-all computations among
+nvecs vectors are completed, another DMA request for the next nvecs ( nvecs
+to 2 ∗ nvecs − 1 indices) are sent: we call them slave vectors. Once the Jaccard
+computation among every pair in the master vectors is completed, the Jaccard
+coeﬃcient among this new set of nvecs vectors (called slave vectors) and the
+master vectors is then initiated. This process of streaming in the nvecs vectors
+(slave vectors is repeated, until the entire set of n vectors in completed. Once
+the entire set of the slave vectors is completed, the next set of master vectors is
+streamed in; this process is continued until the end when all the computations
+are ﬁnished. Thus through this approach, we ﬁnd the unique solution that maximizes reuse of the data streamed into the local store of the processing element.
+We perform all-to-all comparisons among every set of vectors that is streamed
+into the local store of the processing element, i.e. the master vectors (when they
+are streamed in), and then also between the master vectors and the slave vectors. This leads to maximal reuse of the data. In addition, our algorithm overlaps
+computation with communication to hide the latency of the data. For example,
+data is DMAed from main memory such that it arrives when comparisons among
+other data are being performed, e.g., when comparisons among master vectors
+are being performed, the slave vectors are being DMAed into the local store of
+the processing element. When one set of slave vector computations has started,
+the next set of slave vectors are already being streamed into the local store. In
+our experimental results, we actually vary the nvecs variable with the number
+of SPEs, to show the optimal number of nvecs variable for the number of SPEs.
+Thus there are competing interests which are balanced by the runtime tests which select an nvecs value that is optimum based on these
+considerations. We show the detailed results of the implementation so far in
+the Section 6, which show that we achieve a super-linear speedup by optimizing
+several characteristics.
+
+4
+
+Jaccard Coeﬃcient on General-Purpose Processors
+
+In the last few years, almost all the hardware manufactures including IBM,
+Intel and AMD have released multi-core general-purpose processors. For our
+comparisons, we decided to evaluate the Intel Xeon 5160 processor, which is a
+dual-core processor. Due to the availability of the scalar and vector registers
+(128 bits), with L1 and L2 caches for data access in general-purpose processors
+[8], there is a high number of algorithms, that we could experiment with for the
+entire Jaccard coeﬃcient calculation and the pop-count operation, in general.
+The fastest approach for the pop-count operation (as shown by runtime tests),
+which leverages the caches on the Xeon, is to precompute the pop-count of
+unsigned numbers upto x bits, and store them in a table. We could then simply
+perform a lookup of the table at the index (equal to the number itself), and ﬁnd
+out directly the number of bits set to 1, for the pop-count. The number x has to
+
+Evaluating the Jaccard-Tanimoto Index on Multi-core Architectures
+
+949
+
+be chosen, considering that a fast access to the table is extremely important for
+this strategy; the Xeon 5160 has an individual 32 KB of L1 cache for each core,
+and a shared 4 MB L2 cache shared between two cores. It is important that the
+table ﬁts into the L2 cache atleast, since we are looking at random indices, we do
+not expect the prefetching strategy to work well; for our experiments, we chose
+the table to work for unsigned numbers upto 16-bits, or (216 −1) elements, which
+is 65535 numbers. Each of these numbers are stored as type char datatypes,
+which makes the total size of the table close to 65 KB, which ﬁts the table
+easily into the L2 cache. Thus, for the popcount operation for 256-bit vectors as
+in our input, using the table lookup, we will have to do 16 table lookups each
+for the and and the xor vectors. We could use the table-lookup approach with
+the 128 bit and and the xor operations for the entire Jaccard coeﬃcient. On
+the other hand, we could also use the general-purpose registers for the and and
+the xor operation as well. We could, thus do 64-bit and and xor operations,
+and then perform the pop-count using the table-lookup. It actually turns out
+that not using vector registers is infact faster, due to the overhead of moving
+data from vector registers to the scalar registers. We have manually unrolled the
+loops in using the 64-bit and and the xor operations, for optimal performance
+for the 256-bit vectors. Our implementation is parallelized by POSIX threads
+using Algorithm 2, and we report results for execution on multiple cores of the
+Xeon 5160.
+
+5
+
+Implementation of Jaccard Coeﬃcient on GPUs
+
+In recent years, there have been a number of eﬀorts to use GPUs, as a highperformance computing platform for data-parallel computations. CUDA, recently released by Nvidia allows the programmers to use GPUs for scalable
+computing, without the need of mapping their problem in terms of OpenGL
+APIs. For further details on CUDA, please refer to [9] . On the Nvidia GPU,
+we have partitioned of the problem as explained in Algorithm 2, we now discuss
+some of the details speciﬁc to Nvidia platform. To begin the computation, the
+entire input array which we compute upon, is transferred to the GPU global
+memory using the CUDA APIs. The GPU we evaluated, 8800 GTX has 768 MB
+of global memory, which allows the output and the input arrays to be stored
+prior to the computation, for upto 8192 input vectors. The host CPU allocates
+memory on the GPU using cudaMalloc and transfers the input array to the
+GPU global memory using cudaMemcpy primitive which can be used to transfer
+memory to and from the GPU memory, based on the arguments given to the
+function. The computation is performed by the grid of thread blocks, with the
+number of threads in a block (Db) and the number of blocks in the grid (Dg),
+being speciﬁed as part of the function deﬁnition. These parameters are given in
+command-line by the user, to experiment with these values for optimal kernel
+execution. We allocate each of the input vectors, in a round-robin fashion among
+each thread as shown in Algorithm 2, which then proceeds to do the all-to-all
+computation with all the indices greater than the input vector index.
+
+950
+
+V. Sachdeva, D.M. Freimuth, and C. Mueller
+
+For our workload, we have declared a one-component Db and Dg, which refers
+to the number of threads in a block.
+The global function, which is called by the host, to allocate and and transfer
+memory to the GPU memory, calls a device function, which actually runs the
+kernel of the Jaccard computation. We timed the various kernels on the GPU, to
+ﬁnd out the fastest kernel executing on the GPU: our ﬁnal kernel used is parallel
+bits approach, which uses the right-shift, and and the addition operation, for
+the pop-count operation: these operations are generally considered fast on the
+GPUs. We load the 256-bit input vectors using the built-in vector types uint4,
+since they allow 128-bit load instructions. Storing of the Jaccard coeﬃcients as
+well as loading of the input vectors is still being performed to/from the global
+memory, without trying to use the shared memory resource for this. This, could
+be one of the bottlenecks in our implementation, as access to shared memory is
+much faster than access to the global memory. Due to space constraints, we are
+unable to give any further details on our implementation on GPUs.
+
+6
+
+Results
+
+We show our results for three diﬀerent multi-core architectures: Cell Broadband
+Engine heterogeneous chip, Intel Xeon 5160 and the Nvidia 8800 GTX. Our
+input datasets contain ﬁngerprint bit vectors for 257271 of the compounds in
+the NCI compound database. The bit vectors are 166-bits long, zero padded to
+256 bits. The bit vectors are stored as contiguous with 32 bytes per vector; thus
+the input dataset is more than 8 MB in size.
+6.1
+
+Experimental Setup
+
+For all three platforms, we present results varying the number of input vectors
+and the number of threads on each platform. Our code uses a common set of
+C ﬁles, and are compiled by a GNU Makeﬁle framework for compiling for all
+the three platforms. This common platform makes it easier, for us to work with
+a common code base. The Intel Xeon 5160 was a two-processor system, with
+two Intel Xeon 5160 dual-core processors running at 3.0 Ghz connected through
+a 1.33 Ghz system bus. Each dual-core has a 4 MB L2 cache, and a 32 KB
+L1 cache for data and a 32 KB L1 for instructions. Our platform for the Cell
+Broadband Engine uses the IBM BladeCenter QS21; QS21 has 2 Cell Broadband
+Engine chips running at 3.0 Ghz, that are also part of the Playstation 3. The
+GPU platform is Nvidia 8800 GTX, which has 16 multiprocessors, with the size
+of the global memory as 768 MB. The shared memory used among threads in
+a block is 16 KB, and the number of registers per multiprocessor is 8192. The
+host system is Intel Core 2 Quad CPU with more than 2 GB of memory, and
+runs Fedora Core 7 kernel 2.6.23. The host ﬁles were compiled with gcc version
+4.1.2, and the CUDA ﬁles were compiled with nvcc version 1.1, the object ﬁles
+(CUDA and C) were linked in with gcc.
+
+Evaluating the Jaccard-Tanimoto Index on Multi-core Architectures
+
+951
+
+Table 1. Performance of Intel Xeon
+
+Number of In- Threads
+put Vectors
+2048
+1
+2
+4
+4096
+1
+2
+4
+8192
+1
+2
+4
+
+6.2
+
+Time (in seconds)
+49.76
+27.25
+21.13
+200.87
+105.59
+70.16
+832.21
+408.37
+257.87
+
+Results and Analysis
+
+Table 6.2 shows the results for the Intel Xeon 5160, upto 4 threads. The results
+represent the times for the fastest Jaccard kernel explained in Section 4; we time
+each of the kernels, and the time in the Table 6.2 represent the lowest time of all
+the available kernels. Each of the threads run on a single-core: thus, 2 threads
+are running on a single Intel Xeon 5160 chip, and 4 threads on both the chips.
+The parallelization has been implemented with POSIX threads.
+Table 6.2 shows the results for the QS21 platform, with number of SPEs
+varying from 1 to 16; the times shown represent the best values by varying nvecs
+variable. We time execution on each SPE varying the nvecs variable, and the time
+in the Table 6.2 represent the lowest time for possible values of nvecs. The nvecs
+variable are varied from 16 to 1024 in our experiments, in multiples of 2. For lower
+SPEs, a higher nvecs gives the optimal result, as load-balancing is not of critical
+importance, but for higher SPEs, lower nvecs gives better results. Since each Cell
+Broadband Engine chip has 8 SPEs, 16 SPEs represents running the Jaccard
+coeﬃcient on both the Cell Broadband Engine chips in the QS21. Comparing
+the results to the Intel platform, it is important we do a chip-to-chip comparison:
+thus, results for 4 threads on the Intel platform is equivalent to results
+for 16 SPEs on the Cell Broadband Engine. Table 6.2 shows the times for
+both the full and the reduced accuracy mode; more details on the reducedaccuracy mode were discussed in Section 3.1. The fully SIMDized reducedaccuracy mode, actually is 2-4X faster than the one with the scalar
+division. This is due to two factors: the scalar division on the SPE is actually
+being performed by multiple instructions, and thus ends up taking a signiﬁcant
+time of the total kernel. Also, with the reduced-accuracy mode, we keep the total
+kernel completely SIMDized as well.
+Table 6.2 shows the best results for the Jaccard workload on a single Nvidia
+8800 GTX GPU. We time all possible combinations of threads and blocks; the
+times in Table 6.2 represent the lowest time for all possible combinations varying
+the thread layout (number of threads in a block Db and the number of blocks
+
+952
+
+V. Sachdeva, D.M. Freimuth, and C. Mueller
+Table 2. Performance of Cell/B.E. architecture with varying number of SPEs
+
+Number of In- Number
+put
+SPEs
+Vectors
+2048
+
+4096
+
+8192
+
+1
+2
+4
+8
+16
+1
+2
+4
+8
+16
+1
+2
+4
+8
+16
+
+of Time (in sec- Time (in seconds)
+onds)
+(reduced(fullaccuracy)
+accuracy)
+29.33
+74.50
+16.37
+40.25
+7.148
+19.41
+1.481
+7.96
+.242
+0.815
+77.67
+198.47
+42.846
+107.61
+22.24
+58.13
+10.58
+27.13
+2.758
+10.88
+320.814
+801.18
+163.416
+423.11
+89.15
+219.66
+56.199
+111.13
+23.12
+42.85
+
+Table 3. Performance of Nvidia 8800 GTX
+
+Number of In- Time
+put Vectors
+duced
+curacy)
+seconds
+2048
+148.75
+4096
+587.87
+8192
+2385.14
+
+(reacin
+
+in the grid Dg), in multiples of 2. The debugging switch mentioned before, will
+also compare the GPU execution results with the host machine to make sure the
+results are computed and stored correctly. As we mentioned before in Section 3.1,
+GPU division operation is not fully IEEE compliant, as it can only be performed
+through a reciprocal estimate. Thus, these results are equivalent to the
+reduced-accuracy mode of the Cell Broadband Engine. As can be seen
+from Table 6.2, GPU results so far are much slower than the Intel and the
+Cell/B.E. architecture; however it is to be noted that global memory is still
+being used for loading the inputs and storing of the results; this leads to reduced
+bandwidth and is a bottleneck in the implementation.
+
+Evaluating the Jaccard-Tanimoto Index on Multi-core Architectures
+
+7
+
+953
+
+Conclusion
+
+In this paper, we have evaluated the Jaccard workload on a variety of platforms
+including the Cell Broadband Engine, Nvidia 8800 GTX GPU and multi-core
+Intel Xeon 5160. We have developed a novel parallel algorithm for the
+Cell Broadband Engine, that finds a substantially optimal parallel
+solution through a runtime comparison of work allocated to SPEs.
+The Cell Broadband Engine is shown to be upto 10X better in full
+accuracy, and upto 50X better in reduced accuracy mode over the
+comparable Intel platform.
+
+Acknowledgments
+This research was supported in part by University Information Technology Services and the Pervasive Technology Labs of Indiana University. Pervasive Technology Labs of Indiana University is in part funded by the Lilly Endowment,
+Inc. We wish to thank IBM Austin Research Laboratory for access to the Intel
+Xeon 5160 dual-core and the Nvidia 8800 GTX platforms. We also wish to thank
+Poughkeepsie Benchmarking Center for access to the QS21 platform.
+
+References
+1. Geer, D.: Industry trends: Chip makers turn to multicore processors. IEEE Computer 38(5), 11–13 (2005)
+2. Jaccard, P.: The distribution of ﬂora in the alpine zone. New Phytologist 11, 37–50
+(1912)
+3. Willett, P.: Similarity-based virtual screening using 2D ﬁngerprints. Drug Discovery
+Today 11, 1046–1053 (2006)
+4. Murata, T.: Machine discovery based on the co-occurence of references in search
+engine. In: Arikawa, S., Furukawa, K. (eds.) DS 1999. LNCS, vol. 1721, pp. 220–
+229. Springer, Heidelberg (1999)
+5. Mild, A., Reutterer, T.: Proc. Sixth Int’l. Computer Science Conf. on Active Media
+Technology, Hong Kong, China, December 2001, pp. 302–313 (2001)
+6. Liben-Nowell, D., Kleinberg, J.: The link prediction problem for social networks. In:
+Proc. of the Twelfth Int’l. Conf. on Active Media Technology, New Orleans, LA, pp.
+302–313 (2003)
+7. IBM: SPU instruction set architecture (2007),
+http://www-01.ibm.com/chips/techlib/techlib.nsf/techdocs/
+76CA6C7304210F3987257060006F2C44/file/SPU_ISA_v1.2_27Jan2007_pub.pdf
+8. El-Qawasmeh, E.: Performance investigation of bit-counting algorithms with a
+speedup to lookup table. Journal of Research and Practice in Information Technology 32(3), 215–230 (2000)
+9. Nvidia: CUDA programming guide 1.1. (November 2007),
+http://developer.download.nvidia.com/compute/cuda/1_1/NVIDIA_CUDA_
+Programming_Guide_1.1.pdf
+BladeCenter and IBM are trademarks of IBM Corporation. Intel is a trademark of Intel Corporation. Intel Pentium
+is a trademark of Intel Corporation. Cell Broadband Engine is a trademark of Sony Computer Entertainment Inc.
+Other company, product, or service names may be trademarks or service marks of others.
+
+

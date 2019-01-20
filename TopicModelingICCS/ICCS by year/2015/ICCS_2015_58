@@ -1,0 +1,481 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 2714–2718
+ICCS 2015 International Conference On Computational Science
+
+Improving Transactional Memory Performance
+for Irregular Applications
+Manuel Pedrero, Eladio Gutierrez, Sergio Romero, and Oscar Plata
+Universidad de Malaga, Andalucia Tech, Dept. Computer Architecture, 29071 Malaga, Spain
+{mpedrero,eladio,sromero,oplata}@uma.es
+
+Abstract
+Transactional memory (TM) oﬀers optimistic concurrency support in modern multicore architectures, helping the programmers to extract parallelism when data dependence information
+is not statically available. This work presents ReduxSTM, a software TM system especially
+designed to extract parallelism from irregular applications. Commit management and conﬂict
+detection are tailored to take advantage of both, sequential transaction ordering to assure correct results, and privatization of reduction patterns, a very frequent memory access pattern in
+irregular applications. Both techniques are used to avoid unnecessary transaction aborts.
+Keywords: Irregular application, Transactional memory, Thread-level speculation, Reduction pattern
+
+1
+
+Introduction and Related Work
+
+The availability of multiple cores sharing a global memory in modern commodity computers is
+having a strong inﬂuence in how applications need to be designed. In this context, transactional
+memory (TM) [5] can provide an optimistic concurrency support on multicore architectures.
+TM provides the concept of transaction, a construct that enforces atomicity, consistency and
+isolation to the execution of a computation wrapped in the transaction.
+Encouraged by TM beneﬁts, eﬀorts have being devoted to leverage TM for extracting parallelism from sequential applications. In fact, many basic operations in a TM system, like detection and solving of memory conﬂicts, buﬀering of memory updates, and execution rollbacks,
+are also required by speculative multithreading (SpMT), or thread-level speculation (TLS) [8].
+Research focused on combining or exploiting TLS using TM approaches can be found in
+the literature (e.g., [7, 1, 3]). Most of these techniques are of general use, not tailored for
+speciﬁc types of applications. However, speculative techniques are especially useful for irregular
+applications. In this work, a transactional memory system, ReduxSTM, is presented. The
+system is speciﬁcally developed to extract parallelism from irregular applications. To maximize
+parallelism between tasks, the system is designed to take advantage of both, the sequential
+transaction ordering and the privatization of irregular reduction patterns, to avoid unnecessary
+aborts and rollbacks (only true dependencies are really enforced).
+2714
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.398
+
+Improving Transactional Memory Performance . . .
+
+Pedrero, Gutierrez, Romero and Plata
+
+Table 1: Transactional conﬂicts in diﬀerent scenarios
+TM
+TM + Order
+TM + Order + Rdx.
+n/c = no conﬂicts
+
+2
+
+R−W
+abort
+n/c
+n/c
+
+W−R
+abort
+abort
+abort
+
+W−W
+abort
+n/c
+n/c
+
+Rdx−R
+abort
+
+R−Rdx
+n/c
+
+Rdx−W
+n/c
+
+W−Rdx
+n/c
+
+Rdx−Rdx
+n/c
+
+ReduxSTM Design
+
+ReduxSTM leverages the TM basic mechanisms to exploit speculative parallelism from sequential applications (especially, irregular ones) containing reduction patterns.
+Ordered transactions. ReduxSTM can keep order between transactions. The concurrent
+execution of the speculative tasks (transactions) in which the application has been decomposed
+must preserve the sequential semantics to ensure correctness of the ﬁnal results. With this goal,
+ReduxSTM is able to commit transactions according to the sequential execution order. This
+ordering constraint is handled by the commit manager. Although it may cause performance
+degradation due to transactions that could ﬁnish in a out-of-order basis, by virtue of ordered
+commits, some conﬂicts are ignored preventing unnecessary aborts and rollbacks [8, 3].
+Reduction patterns. ReduxSTM takes beneﬁt of the privatization mechanism available
+in TM to optimize the execution of transactions with irregular reduction patterns [6]. These
+patterns are characterized by a reduction sentence of the form A[] = A[] ⊕ ξ, where A[] is
+the reduction variable (array, in general), ξ is an expression not including A[], and ⊕ is a
+commutative and associative operation. A partial reduction occurs when some locations of A[]
+are read or written outside the reduction sentence. In this case, the reduction condition is
+fulﬁlled only in a portion of the reduction variable [4].
+To support privatization of reductions in ReduxSTM, a primitive for a memory reduction
+operation was deﬁned. This primitive is handled by the conﬂict, version and commit managers
+as a third basic memory operation: read (R), write (W ) and reduction (Rdx). Rdx represents
+a combination of two operations, a read followed by a write on the same memory location of
+the reduced value, that is, Rdx(loc, val, ⊕) := W (loc, R(loc) ⊕ val).
+Version management. To privatize reduction arrays, version management in ReduxSTM
+is lazy. The write buﬀer, used to hold new values from transactional writes, was extended to
+privatize transactional reduction values. The extension consists in a state tag associated to
+each entry of the buﬀer, that speciﬁes if such entry holds a written value or a reduced value
+(and the corresponding reduction operation).
+Every time a transactional reduction operation is issued, the write buﬀer is checked for the
+memory address. If it is found and the state tag corresponds to a write, the value speciﬁed in
+the reduction operation is reduced with the value stored in the buﬀer. However, the state tag is
+kept as a write because the reduction condition is not fulﬁlled. Otherwise, if the state tag is a
+reduction, a similar operation is carried out and the state tag remains as a reduction. Similarly,
+a transactional write triggers a searching of the address in the write buﬀer. If it is found, the
+entry is updated and the state tag is set to write, independently on the original state.
+Conﬂict management. Conﬂict detection in ReduxSTM is also lazy, accomplished at
+commit time, as this allows to ignore many of the conﬂicts, improving concurrency between
+transactions. Table 1 shows which conﬂicts are avoided thanks to the ordering of transactions
+and the privatization of reduction operations. Columns specify two memory operations executed by two diﬀerent transactions where the ﬁrst one must commit before the second one (in
+sequential order). For instance, R − W represents an anti-dependence. The ﬁrst row corre2715
+
+Improving Transactional Memory Performance . . .
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+
+Pedrero, Gutierrez, Romero and Plata
+
+new dbox a(...) {
+...
+for ( termptr=antrmptr; termptr; termptr=termptr−>nextterm ) {
+...
+new mean = ...; old mean = ...;
+for ( netptr=dimptr−>netptr; netptr; netptr=netptr−>nterm ) {
+oldx = netptr −>xpos;
+if ( netptr −>ﬂag == 1 ) { newx = netptr−>newx; netptr−>ﬂag = 0; }
+else { newx = oldx; }
+// (1) Potential reduction sentence
+∗costptr += ABS(newx − new mean) − ABS(oldx − old mean); }
+...
+tmp num feeds[net] = f;
+// Potential alias with ∗costptr and delta vert cost
+...
+tmp missing rows[net] = −m; // Potential alias with ∗costptr and delta vert cost
+// (2) Potential reduction sentence
+delta vert cost += ((tmp num feeds[net]−num feeds[net]) + (tmp missing rows[net]−missing rows[net]))∗2∗rowHeight; }
+return; }
+
+Figure 1: new dbox a() function in 300.twolf code from SPEC CPU2000
+sponds to the behavior of a standard TM system, while the other two rows consider additional
+support for order and reductions. The conﬂict manager uses signatures (based on Bloom ﬁlters)
+to store read and write sets required to detect conﬂicts.
+Commit management. In order to minimize the overhead of the transactional memory
+operations and to support a lazy-lazy behavior, ReduxSTM is based on a full commit invalidation algorithm, that is, conﬂicts are resolved at commit time. The commit phase is in charge
+of the following tasks: (1) Check if the ordering condition is fulﬁlled (otherwise, wait for that);
+(2) check if the transaction was aborted (killed) by a previously committed one; (3) update
+global memory with the values stored in the write buﬀer, reducing in memory the corresponding ones; (4) compare the write Bloom ﬁlter with the read Bloom ﬁlter of all subsequent (in
+the established order) active transactions, marking as killed those conﬂicting ones.
+
+3
+
+Experimental Evaluation
+
+Motivating irregular application. The TimberWolfSC placement and global routing package (300.twolf) was selected from the SPEC CPU2000 suite. Our focus is on the new dbox a()
+function included in the dimbox.c ﬁle. This function (Figure 1) has an outer loop that includes
+two sentences with a reduction pattern, using costptr and delta vert cost as reduction variables. However, as costptr is a pointer, it may alias with the other reduction variable or with
+other global variables in the loop, like tmp num feeds[] or tmp missing rows[]. As a consequence, the compiler is not able to analyze dependences. Nevertheless, the reduction condition
+may be valid for some of the accesses to the reduction variable (partial reduction). If this
+fraction of accesses is high enough a wealth of parallelism can be exploited.
+Methodology and experimental setup. The new dbox a() function was instrumented
+obtaining a memory trace, marking potential reduction sentences as reduction operations, instead of separate read and write operations on the reduction variable. The SPEC training
+workload was used for this task. A transactional loop (blocks of iterations are executed as
+transactions) was fed with that trace simulating the original memory pattern together with
+the corresponding workload. Transactions were mapped to threads in a round-robin way. A
+section of 500K iterations was selected from the middle of loop execution for the evaluation
+results. There is a high memory contention in the code execution, as only 0.15% of the memory
+2716
+
+Improving Transactional Memory Performance . . .
+
+impl. vs. TinySTM-Ord.
+expl. vs. TinySTM-Ord.
+impl. vs. Sequential
+expl. vs. Sequential
+
+4
+3
+2
+1
+0
+1
+
+2
+
+4
+
+8
+
+Sensitivity to Xact. Size
+
+2.0
+
+1.5
+
+1.0
+1 iteration per xact.
+2 iterations per xact.
+4 iterations per xact.
+8 iterations per xact.
+
+0.5
+
+0.0
+
+1
+
+2
+
+Threads
+
+(a)
+
+TCR
+
+0.6
+0.4
+0.2
+4
+Threads
+
+(b)
+
+0.6
+0.4
+0.2
+0.0
+6
+
+8
+
+8
+
+8
+
+1.2
+
+1.0
+No extra load
+¼+10 float op./mem. op.
+¼+50 float op./mem. op.
+¼+100 float op./mem. op.
+
+1
+
+2
+
+4
+Threads
+
+(d)
+
+20
+
+22
+
+(e)
+
+1.5
+
+0.0
+
+10
+12
+14
+16
+18
+Bloom filter size (2n bits)
+
+Sensitivity to Bloom Filter Size
+
+2.0
+
+0.5
+
+2 threads
+
+0.8
+
+Sensitivity to Comp. Load
+
+2.5
+Speedup (w.r.t. 1-thread)
+
+TinySTM-Ord. (no rdx. support)
+ReduxSTM (rdx. disabled)
+ReduxSTM (rdx. enabled)
+
+2
+
+1 iteration per xact.
+2 iterations per xact.
+4 iterations per xact.
+8 iterations per xact.
+
+(c)
+
+0.8
+
+0.0
+
+4
+
+1.0
+
+Threads
+
+Transaction Commit Rate
+1.0
+
+Sensitivity to Bloom Filter Size
+1.2
+TCR=execution time
+
+5
+
+ReduxSTM
+ReduxSTM
+ReduxSTM
+ReduxSTM
+
+8
+
+TCR=execution time
+
+Relative Speedup
+
+6
+
+Relative Speedup (best execution)
+
+Speedup (w.r.t. 1-thread 1-it./xact.)
+
+7
+
+Pedrero, Gutierrez, Romero and Plata
+
+1.0
+
+1 iteration per xact.
+2 iterations per xact.
+4 iterations per xact.
+8 iterations per xact.
+
+4 threads
+
+0.8
+0.6
+0.4
+0.2
+0.0
+6
+
+8
+
+10
+12
+14
+16
+18
+Bloom filter size (2n bits)
+
+20
+
+22
+
+(f)
+
+Figure 2: ReduxSTM performance: Speedup (a); transaction commit rate (TCR) (b); sensitivity to transaction size (c), computational workload (d) and signature size (e-f)
+
+locations were diﬀerent. This high contention makes the code memory-bound.
+Experiments were conducted on a one-socket quad-core 3.4GHz Intel i7-3770 processor with
+8 GB RAM, running Linux 3.2.0-75 (64 bits). The GNU C compiler with optimization level -O2
+was used. The ordered version of TinySTM (v.1.0.5) [2] was used as the baseline STM system.
+The following code versions were evaluated: (1) The original sequential code; (2) a parallel code
+using ordered TinySTM (ﬁrst to start, ﬁrst to commit); (3) a parallel code using ReduxSTM
+with implicit order (same as ordered TinySTM); (4) a parallel code using ReduxSTM with
+explicit order (same as sequential order).
+Relative speedup. The speedup obtained with both versions of ReduxSTM (implicit and
+explicit order) related to that for ordered TinySTM and the sequential code is shown in Figure 2 (a). ReduxSTM behaves better than ordered TinySTM as the former avoids many aborts
+and rollbacks. This behavior improves with the number of threads, as the the transactional
+conﬂict rate also increases. With 8 threads, ReduxSTM is 6.5 (implicit order) or 4.8 (explicit
+order) times faster than ordered TinySTM. Implicit order is better that explicit one, as expected, as it is more relaxed. ReduxSTM is also able to exploit parallelism from the sequential
+version, despite it is memory bound.
+Transaction Commit Rate (TCR). TCR is the percentage of committed transactions
+out of all executed ones. Figure 2 (b) shows the TCR for two versions of ReduxSTM (with and
+without support for reductions), in addition to ordered TinySTM. For 8 threads, ReduxSTM
+obtains a TCR of almost 70% (percentage of the transactions that committed without rollbacks).
+With no reduction support, however, TCR drops below 20%, while TCR for ordered TinySTM
+is almost zero (basically, transactions execute serially). These results show that, for this type
+of application, ordering and reduction support avoid a great amount of aborts due to conﬂicts,
+with a beneﬁcial impact on performance. Besides, by design, ReduxSTM limits the number of
+possible rollbacks of a transaction to the thread count minus one.
+Sensitivity to transaction size. The impact of the transaction size (in terms of the
+2717
+
+Improving Transactional Memory Performance . . .
+
+Pedrero, Gutierrez, Romero and Plata
+
+number of iterations of the outer loop in new dbox a()) on performance for ReduxSTM is
+depicted in Figure 2 (c). The graph shows the relative speedup with respect to the execution in
+1 thread with 1-iteration transactions. With one thread, speedup increases with the transaction
+size, as the overhead of managing transactions reduces with its count. When the number of
+threads increases, the probability of conﬂicts increases with the size of transactions, decreasing
+the resulting performance. Speedups are not high due to the memory bound nature of the code.
+Sensitivity to computational workload. To test the ability of ReduxSTM to extract
+parallelism from codes with a more balanced combination of computation and memory accesses,
+experiments were conducted for diﬀerent workloads added to the transactions. This extra load
+was speciﬁed in terms of a number of ﬂoating-point operations per memory access. Figure 2 (d)
+shows the obtained results, measured as the speedup with respect to the execution using 1
+thread. As expected, the performance of ReduxSTM for 4 and 8 threads improves signiﬁcantly
+with the increase in the workload, as the transaction management overheads drop.
+Sensitivity to signature size. The size of signatures used to detect conﬂicts has impact
+on performance due to false conﬂicts and the time required to reset them after an abort or
+commit. Figure 2 (e,f) shows the performance of ReduxSTM for diﬀerent signature sizes. The
+best size is in the range 214 − 218 bits, for diﬀerent transaction sizes and thread counts. For
+smaller signatures, performance remains constant as the abort rate per transaction is limited by
+the thread count. For larger signatures, performance drops fast due to the overhead of storing
+the ﬁlters out of the ﬁrst levels of the cache hierarchy, and the overhead of resetting them.
+
+4
+
+Conclusions
+
+This work discussed ReduxSTM, a STM system designed to extract parallelism from irregular
+applications. Commit, version and conﬂict managers were leveraged to take advantage of both,
+sequential commit order and privatization of reduction patterns. Improvements in performance
+compared to a state-of-the-art STM system proved the eﬀectiveness of the approach.
+
+References
+[1] M. DeVuyst, D.M. Tullsen, and S.W. Kim. Runtime parallelization of legacy code on a transactional
+memory system. In 6th HiPEAC Conf., 2011.
+[2] P. Felber, C. Fetzer, P. Marlier, and T. Riegel. Time-based software transactional memory. IEEE
+Trans. on Parallel and Distributed Systems, 21(12):1793–1807, 2010.
+[3] M.A. Gonzalez-Mesa, E. Gutierrez, E.L. Zapata, and O. Plata. Eﬀective transactional memory execution management for improved concurrency. ACM Trans. on Architecture and Code Optimization,
+11(3), 2014.
+[4] L. Han, W. Liu, and J.M. Tuck. Speculative parallelization of partial reduction variables. In 8th
+Ann. IEEE/ACM Int’l. Symp. on CGO, 2010.
+[5] M. Herlihy and J. Moss. Transactional Memory: Architectural support for lock-free data structures.
+In 20th Ann. ISCA, 1993.
+[6] N.P. Johnson, H. Kim, P. Prabhu, A. Zaks, and D.I. August. Speculative separation for privatization
+and reductions. In 33rd ACM Conf. on PLDI, 2012.
+[7] M. Mehrara, J. Hao, P-C. Hsu, and S. Mahlke. Parallelizing sequential applications on commodity
+hardware using a low-cost software transactional memory. In 30th ACM Conf. on PLDI, 2009.
+[8] L. Porter, B. Choi, and D.M. Tullsen. Mapping out a path from hardware transactional memory
+to speculative multithreading. In 18th Int’l. Conf. on PACT, 2009.
+
+2718
+
+

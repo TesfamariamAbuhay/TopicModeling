@@ -1,0 +1,563 @@
+Rapid Development of Application-Specific
+Network Performance Tests
+Scott Pakin
+lOS Alamos National Laboratory, Los Alamos, NM 87545, USA
+pakin@lanl.gov
+http://www.c3.lanl.gov/~pakin
+
+Abstract. Analyzing the performance of networks and messaging layers is important for diagnosing anomalous performance in parallel applications. However, general-purpose benchmarks rarely provide suﬃcient
+insight into any particular application’s behavior. What is needed is a facility for rapidly developing customized network performance tests that
+mimic an application’s use of the network but allow for easier experimentation to help determine performance bottlenecks.
+In this paper, we contrast four approaches to developing customized
+network performance tests: straight C, C with a helper library, Python
+with a helper library, and a domain-speciﬁc language. We show that
+while a special-purpose library can result in signiﬁcant improvements
+in functionality without sacriﬁcing language familiarity, the key to facilitating rapid development of network performances tests is to use a
+domain-speciﬁc language designed expressly for that purpose.
+
+1
+
+Introduction
+
+Parallel applications utilize the interconnection network in a variety of ways,
+including nearest-neighbor communication on a 2-D or 3-D mesh/torus (e.g., in
+ocean-modeling codes [1]); hierarchical communication (e.g., in moleculardynamics codes [2]); and, master/slave communication (e.g., in Monte Carlo
+codes [3]). However, general-purpose network performance tests such as NetPIPE [4], Mpptest [5], and those that appear in the Pallas MPI Benchmarks [6]
+and SKaMPI [7] suites, measure performance independently of any particular
+application’s usage of the network. For example, it is common to measure network bandwidth as the peak data rate achieved when sending a large number of
+messages back-to-back between two otherwise idle endpoints, even though few
+applications utilize such a communication pattern. General-purpose tests are
+nevertheless important to application developers because they indicate – in a
+standard format – upper bounds in network performance that developers can
+use to determine if application performance is being limited by the network.
+Special-purpose benchmarks targeted to a particular inquiry are an important complement to general-purpose benchmarks. For example, if an application
+runs signiﬁcantly slower than a general-purpose test would indicate, it may be
+V.S. Sunderam et al. (Eds.): ICCS 2005, LNCS 3515, pp. 149–157, 2005.
+Springer-Verlag Berlin Heidelberg 2005
+
+150
+
+S. Pakin
+
+worthwhile to extract the application’s particular communication pattern into
+a separate test program and perform in vivo experiments with that (simulating
+message aggregation, varying message-buﬀer alignment, reducing communication granularity – all on a real cluster with a real network), the idea being that
+it is quicker and easier to modify a small test program than a large application.
+Unfortunately, special-purpose tests receive little attention in practice and in
+the literature because they can be time-consuming to write and debug; and, because they may be run only a few times before being discarded, few application
+developers consider the beneﬁts worth the eﬀort.
+In this paper, we investigate three approaches intended to facilitate the rapid
+generation of special-purpose network performance tests and compare these to
+a baseline test written in standalone C. Section 2 describes the sample performance test which is used as the basis for comparison, lists the metrics used to
+evaluate the alternatives, and presents the baseline C implementation. Section 3
+describes a library for performance testing and examines the improvement over
+the baseline C code when used with C and with Python. Then, Sect. 4 introduces the coNCePTuaL language, shows how the sample performance test can
+be rewritten in coNCePTuaL, and highlights the beneﬁts of doing so. Finally,
+Sect. 5 draws some conclusions about the results of this study.
+
+2
+
+Problem Specification
+
+When selecting a sample problem to use as a running example throughout this
+paper, the challenge is to choose a communication pattern that is neither too
+common (such as a latency or bandwidth benchmark) nor too esoteric (such
+as one so targeted to a single application that the results do not generalize to
+other patterns). Rather than create an appropriate problem ourselves, we borrow
+one from a set of exercises associated with a long-existing MPI tutorial [8]. This
+particular exercise, entitled “Exploring the cost of synchronization delays”1 reads
+as follows (unedited):
+In this example, 2 processes are communicating with a third. Process 0 is sending a long message to process 1 and process 2 is sending a
+relatively short message to process 1 and then to process 0. Arrange the
+code so that process 1 has already posted an MPI Irecv for the message
+from process 2 before receiving the message from process 0, but also
+ensure that process 1 receives the long message from process 0 before
+receiving the message from process 2.
+This seemingly complex communication pattern mimics a pattern
+that can occur in an application due to timing variations on each processor. If the message sent by process 2 to process 1 is short but long
+enough to require a rendezvous protocol, there can be a sigiﬁcant delay
+1
+
+The problem statement and sample solution are available on the Web at
+http://www-unix.mcs.anl.gov/mpi/tutorial/mpiexmpl/src3/3way/C/main.html.
+
+Rapid Development of Application-Speciﬁc Network Performance Tests
+Post SYNC
+
+1
+
+Post SYNC
+
+2
+
+Post SYNC
+
+0
+
+Complete SYNC
+Post SEND
+Complete SEND
+
+1
+
+Complete SYNC
+Post RECEIVE
+Post async. RECEIVE
+Complete async. RECEIVE
+
+2
+
+Complete SYNC
+Post SEND
+Complete SEND
+
+0
+
+Post RECEIVE
+
+1
+
+Complete RECEIVE
+
+2
+
+Post SEND
+Complete SEND
+
+0
+
+Complete RECEIVE
+
+1
+
+Post WAIT ALL
+Complete WAIT ALL
+
+2
+
+Time
+
+0
+
+151
+
+Fig. 1. Communication pattern described by the sample problem
+
+before the short message from process 2 is received by process 1, even
+though the receive for that message is already available. Explore the
+possibilities by considering various lengths of messages.
+In essence, this is the sort of performance test an application developer would
+create if his application uses such a communication pattern and he wants to ﬁnd
+the source of its performance problems.
+The sample solution, written in C and using MPI as the communication
+library, is 74 lines long and is illustrated in Fig. 1. The core communication and
+reporting routines are presented below but the reader is directed to the URL
+shown at the bottom of page 150 for the complete listing.
+(44 lines omitted )
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+MPI Barrier(MPI COMM WORLD);
+if (myrank == 0) {
+MPI Send( bigdata, BIGSIZE, MPI DOUBLE, 1, tag, MPI COMM WORLD);
+MPI Recv( litdata, litsize, MPI DOUBLE, 2, tag, MPI COMM WORLD, &status);
+}
+else if (myrank == 1) {
+MPI Irecv(litdata, litsize, MPI DOUBLE, 2, tag, MPI COMM WORLD, &request);
+MPI Send (litdata, litsize, MPI DOUBLE, 2, tag, MPI COMM WORLD);
+MPI Recv( bigdata, BIGSIZE, MPI DOUBLE, 0, tag, MPI COMM WORLD, &status
+);
+MPI Wait( &request, &status );
+}
+else if (myrank == 2) {
+MPI Recv( litdata, litsize, MPI DOUBLE, 1, tag, MPI COMM WORLD, &status);
+t1 = MPI Wtime();
+MPI Send( litdata, litsize, MPI DOUBLE, 1, tag, MPI COMM WORLD);
+ts1 = MPI Wtime() − t1;
+t1 = MPI Wtime();
+MPI Send( litdata, litsize, MPI DOUBLE, 0, tag, MPI COMM WORLD);
+ts2 = MPI Wtime() − t1;
+}
+if (myrank == 2) {
+printf(”[%d] Litsize = %d, Time for first send = %f, for second = %f\n”,
+myrank, litsize, ts1, ts2 );
+}
+
+(4 lines omitted )
+
+152
+
+S. Pakin
+
+There are a number of shortcomings of the preceding code:
+1. Too little information is output. Without a more detailed record of the experimental setup (e.g., shared libraries and versions being used, compiler
+ﬂags, environment variables, etc.) the application developer may overlook
+some performance-aﬀecting detail. Ideally, much more information should
+be logged but doing so can require daunting coding eﬀort.
+2. 48 lines of initialization and ﬁnalization code (not shown) is too long. Application developers are unlikely to consider writing a special-purpose performance test if including header ﬁles, declaring variables, initializing the
+messaging layer, parsing the command line, and doing all of the other banal,
+non-performance-related activities take so much coding time.
+3. The level of abstraction is too low. It is diﬃcult to ascertain which lines of
+code correspond to which parts of the problem statement.
+We attempt to address these shortcomings in Sects. 3 and 4.
+
+3
+
+A Library for Performance Testing
+
+Regardless of what particular communication patterns or performance characteristics a benchmark tests, there are a number of mundane operations that the
+code must perform such as parsing the command line, recording elapsed time,
+computing performance statistics, and logging results to a ﬁle. Because such
+operations are of common utility, it is practical to implement them in a helper
+library so they can be reused by numerous performance tests.
+For the pupose of this study, we use an existing library, the run-time performance library used by coNCePTuaL [9]. This library exports a rich set of
+functions intended to simplify performance testing. The reader is referred to the
+coNCePTuaL User’s Guide [10] for details.
+None of the performance library’s functions are speciﬁc to any particular
+messaging layer. Consequently, the MPI calls in the code shown on page 151
+remain intact while the library improves the following constructs:
+Parsing the Command Line. Rather than explicitly scanning argv[] as in
+the original code, using ncptl_parse_command_line() provides error checking,
+support for short and long option names, and a --help option which describes
+each of the supported options.
+Touching the Message Buﬀers. The original code writes dummy values to
+the message buﬀers as part of initialization. On CPUs with write-no-allocate
+cache policies, this will not yield the desired result of preloading the buﬀers into
+the cache. ncptl_touch_data(), in contrast, both reads and writes each word
+of the buﬀer. This is a prime example of the usefulness of a helper library: Once
+the library code is written, debugged, and made portable, all programs that link
+to the library automatically beneﬁt.
+
+Rapid Development of Application-Speciﬁc Network Performance Tests
+
+153
+
+Reading the Timer. The ncptl_time() function reads the highest-resolution
+timer available. Also, the log-ﬁle header includes the timer overhead, mean increment, and increment standard deviation, all of which are measured dynamically during initialization time [9]. Hence, unlike MPI_Wtime() – which, to begin
+with, is speciﬁc to MPI – the application developer knows exactly how reliable
+the platform’s timing measurements can be.
+Outputting Results. Replacing the original code’s lone printf() with a
+set of ncptl_log_something() calls provides a number of beneﬁts, the most
+important of which is that it helps make the performance test reproducible.
+A prior publication expands upon this issue and presents a sample log ﬁle [9]
+but the key idea is that by logging not only measurement data but also the
+entire experimental setup – system architecture, software used, timer accuracy,
+environment variables, etc. – log ﬁles become self-documenting. This is important
+to application developers because they can use a special-purpose performance
+test to diagnose a problem. Then, when they believe they have ﬁxed the problem,
+they can re-run the performance test in exactly the same way that it was run
+previously and accurately compare the results.
+The following shows how the original code’s printf() can be replaced by
+library functions to improve program reproducibility:
+(66 lines omitted )
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+
+if (myrank == 2) {
+/ Log the results to a file. /
+NCPTL LOG FILE STATE logfile = ncptl log open(”syncdelays−conclib−%p.log”,
+myrank);
+ncptl log write header (logfile, argv[0], ”N/A”, ”N/A”, myrank, numprocs, conc args,
+1, NULL);
+ncptl log write (logfile, 0, ”Litsize”, NCPTL FUNC NO AGGREGATE, (double)
+litsize);
+ncptl log write (logfile, 1, ”Time for first send”, NCPTL FUNC NO AGGREGATE, (
+double)ts1);
+ncptl log write (logfile, 2, ”Time for second send”, NCPTL FUNC NO AGGREGATE
+, (double)ts2);
+ncptl log commit data (logfile);
+ncptl log write footer (logfile);
+ncptl log close (logfile);
+}
+
+¶
+
+(4 lines omitted )
+Using a performance-testing-centric library addresses shortcoming 1 on
+page 152. However, it does not address the remaining two shortcomings. This
+raises the question: Can special-purpose performance tests be developed more
+rapidly using a high-level language instead of C? The intention is to reduce
+code turnaround time and to relieve the application developer of the tedium of
+declaring variables, allocating and deallocating memory, and performing other
+low-level operations. To answer the preceding question, we re-coded the solution
+to the sample problem in Python – speciﬁcally, ScientiﬁcPython [11] for its MPI
+support – while continuing to use the performance library, which has a Python
+interface. The core communication and reporting routines are presented below:
+
+154
+
+S. Pakin
+
+(28 lines omitted )
+29
+
+comm world.barrier()
+
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+
+if myrank == 0:
+comm world.send(bigdata, 1, tag)
+comm world.receive(litdata, 2, tag)
+elif myrank == 1:
+request = comm world.nonblockingReceive(litdata, 2, tag)
+comm world.send(litdata, 2, tag)
+comm world.receive(bigdata, 0, tag)
+request.wait()
+elif myrank == 2:
+comm world.receive(litdata, 1, tag)
+t1 = ncptl time()
+comm world.send(litdata, 1, tag)
+ts1 = ncptl time() − t1
+t1 = ncptl time()
+comm world.send(litdata, 0, tag)
+ts2 = ncptl time() − t1
+
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+
+if myrank == 2:
+# Log the results to a file.
+logfile = ncptl log open(”syncdelays−pyconclib−%p.log”, myrank)
+ncptl log write header(logfile, sys.argv[0], ”N/A”, ”N/A”, myrank,
+numprocs, conc args, 1, [])
+ncptl log write(logfile, 0, ”Litsize”, NCPTL FUNC NO AGGREGATE, litsize)
+ncptl log write(logfile, 1, ”Time for first send”, NCPTL FUNC NO AGGREGATE, ts1)
+ncptl log write(logfile, 2, ”Time for second send”, NCPTL FUNC NO AGGREGATE, ts2
+)
+ncptl log commit data(logfile)
+ncptl log write footer(logfile)
+ncptl log close(logfile)
+
+Line for line, the Python version is fairly similar to the C version; an application developer unfamiliar with Python should have no trouble understanding
+the code. However, we can say that the Python version remedies shortcoming 2
+on page 152 by being shorter (by ∼21%) and arguably less error-prone than
+the C version. Nevertheless, the level of abstraction is unchanged from the C
+version; the connection between the problem statement and the code remains
+unclear. In Sect. 4 we determine if a domain-speciﬁc language can improve the
+situation.
+
+4
+
+A Domain-Specific Language for Performance Testing
+
+Application developers – and programmers in general – are often loath to use
+domain-speciﬁc languages. There is an inherent cost to learning a new language
+which can be hard to justify in absense of a priori understanding of the domainspeciﬁc language’s practical beneﬁts. It is therefore important for this paper to
+evaluate how well a domain-speciﬁc language can be suited to the rapid development of application-speciﬁc network performance tests.
+coNCePTuaL – whose unusual capitalization stands for “Network Correctness and Performance Testing Language” – is a domain-speciﬁc language
+designed to facilitate the rapid development of special-purpose network performance tests [9]. The coNCePTuaL language is English-like and uses SPMD
+semantics to express parallelism. coNCePTuaL programs implicitly use the
+
+Rapid Development of Application-Speciﬁc Network Performance Tests
+
+155
+
+performance library described in Sect. 3 through various language idioms. The
+following is the complete, commented coNCePTuaL solution to the problem
+speciﬁed in Sect. 2:
+1
+
+Require language version ”0.5.2b”.
+
+2
+3
+4
+
+bigsize is ”Size of big message (doubles)” and comes from ”−−bigsize” or ”−b” with
+default 10000.
+litsize is ”Size of small message (doubles)” and comes from ”−−litsize” or ”−n” with
+default 1.
+
+5
+6
+
+Assert that ”this program must be run with at least 3 processes” with num tasks>=3.
+
+7
+8
+9
+
+All tasks touch all message buﬀers then
+all tasks synchronize then
+
+10
+11
+12
+13
+14
+
+# ”Arrange the code so that process 1 has already posted an MPI Irecv
+# for the message from process 2 before receiving the message from
+# process 0,”
+task 1 asynchronously receives a litsize doubleword message from task 2 then
+
+15
+16
+17
+
+# ”Process 0 is sending a long message to process 1”
+task 0 sends a bigsize doubleword message to task 1 then
+
+18
+19
+20
+21
+
+# ”also ensure that process 1 receives the long message from process 0
+# before receiving the message from process 2.”
+task 1 awaits completion then
+
+22
+23
+24
+25
+26
+27
+28
+29
+30
+
+# ”process 2 is sending a relatively short message to process 1 and
+# then to process 0.”
+task 2 resets its counters then
+task 2 sends a litsize doubleword message to unsuspecting task 1 then
+task 2 logs litsize as ”Litsize” and elapsed usecs as ”Time for first send” then
+task 2 resets its counters then
+task 2 sends a litsize doubleword message to task 0 then
+task 2 logs elapsed usecs as ”Time for second send”.
+
+Two things are immediately apparent about the preceding code listing. First,
+its length is half that of even the corresponding Python code. Second, coNCePTuaL statements closely correspond to the natural-language statements in the
+problem speciﬁcation. For example, posting a send implicitly posts the matching receive (suppressable with the unsuspecting keyword, as in line 26), as this
+is how network performance tests typically are described textually. By raising
+the abstraction level of performance tests to match that of a natural-language
+problem speciﬁcation, coNCePTuaL satisfactorily addresses shortcoming 3 on
+page 152, the ﬁnal shortcoming of the original C solution. There is no performance penalty to using coNCePTuaL, as indicated by the following message
+overheads output by the various code versions: C: (5ñs, 2ñs); C + library: (4ñs,
+1ñs); Python: (10ñs, 5ñs); coNCePTuaL: (4ñs, 2ñs). (coNCePTuaL reports
+slightly lower overheads than C because it directly reads the CPU cycle counter;
+when conﬁgured to use gettimeofday() it reports the same overheads as C.)
+coNCePTuaL is not limited to MPI. Any of a variety of code generators is
+selectable at compile time. In fact, Fig. 1 was produced automatically from the
+preceding listing merely by specifying an “illustration” code generator.
+
+156
+
+5
+
+S. Pakin
+
+Conclusions
+
+Special-purpose network performance tests enable an application developer to
+experiment with communication alternatives faster and with less hassle that
+would be required to restructure the original application. Such tests are rarely
+used in practice, however, because of the their development overhead. This paper followed the evolution of a sample special-purpose performance test from its
+natural-language problem speciﬁcation through C, C + helper library, Python +
+helper library, and domain-speciﬁc-language solutions. Each alternative improved
+upon the previous one: richer output; shorter, easier-to-develop programs; and,
+higher levels of abstraction. However, only the domain-speciﬁc language, coNCePTuaL, fully encapsulated all three of those beneﬁts.
+This paper elucidated the tradeoﬀs that application developers face when
+considering using special-purpose network performance tests as a tool for performance optimization. Developers can reduce development time with little effort merely by calling appropriate library functions. Developers who couple a
+library with a high-level language can further reduce development time, making special-purpose network performance tests more attractive to write. The
+biggest payoﬀ comes from using a domain-speciﬁc language, which provides a
+natural mapping from problem speciﬁcation to working code while still retaining
+the beneﬁts of short code lengths, ease of development, and reproducibility of
+results.
+The coNCePTuaL compiler and performance library are freely available
+from http://conceptual.sourceforge.net/.
+
+References
+1. Bleck, R.: An oceanic general circulation model framed in hybrid isopycnicCartesian coordinates. Ocean Modelling 4 (2002) 55–88
+2. Blelloch, G., Narlikar, G.: A practical comparison of N -body algorithms. In:
+Parallel Algorithms. Volume 30 of DIMACS: Series in Discrete Mathematics and
+Theoretical Computer Science. American Mathematical Society, DIMACS (1997)
+3. Basney, J., Raman, R., Livny, M.: High throughput Monte Carlo. In: Proceedings
+of the 9th SIAM Conference on Parallel Processing for Scientiﬁc Computing, San
+Antonio, Texas (1999)
+4. Snell, Q.O., Mikler, A.R., Gustafson, J.L.: NetPIPE: A network protocol independent performance evaluator. In: Proceedings of the 1996 ISMM International Conference on Intelligent Information Management Systems, Washington, DC, ACTA
+Press (1996)
+5. Gropp, W., Lusk, E.: Reproducible measurements of MPI performance characteristics. In: Proceedings of the 6th European PVM/MPI Users’ Group Meeting (EuroPVM/MPI’99). Volume 1697 of Lecture Notes in Computer Science., Barcelona,
+Spain, Springer-Verlag (1999) 11–18
+6. Pallas, GmbH: Pallas MPI Benchmarks—PMB, Part MPI-1. (2000)
+
+Rapid Development of Application-Speciﬁc Network Performance Tests
+
+157
+
+7. Reussner, R., Sanders, P., Prechelt, L., M¨
+uller, M.: SKaMPI: A detailed, accurate
+MPI benchmark. In: Proceedings of the 5th European PVM/MPI Users’ Group
+Meeting (EuroPVM/MPI’98). Volume 1497 of Lecture Notes in Computer Science.,
+Liverpool, United Kingdom, Springer-Verlag (1998) 52–59
+8. Gropp, W.: Tutorial on MPI: The Message-Passing Interface. Argonne National
+Laboratory, Argonne, Illinois. (1995) Available from ftp://info.mcs.anl.gov/pub/
+mpi/tutorial.ps.
+9. Pakin, S.: Reproducible network benchmarks with coNCePTuaL. In: Proceedings
+of the 10th International Euro-Par Conference. Volume 3149 of Lecture Notes in
+Computer Science., Pisa, Italy, Springer (2004) 64–71 ISBN 3-540-22924-8. Available from http://www.c3.lanl.gov/~pakin/papers/europar2004.pdf.
+10. Pakin, S.: coNCePTuaL user’s guide. Technical Report LA-UR 03-7356, Los
+Alamos National Laboratory, Los Alamos, New Mexico (2004) Available from
+http://www.c3.lanl.gov/~pakin/software/conceptual/conceptual.pdf.
+11. Hinsen, K.: ScientiﬁcPython User’s Guide. Centre National de la Recherche Scientiﬁque d’Orl´eans, Orl´eans, France. (2002)
+
+

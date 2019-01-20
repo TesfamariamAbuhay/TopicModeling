@@ -1,0 +1,627 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 2338–2347
+ICCS 2016. The International Conference on Computational
+Science
+
+Accelerated hybrid approach for spectral problems arising
+in graph analytics
+Alexandre Fender1,2,3 , Nahid Emad3,2 , Joe Eaton1 , and Serge Petiton4,2
+1
+
+Nvidia Corporation
+Maison de la Simulation
+3
+LI-PaRAD, University of Versailles
+University of Lille I, Sciences & Technologies
+2
+
+4
+
+Abstract
+Data sets such as graphs are growing so rapidly that performing meaningful data analytics in
+reasonable time is beyond the ability of common software and hardware for many applications.
+In this context, performance and eﬃciency are primary concerns. The spectral analysis of real
+networks reﬂects such problematic. In this paper we present a solution based on Krylov methods
+which combines accelerators to increase the throughput of graphs traversals and latency oriented
+architectures to solve small problems. We focus on an hybrid acceleration of the implicitly
+restarted Arnoldi method which targets large non-symmetric problems with irregular sparsity
+pattern. The result of this cooperation is an eﬃcient solver to compute eigenpairs of real
+networks. Moreover, this approach can be applied to other methods based on coarsening.
+Keywords: Graph analytics, Krylov methods, Scale free networks, Pagerank, Implicit restart of Arnoldi
+
+1
+
+Introduction
+
+Graphs are useful to describe and organize data by representing connections between real or
+abstract entities. Several aspects of these systems can be analysed to extract information about
+the overall structure or the nature of individual components.
+Spectral graph analysis provides key information on the networks, indeed, the largest eigenpair
+of a network has direct applications in ranking, centrality, and equilibrium while the smallest
+ones are used for partitioning and clustering [14]. However, this approach has a considerable
+computational cost due to the underlining eigenvalue problem. In addition, networks are often
+so large that solving these problems in reasonable time requires new scientiﬁc high performance
+methods combined with the computational power oﬀered by emerging architectures. In the era
+of accelerated computing, eﬃcient algorithms and reusable software constitute an additional
+challenge especially when it comes to real data from web or social networks
+In this paper we propose an eﬃcient approach which combines CPU and GPU strengths to
+compute the dominant invariant subspace of real scale-free networks, and compare against other
+2338
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.435
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+existing approach. We ﬁrst present an hybrid acceleration of the implicitly restarted Arnoldi
+method designed for large graphs with clustered eigenvalues. We explain the main challenges
+for sparse iterative eigenvalue methods and non-symmetric cases with irregular sparsity pattern.
+We discuss the implementation, optimizations, and present how it performs on famous graph
+problems such as Pagerank [2].
+
+2
+2.1
+
+Description
+Scale free networks in sparse linear algebra
+
+In order to address graph analytics in linear algebra the ﬁrst step is to represent the graph as
+a matrix, Aij = weight(i, j) if there is a link form vertex i to vertex j and Aij = 0 otherwise.
+From the matrix representation we can quickly apply basic linear algebra to a graph and take
+advantage of the existing research in mathematics and computer science of this ﬁeld [17]. On
+real web and social networks the adjacency matrix is usually very sparse and the size can be
+over a billion rows (vertices) with only few dozens of non-zero elements per row in average
+(edges). Another important trait is how edges are distributed among vertices, actually, most
+are scale-free networks with a power law distribution, so the majority of the vertices have a small
+number of connection compared to the size of the graph but some are super-connected. This
+sparsity pattern is known to be an obstacle in term of performance for traditional accelerated
+sparse linear algebra.
+
+2.2
+
+Spectral graph analytics
+
+The study of the eigenvalues of networks is called spectral graph analysis and has many ﬁeld of
+applications such as web [2], epidemiology[13], or ﬁnance[6]. In its simplest form an eigensolver
+computes the eigenpair λi and xi such as A ∗ xi = λi ∗ xi , where λi is called eigenvalue of A and
+xi is the eigenvector corresponding to λi . In graph theory, an eigenpair of a graph correspond
+to the eigenpair of its adjacency matrix A.
+For example Pagerank is a famous ranking method which measures the relative importance
+of elements in a graph or a network by creating a score based on topological dependencies
+and propagation of inﬂuence between vertices. This idea is based on a Markov model to
+represent transition probabilities from one vertex to another, so the stationary distribution
+(or the equilibrium) represents a steady state in the chains behavior [10]. This equilibrium
+can be seen as a vector where the ith component represents the probability to be in the ith
+state. In other words, the stationary distribution of a Markov Chain is the vector x such as
+A ∗ x = x, where A is the transition matrix. This vector has a large range of applications since
+it is used to predict the most possible future state based on present observations. In these cases
+we are interested in the largest eigenpair of large, sparse, non-symmetric, matrices with highly
+irregular sparsity pattern.
+Methods like Power Iteration can provide a good approximation of this vector. However, in
+many real application cases the largest eigenvalues are clustered and the overall convergence is
+slow because of the small gap between the two largest eigenvalues [7][1].
+
+2.3
+
+Eigenvalue solvers adapted to large scale-free networks
+
+In term of linear algebra, networks lead to sparse non-symmetric matrices. In general we are
+interested in a small subset of eigenpairs. There are several ways of solving such problem, and
+2339
+
+Accelerated hybrid approach for spectral graph analytics
+
+Algorithm 1 Arnoldi-reduction
+1:
+2:
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+14:
+15:
+16:
+
+Input: A, v1 , i, m
+Output: Vm , Hm , fm
+for j = i, ..., m do
+v = fm /||fm ||; w = A ∗ v
+if j = 1 then
+Vm(:,1) = v
+Hm(1,1) = v T ∗ w
+fm = w − v ∗ v T ∗ w
+else
+Vm(:,j) = v
+Hm(j,j−1) = ||fm ||
+h = VmT(:,1:j) ∗ w
+fm = w − Vm(:,1:j) ∗ h
+Hm(1:j,j) = h
+end if
+end for
+
+Fender, Emad, Eaton and Petiton
+
+Algorithm 2 Implicitly restarted Arnoldi algorithm
+1:
+2:
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+14:
+15:
+16:
+17:
+
+Input: A, v1 , k, m
+Output: k wanted eigenpairs
+[Vm , Hm , fm ] = Arnoldi-Reduction(A, v1 , 1, m)
+while Convergence is not reached do
+Compute the eigenpairs of Hm
+Compute the residual and stop if converged
+Select set of p = m − k shifts μ1 , ..., μp based on
+unwanted eigenvalues
+Qm = I
+for j = p, ..., 2, 1 do
+[Qj , Rj ] = QR-Factorization(Hm − μj I)
+H m = QH
+j Hm Q j
+Q m = QH
+m Qj
+end for
+fm = Vm(:,:) Qm(:,k+1) ∗ Hm(k+1,k) + fm ∗ Qm(m,k)
+Vm(:,1:k) = Vm(:,:) Qm(:,1:k)
+[Vm , Hm , fm ] = Arnoldi-Reduction(A, Vk , k, m)
+end while
+
+in this paper we focus on sparse iterative approaches.
+Power Iteration: The power iteration is a straightforward iterative method to compute an
+eigenpair composed by the eigenvalue λmax and its corresponding eigenvector xmax of a general
+Axi
+. The main cost of an iteration is one sparse matrix
+matrix A by doing iteratively xi+1 = ||Ax
+i ||
+vector multiplication (SPMV). This method works well on sparse matrices since it doesn’t require any additional memory. However we get only one eigenvalue which is the one with greatest
+absolute value by default. The main drawback of the power method is the slow convergence
+compared to other methods especially when eigenvalues are clustered [7].
+Krylov subspace methods: The Arnoldi method is an iterative method using Krylov subspace theory to compute an approximation of k eigenpairs of a general matrix A by those of
+a much smaller Hessenberg matrix Hm of size m, with k ≤ m. This matrix is obtained by an
+orthogonal reduction of A onto an m-dimensional Krylov subspace Km (A, v).
+The method starts similarly to the power iteration but instead of rewriting v at each iteration
+we keep the information and form a matrix [v, Av, A2 v, ...Am−1 v] and use a modiﬁed GramSchmidt process to orthonormalize those vectors. In the end we form Hm , Vm , fm such as
+AVm = Vm Hm + fm eTm , with the process described in algorithm 1. This method is based on a
+random initial guess, thus, it is possible to speed up the convergence by improving the quality of
+this initial guess. For example, the Arnoldi method can be restarted with a better initial vector.
+A restarting approach based on shifted QR called implicitly restarted Arnoldi method (IRAM),
+making use of unwanted eigenvalues as shifts, is proposed in [11],[19]. Algorithm 2 illustrates
+this method, it starts with the Arnoldi reduction to build the initial subspace of size m. Then
+at each restart cycle all eigenpairs of Hm are computed and the residual norm is estimated.
+The QR step concentrates the information of interest in the upper-left part of Hm and the
+2340
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+orthonormal matrix Qm is used to update the matrices Vm , Hm and fm . Thus, the initial
+problem is implicitly updated and m − k SPMV are required for the next restart cycle. When
+the approximation is good enough we exit the main loop and we can multiply Vm by the matrix
+formed by the eigenvectors of Hm to approximate the eigenvectors of A. This approach is more
+ﬁtted and robust for spectral graph analysis [11], in addition it allows to compute more than
+one eigenpair which can be useful for spectral clustering for example [15].
+IRAM can operate in parallel [18], handle large graph problems [13], and doesn’t require extra
+memory. In section three we focus on accelerating IRAM to solve the spectral problem.
+
+3
+3.1
+
+Parallel formulation
+Accelerator
+
+Accelerators improve performances by oﬄoading intensive tasks from the general purpose processor (CPU). In this context, a graphics processor unit (GPU) consists in a massively parallel
+architecture with thousands of cores designed to quickly access and modify memory. We refer
+to the CPU as host and to the GPU as device. The device has its own global memory, with a
+fast connection between the memory and cores. In the recent years GPUs have become very important in HPC and data analysis applications, the science of programming those architectures
+is called GPGPU. In a nutshell, GPUs oﬀer a high throughput with a good energy eﬃciency
+as long as they are correctly programmed, like every processor. In the case of spectral graph
+analytics, we are mainly interested in iterative methods where the crucial part is the parallel
+sparse matrix vector multiplication [20, 8].
+The SPMV is a memory bounded application, which is good for GPU since the device memory bandwidth is several time higher than the host bandwidth. Nevertheless accelerating this
+operation is not straightforward and several points have to be carefully designed, such as the
+compression format and the load balancing.
+The bottleneck of the initial host to device data transfer is not relevant in the context of iterative methods since it is done only once, before the iterative process. Nevertheless, the sparse
+matrix compression format should still have a good compression rate. Indeed networks have a
+very irregular sparsity pattern, so a bad compression can lead to dramatic memory costs, and
+thus expensive transfers. This is the main reason why we choose the compressed sparse row
+(CSR) format, the other reason being the popularity and the wide adoption of this format.
+Another issue comes from small tasks, which can lead to important loss of resources on GPU.
+Actually, if a small task is on critical path, the high throughput doesn’t matter any more since
+the time will be bounded by the GPU latency.
+
+3.2
+
+The hybrid approach
+
+Initially, the network lives in the device memory in its CSR representation, but with recent
+uniﬁed virtual memory (UVM), the graph can also be streamed to the device on-demand as well.
+Every other data structure of the size of the graph, such additional vertex or edges information
+and vectors are also on the device. The reason for that is the assumption that host/device
+and host bandwidth are considerably slower than the device one, so it is primordial to avoid
+transfers at this scale inside the iterative process. The SPMV and the GramSchmidt process
+are done on the device, thus we form the matrix Vm from the Arnoldi Reduction directly on
+the device, each column j of Vm corresponds to the result Avi orthogonalized with the previous
+vectors. One will notice that Vm is a dense matrix and will be stored in column major order
+2341
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+by nature. The small matrix Hm is formed at the same time directly on the host in column
+major order as well, it is important to know that the size (m) of this matrix is between 4 and
+20 for most graph applications. There is no explicit or blocking transfer of the matrix Hm at
+this point, since Hi,j are the result of level1 operations happening between the SPMVs of the
+Arnoldi Reduction. Results are just written on the host one by one without Read After Write
+issues since Hm is used at the very end of the reduction. Once the desired size is reached, the
+Ritz pairs of Hm can be computed on the host, we select the unwanted eigenvalues to perform
+the shifted QR factorizations there. At this point the problem is solved into the subspace
++
+and Q+
+and the next step is to update the basis, this is done by using the new matrix Hm
+m.
+However this part involves Vm which is composed by vectors of the size of the graph. This
+step corresponds to tall skinny dense matrix-matrix multiplications. Fortunately this type of
+operation are among the best use cases for accelerators, plus the large matrix is already on the
+device. We just need to transfer the new subspace information which are a couple of matrices
+of size m. Finally we are ready for a new cycle with the exact same strategy starting by the
+Arnoldi Reduction at the k + 1th step.
+Algorithm 3 Accelerated IRAM
+
+Figure 1: Overview of the hybrid
+IRAM solver, green steps are on the
+device, and blue ones on the host
+
+4
+
+Notation: D stands for Device and H for Host
+Initially: A and v1 are on D
+[Hm ]H [Vm , fm ]D = Arnoldi-Reduction(A, v1 , 1, m)
+while Convergence is not reached do
+H: Compute the eigenpairs of Hm
+H: Compute the residual and stop if converged
+H: Select p = m − k shifts μ1 , ..., μp based on unwanted eigenvalues
+H: Qm = I
+for j = p, ..., 2, 1 do
+H: [Qj , Rj ] = QR-Factorization(Hm − μj I)
+H: Hm = QH
+j Hm Q j
+H: Qm = QH
+m Qj
+end for
+Transfer: Hm and Qm from H to D
+D: fm = Vm(:,:) Qm(:,k+1) ∗ Hm(k+1,k) + fm ∗ Qm(m,k)
+D: Vm(:,1:k) = Vm(:,:) Qm(:,1:k)
+[Hm ]H [Vm , fm ]D = Arnoldi-Reduction(A, Vk , k, m)
+end while
+
+Implementation
+
+The solver is implemented in an experimental branch of nvGRAPH, which is a library supported
+by the Nvidia. It is written in C++ and released with a C API. For many low level primitives
+on the GPU we leverage CUDA toolkit libraries such as Cublas, Cusparse and Thrust. On the
+host we used Lapack for QR factorizations.
+Internally the code leverage object oriented design. Each step of the solver is independent and
+was validated and tested separately, we built a test suite based on GT EST , a Google opensource framework for C++ tests.
+2342
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+Property graphs: We handle property graphs with multiple dimensions of vertexes and edges,
+and several data type. Internally the representation is similar to CSR format with multiple value
+dimension attached to vertex and edges. For spectral analysis this feature allow to run multiple
+instance of the solver, potentially in parallel, on diﬀerent edges dimensions of a single network.
+Typically we can imagine several Markov’s transition matrices sharing the same topology but
+diﬀerent transition probabilities. At the end each vertex would have a set of equilibrium values
+corresponding to the diﬀerent conﬁgurations.
+Multiple dimensions on the vertex can be used to represent diﬀerent metrics, for example it
+is possible to compute Pagerank with diﬀerent parameters and store each result in a vertex
+dimension, those dimensions can be combined, potentially with weights, to get the ﬁnal rank
+of the vertex.
+Parameters: The IRAM solver needs a graph, and an initial guess (which can be random).
+The user provides the desired Krylov subspace size and the number desired of eigenpairs. In
+output the solver returns those eigenpairs.
+The solver can artiﬁcially represent Google matrices to solve the Pagerank problem for example. This mechanism can also be applied to guaranty a unique eiegnvector corresponding to the
+largest eigenvalue of a Stochastic matrix [9]. In this case the user should provide the bookmark
+of dangling nodes and the damping factor (the probability to follow edges). Internally this
+has almost no computational cost since we do that on the device during the Arnoldi projection using implicit rank one updates. We present result of those cases in the experiment section.
+Compressed Sparse Row Matrix Vector Multiplication (CSRMV)
+There are many approaches for the SPMV on accelerators [20], in general each one has its
+architectures and sparse matrix format aﬃnities. For the CSRMV on GPU there are basically
+four common solutions without changing the format:
+-Scalar: Since each row can be computed independently, one thread can be assigned to one
+row. This is the CSR-scalar, relatively simple to implement and work for accelerator with few
+fast cores but this will not scale on GPU. First because memory accesses per warp will diverge
+and also because the total time will depend on the largest rows which are very large compared
+to the rest of the dataset in scale-free networks.
+-Vectorized: The memory access pattern can be improved as well as the time to process
+large rows by using a vectorized approach where a group of thread of ﬁxed size will be assigned
+to one row.
+-Hybrid: A dynamic combination of previous approaches, typically we look at a group
+of vertex (rows) and assign a speciﬁc kernel depending on the number of edges (non-zeroes).
+Empirically we decide if it is a group of small rows, in this case we use CSR scalar, or a large
+group in which case we use CSR vectorized. For scale-free networks applications, it is a often a
+good idea to have a third implementation that splits extra-large rows to be processed by several
+group of threads.
+-Pre/post processed: It is possible to add pre-processing and post-processing steps to reorder, sort, classify, or break rows and compute auxiliary information that will help to speedup
+the multiplication [8]. This is particularly useful for iterative methods since, in general, we do
+the pre-processing step only once as long as the sparsity pattern of the matrix doesn’t change.
+The approach we chose is based on Merill’s solution which handle arbitrary sparsity pattern
+in an eﬃcient way based on a 2D merge-path decomposition [4, 16]. This approach, called
+CSRMV merge-path, oﬀers a perfect workload balance on GPU. At a high level we start by
+computing partitions using the 2D merge-path, the output of this step is the starting oﬀsets of
+2343
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+each, balanced, partition (in term of coordinate in row oﬀsets and values/column indexes). At
+this point multiple rows can belong to the same partition or a single row can cross partitions,
+so a key value array is used to keep tack of that. Then the multiplication and the local accumulation is performed. Finally some rows may cross partitions so we use a key-value reduction
+to accumulate partial sums among them.
+Memory management
+Real workload may involve manipulation of multiple properties dimensions and potentially several graphs. When summed, GPU memory allocation and deallocation can have a considerable
+time. In addition, for re-usability and performance consideration it is better to avoid directly
+dealing with GPU memory during the restart cycles of the hybrid solver. Fortunately the device
+memory can be managed by the application itself, in other words instead of explicitly allocating and freeing device memory in the code we take advantage of a memory management layer
+in charge of managing memory blocks on the device. Hence, a large block of memory can be
+allocated during the initialization of the library and distributed in an on-demand fashion by the
+memory manager. This manager can allocate more GPU memory if needed. We used CNMEM,
+an open-source CUDA memory manager enriched by an extra layer for smart pointers support.
+We also support the uniﬁed virtual memory (UVM) address space between host and device, in
+this case there is no explicit host/device transfers. This is based on a page fault mechanism
+between the CPU and the GPU, so data are automatically transferred if needed when accessed
+either from host or device.
+
+5
+
+Experiments
+
+We use a NVIDIA Tesla K40m for this experiment with the driver version 352.68 and CUDA7.5.
+The test machine OS is RedHat6.5 and is equipped with an Intel Xeon CPU E5-2698 v3 at
+2.30GHz and 256GB of memory.
+We implemented and optimized the Power Iteration Method on GPU in order to have a fair
+and useful way to estimate speed-up oﬀered by the hybrid IRAM solver. This implementation
+takes advantage of all the optimizations described in the previous sections. The tolerance of
+the quality of the approximation is 10−6 for the following experiments, which is good enough
+for ranking applications.
+In Tab.1 we selected real networks from SNAP collection [12] and KONECT [3], the star (*)
+on undirected graphs indicates that a undirected connection is represented by a directed edge
+in each direction. The column V represent the number of vertices (size of the matrix) and E
+column shows the number of edges of the graph (ie. the number of non zero entries in the
+matrix). Com-Youtube and com-Orkut are social networks where vertex are users and edges
+are friendship. Rmat-1M is an artiﬁcial graph generated using Boost Graph Library RMAT
+generator, and wiki-2011 represents the citations (edges) between Wikipedia articles (vertices)
+[5].
+Accelerated IRAM versus Power Iteration
+Usually Pagerank is a very good use case for the power iteration solver, especially with a reasonably low damping factor and in single precision mode. Nevertheless IRAM performs better
+in Tab.1, with an average speed-up of 1.8x for a damping factor of 0.85. There are simple cases
+where Power Iteration can beat the hybrid IRAM solver in term of total time, for example if
+the two dominant eigenvalues are not clustered (at least |λ1 − λ2 | > 10−1 ) and if we don’t care
+much about the quality of the approximation (tolerance under 10−4 ).
+Typically the Power Iteration can reach the desired tolerance in less than 9 iterations on these
+2344
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+Table 1: A comparison between the Accelerated Power Iteration and the Hybrid IRAM solver
+on a simple Pagerank case (α = 0.85), subspace size = 4, double precision
+Graph
+com-Youtube
+rmat-1M
+wiki-2011
+com-Orkut
+
+Type
+Social
+Artiﬁcial
+Citations
+Social
+
+V
+1,134,890
+1,000,000
+3,721,339
+3,072,441
+
+E
+5,975,248*
+41,237,691
+66,454,329
+234,370,166*
+
+(a) Variation of the damping factor
+
+Power
+SPMV
+65
+18
+40
+46
+
+T(s)
+0.20
+0.41
+1.85
+6.37
+
+IRAM
+SPMV
+22
+10
+25
+25
+
+T(s)
+0.09
+0.24
+1.26
+3.55
+
+Speedup
+2.13
+1.74
+1.47
+1.79
+
+(b) Variation of the Krylov subspace size on
+com-Orkut
+
+Figure 2: Pagerank experiment
+
+cases. In the future we can imagine a general adaptive solver to dynamically choose between
+the two solvers based on input information.
+In the Pagerank example, the damping factor has a direct impact on the gap between the two
+largest eigenvalues, and thus the convergence rate. This is the reason why we use that to show
+the variation speed-up against power iteration in Fig.2a. We observe that when the problem
+become harder to solve, the hybrid IRAM solver performs better by dividing the number of
+SPMV by 18.3 times in average when eigenvalues are clustered (α = 0.999). For those cases
+the resulting average speedup in term of time is 14.4x, compared to the power iteration.
+The diﬀerence between the reduction of the number of SPMV and the actual speedup corresponds to the cost of the implicit restarts.
+The choice of the subspace size can be independent of the graph size, for the experiment in
+Fig.2a the subspace size is always 4, that means the cost for solving the problem in the subspace
+size is quite constant compared to the size of the data set. Hence increasing the network size
+will dilute the cost of the implicit restarts. For example on a small graph like com-Youtube
+the speedup is 28.08% under the reduction of the number of SPMV, while on com-Orkut, the
+largest data set of Tab.1 , this diﬀerence is only about 2.46%.
+In Fig.3 the proﬁle clearly shows that most of the time remains in the CSRMV (37ms per
+CSRMV in average in this example), we see the level1 BLAS routines such as AXPY, DOT
+and SCAL which are cheap compare to the CSRMV but happen between each SPMV for the
+rank-one update of the Pagerank algorithm and the GramSchmidt process. At the end of each
+cycle we call the tall skinny matrix multiplications for the projection.In this pagerank example
+we are looking for one eigenvector so the ﬁnal projection is only one tall-skinny mat-vec. Transfers of the algorithm 3 take one to ﬁve micro second each, and are too small to be visualized
+2345
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+Figure 3: NVP Proﬁle representing the initial Arnoldi reduction (1st line) and two restarts of
+IRAM (lines 2, 3), when looking for one eigenvalue in a subspace of size four on wiki-2011.
+
+on Fig.3.
+Krylov subspace size consideration
+Fig.2b shows that the Kylov subspace size has a signiﬁcant impact on the performance on the
+method on com-Orkut. So far, in the previous experiments, the subspace size was four but
+Fig.2b shows that changing this size to ten lead to an additional 40% speedup
+It is important to know that the best subspace size changes from a data set to another. It is
+not always possible to know this in advance but methods like MIRAMns [18] can dynamically
+detect and use the best subspace size.
+By increasing the subspace size we also increase the size of the matrix V on the device plus
+we quadratically increase host-device transfers. Thus, it is important to carefully chose this
+size. For com-Orkut in Fig.2b the extra memory cost is about 4% on the device. Regarding
+the transfers, in both cases, the matrices in the subspace are too small to have a signiﬁcant
+impact on the total solver time, and the speed of the transfer remains under the bandwidth
+peak performance.
+
+6
+
+Conclusion
+
+Data are everywhere and create new computational challenges especially when a third of the
+Top500’s FLOPS comes from accelerators, we saw in this paper how spectral graph analysis
+of real networks lead to large non-symmetric eigenvalue problems with very irregular sparsity
+patterns. For most graph applications the eigenvalues of interest are a small set among the
+largest or smallest ones, hence, sparse iterative methods like Krylov subspace methods are a
+good choice to solve this problem. Nevertheless they are not really ﬁtted for accelerators like
+GPUs by nature, as well as the scale-free topology of many networks. We presented an hybrid,
+accelerated, solution to leverage GPU throughput to operate on large sparse matrices without
+suﬀering from under-occupancy when solving the small, coarse, problem. The details of the
+hybrid strategy are explained, and can be useful to other methods with reductions-projections
+patterns. We also discussed collateral problems we had to deal with during the implementation
+of this solver such as the load imbalance of scale-free networks and the host device memory
+management.
+We showed that the accelerated IRAM solver competes against other accelerated eigenvalue
+method that are known to be eﬃcient on GPU architectures and comes with many useful features for graph analytics. Meanwhile, we also showed that the subspace size has important impact on the convergence and we cannot know the best size in advance. Methods like MIRAMns
+are compatible with the accelerated IRAM hybrid algorithm and could help to dynamically
+choose the best subspace at each cycle in the future.
+2346
+
+Accelerated hybrid approach for spectral graph analytics
+
+Fender, Emad, Eaton and Petiton
+
+References
+[1] Andr´
+as Brody. The Second Eigenvalue of the Leontief Matrix. Economic Systems Research,
+9(3):253–258, sep 1997.
+[2] Kurt Bryan and Tanya Leise. The $25,000,000,000 Eigenvector: The Linear Algebra behind
+Google. SIAM Review, 48(3):569–581, 2006.
+[3] Koblenz Network Collection. Handbook of Network Analysis KONECT the Koblenz Network
+Collection. Proceedings of the 22Nd International Conference on World Wide Web Companion,
+pages 1–56, 2015.
+[4] Narsingh Deo, Amit Jain, and Muralidhar Medidi. An optimal parallel algorithm for merging
+using multiselection. Information Processing Letters, 50(2):81–87, 1994.
+[5] Young Ho Eom, Klaus M. Frahm, Andr´
+as Bencz´
+ur, and Dima L. Shepelyansky. Time evolution of
+wikipedia network ranking. European Physical Journal B, 86(12), 2013.
+[6] Leonardo Ermann, Klaus M. Frahm, and Dima L. Shepelyansky. Google matrix analysis of directed
+networks. Reviews of Modern Physics, 87(4):1261–1310, 2015.
+[7] G. H. Golub and C. Greif. An Arnoldi-type algorithm for computing page rank. BIT Numerical
+Mathematics, 46(4):759–771, 2006.
+[8] Joseph L. Greathouse and Mayank Daga. Eﬃcient Sparse Matrix-Vector Multiplication on GPUs
+Using the CSR Storage Format. International Conference for High Performance Computing, Networking, Storage and Analysis, SC, 2015-Janua(January):769–780, 2014.
+[9] Wolfgang Krieger. On the uniqueness of the equilibrium state. Mathematical Systems Theory,
+8(2):97–104, jun 1974.
+[10] Amy Langville and Carl Meyer. Deeper Inside PageRank, 2003.
+[11] Rich Bruno Lehoucq. Analysis and Implementation of an Implicitly Restarted Arnoldi Iteration.
+PhD thesis, Rice University, 1995.
+[12] J Leskovec and A Krevl. SNAP Datasets: Stanford Large Network Dataset Collection, 2014.
+[13] Zifan Liu, Nahid Emad, Souﬁan Ben Amor, and Michel Lamure. A parallel IRAM algorithm
+to compute PageRank for modeling epidemic spread. Proceedings - Symposium on Computer
+Architecture and High Performance Computing, pages 120–127, oct 2013.
+[14] Keith J Mueller, Andrew F Coburn, A Clinton MacKinney, Timothy D McBride, Rebecca T
+Slifkin, and Mary K Wakeﬁeld. Understanding the impacts of the Medicare Modernization Act:
+concerns of congressional staﬀ. The Journal of rural health : oﬃcial journal of the American Rural
+Health Association and the National Rural Health Care Association, 21(3):194–7, mar 2005.
+[15] Andrew Y Ng, Michael I Jordan, and Yair Weiss. On Spectral Clustering: Analysis and an
+algorithm. Advances in Neural Information Processing Systems, pages 849–856, 2001.
+[16] Saher Odeh, Oded Green, Zahi Mwassi, Oz Shmueli, and Yitzhak Birk. Merge path - Parallel
+merging made simple. Proceedings of the 2012 IEEE 26th International Parallel and Distributed
+Processing Symposium Workshops, IPDPSW 2012, pages 1611–1618, 2012.
+[17] C. Seshadhri, Ali Pinar, and Tamara G. Kolda. An in-depth study of stochastic Kronecker graphs.
+Proceedings - IEEE International Conference on Data Mining, ICDM, 67:587–596, feb 2011.
+[18] S. A. Shahzadeh Fazeli, Nahid Emad, and Zifan Liu. A key to choose subspace size in implicitly
+restarted Arnoldi method. Numerical Algorithms, 70(2):407–426, oct 2015.
+[19] Danny C. Sorensen. Implicitly Restarted Arnoldi/Lanczos Methods for Large Scale Eigenvalue
+Calculations. In David E. Keyes, , Ahmed Sameh, , and V. Venkatakrishnan, editors, Parallel
+Numerical Algorithms, pages 119–165. Springer Netherlands, 1997.
+[20] Ling Zhuo and Viktor K. Prasanna. Sparse Matrix-Vector multiplication on FPGAs. In Proceedings of the 2005 ACM/SIGDA 13th international symposium on Field-programmable gate arrays
+- FPGA ’05, pages 63–74, New York, New York, USA, 2005. ACM Press.
+
+2347
+
+

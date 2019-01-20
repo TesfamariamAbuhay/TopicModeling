@@ -1,0 +1,910 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 312–321
+
+Toward Malleable Model Coupling
+Daihee Kima , J. Walter Larsonb,c,d , Kenneth Chiua
+a Department
+
+of Computer Science, SUNY Binghamton, P.O. Box 60000, Binghamton, NY 13902, USA
+Email: {dkim17,kchiu}@cs.binghamton.edu
+b Mathematics and Computer Science Division, Argonne National Laboratory, 9700 S. Cass Ave., Argonne, IL 60439, USA
+Email: larson@mcs.anl.gov
+c Computation Institute, University of Chicago, 5735 S. Ellis Ave., Chicago, IL 60637, USA
+d School of Computer Science, The Australian National University, Canberra, ACT 0200, AUSTRALIA
+
+Abstract
+Model coupling is a method to simulate complex multiphysics and multiscale phenomena. Most approaches
+involve static data distribution among processes without the consideration of top-level dynamic load balancing. Malleability, the ability to change the number of processes during execution, allows applications to conﬁgure themselves
+to better utilize available system resources. To date, however, malleability has been applied primarily to monolithic
+applications. We have extended the Model Coupling Toolkit (MCT) to support processing element malleability for
+coupled models, resulting in the Malleable Model Coupling Toolkit (MMCT). MMCT consists of a load balance manager (LBM) implementing a practical dynamic load-balancing algorithm and a malleable model registry that allows
+management of dynamically evolving MPI communicators. MMCT requires only standard MPI-2, sockets, and MCT.
+We benchmark MMCT using a synthetic, simpliﬁed coupled model application similar to the Community Climate
+System Model. Preliminary performance data demonstrate the eﬃcacy of the LBM and a low (≈ 3%) monitoring
+overhead.
+Keywords: MPI, Dynamic Load Balance, Model Coupling, Multiphysics Modeling, Multiscale Modeling
+
+1. Introduction
+Current scientiﬁc challenges often involve complex systems spanning multiple disciplines (e.g., a climate system
+model) or spatiotemporal scales (e.g., nested-domain numerical weather prediction)—multiphysics and multiscale
+problems, respectively. A deﬁning characteristic of these systems are data dependencies, or couplings, between their
+constituent subsystem models, or constituents. Thus, multiphysics and multiscale models are often called coupled
+models or coupled systems. The march toward exascale computing will make coupled models increasingly common
+and pose new challenges for model coupling software. A critical requirement for utilizing up to million-way parallelism will be the design and implementation of eﬀective and eﬃcient online load (re)balance mechanisms, including
+support for dynamic load balance both within and between constituents.
+The challenge inherent in building parallel coupled models is called the parallel coupling problem (PCP) [1].
+Each constituent in a parallel coupled model resides on a set of processors—or processing elements (PEs)—called
+a PE cohort, or simply cohort. Parallel coupled models evolve their state by solving each constituent’s equations
+of evolution on its respective cohort, with data dependencies on other constituents satisﬁed at a minimum by parallel
+M×N data transfers [2], though other data transformation operations (e.g., intermesh interpolation) are likely required.
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.033
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+313
+
+The main performance concern of coupled models is throughput, which is the amount of simulation accomplished
+(in terms of the model’s timestep) divided by the wall clock time required to perform the simulation; for example,
+throughput in a coupled climate model is measured in model years per wall-clock day. Achieving high throughput
+requires that individual constituents scale well and that wait time due to poor load balance and/or synchronization
+is minimized. Thus, a key challenge in building eﬃcient parallel coupled models is the allocation of resources,
+speciﬁcally PEs, to constituents, and the reallocation of resources should runtime load characteristics change. The
+present work’s focus is solely on this aspect of the PCP. Typically, parallel coupled models statically determine the
+resource allocation to constituent subsystems oﬄine through trial and error. Automatic dynamic load balance, both
+within and between constituents, is thus highly desirable. Load balance within a constituent is amenable to existing
+load-balancing approaches. Interconstituent load balance, however, requires further work, in particular the capability
+for a coupled model to resize constituents’ PE cohorts to better use system resources; we call this property cohort
+malleability, or simply malleability [3]. We deﬁne a parallel coupled model with malleable constituent cohorts to be
+a malleable coupled model (MCM).
+Malleable iterative parallel applications have been investigated and shown to be beneﬁcial. The ReSHAPE [4]
+framework adopts malleability for eﬃcient job scheduling by resizing the processor allocation of malleable applications based on the utilization of distributed resources. Maghraoui et al. [5, 6] introduced malleable iterative MPI
+applications that can change their process conﬁguration dynamically by working with the PCM/IOS runtime environment. PCM/IOS provides mechanisms for reconﬁguration, most notably a proﬁling module that monitors the status
+of applications to guide and inform resource reallocation. SRS [7] also provides methods to allow a parallel application to reconﬁgure itself through its stop and restart processes. These approaches, however, are not immediately
+applicable to malleable model coupling because they are targeted to monolithic parallel applications, as opposed to
+frameworks/toolkits for model coupling. Ko et al. [8] describe a coupled multiphysics simulation that can optimize
+the allocation of constituents on the given set of PEs. The load-balancing algorithm described in [8] is acceptable
+only for a coupled model consisting of two constituents. Moreover, each model communicates by exchanging ﬁles,
+an approach that is less general than MPI or socket-based communication. The CSCAPES project [9] has investigated
+load balancing and allocation issues but primarily has used a priori knowledge about the application and has examined
+mainly load balance within a constituent. As coupled models become increasingly complex, mechanisms that gather
+online performance information and utilize it to perform interconstituent dynamic load balance become increasingly
+attractive.
+To address these issues, we extended the Model Coupling Toolkit (MCT) [10, 11] to enable it to support malleable
+MPI communicators and a malleable MPI COMM World, thus supporting MCMs. We enhanced MCT by adding loadmonitoring and optimization schemes, a central load balance manager, and a mechanism for resizing constituents’
+cohorts. The resulting system—malleable MCT (MMCT)—extends MCT’s programming model to allow construction
+of parallel coupled models whose constituent PE cohort conﬁguration is automatically reconﬁgurable at runtime using
+decisions made by its load balance manager. We then investigated various dynamic load-balancing techniques to show
+the feasibility of the approach and the eﬀectiveness of the modiﬁcations to MCT. We devised general optimization and
+expansion algorithms loosely based on the gradient descent method [12]. The optimization and expansion algorithms
+are used to optimize the conﬁguration for N constituents and to allocate more available resources on a homogeneous
+cluster to improve utilization of distributed resources and coupled model throughput.
+2. Model Coupling Toolkit
+MCT is open-source software [13] that provides an API consisting of datatypes and functions supporting the
+description of constituents and their input/output data, parallel data transfer and redistribution, and commonly encountered data transformation operations. Supported data transformation operations include conservative intergrid
+interpolation implemented as a parallel linear transformation, time integration (averaging) of ﬂux (state) variables,
+and merging of outputs from multiple constituents for input to another constituent. Collectively, MCT’s API is widely
+applicable to data coupling between legacy MPI-based parallel models. MCT implements a peer communication approach: couplings are viewed as large-scale M × N messaging between models, extended by other data transformation
+operations. A complete discussion of MCT’s design philosophy and object model is given in [10]. A detailed description of MCT’s parallel data transfer and regridding facilities is given in [11]. MCT has been used in numerous
+applications, most notably as coupling middleware for versions 3 and 4 of the Community Climate System Model
+
+314
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+(CCSM) [14, 15], used by an international community to study climate change, climate variability, climate sensitivity,
+and paleoclimates. The MCT programming model is largely unchanged by the implementation of cohort malleability,
+and modiﬁcations of an existing parallel coupled model to make it an MCM should be straightforward.
+We now describe aspects of MCT relevant to malleability. The MCTWorld class is a lightweight constituent registry, encapsulating the number of constituents in the coupled model, the allocation of processors to constituents,
+and their individual communicators. MCT was developed by using the MPI-1 standard’s [16] communicator creation and manipulation scheme. The MCTWorld class encapsulates a global communicator that is typically a copy of
+MPI COMM WORLD. The singleton MCTWorld can be created by using either a single master call by the root PE on
+the global communicator or a distributed call by each PE on each constituent’s cohort, with individual constituent communicators previously created by application of a communicator splitting mechanism such as MPI COMM SPLIT()
+to the global communicator. MCT stores the communicator ID and list of member MPI processes for each cohort
+in the MCT World. MCT builds communications schedulers for M × N transfers through process ID lookup using
+the MCT World registry. This is conceptually attractive because it allows constituents to exchange domain decomposition descriptions deﬁned using local process IDs on their respective communicators, with the MCT World the
+interlocutor to create interconstituent communications schedules. In the current, publicly released version of MCT,
+the MCT World class is considered a singleton, instantiated in the global variable ThisMCTWorld, and static over the
+life of an application at runtime.
+3. Load-Balancing Algorithm
+We ﬁrst deﬁne terms for timestepping and resource allocation in coupled models. During execution each constituent solves its respective equations of evolution on its domain, utilizing (supplying) coupling input (output) from
+(to) other constituents. The provision (uptake) of coupling data occurs during coupling events [1]. The timing of these
+may be a consequence of runtime behavior, or may be known a priori—scheduled coupling [1]. For some scheduled
+coupling situations, the full schedule of interconstituent coupling time intervals may be mutually commensurate, resulting in a coupling cycle [1]. The ratio of timescales corresponding to the constituent’s timestep versus the interval
+between coupling events can be used to deﬁne the tightness of the couplings [1]. For example, in the standard conﬁguration of CCSM, the constituents are the atmosphere, ocean, sea-ice, and land models and an additional entity called
+the coupler; all data traﬃc between the constituents in CCSM is directed via the coupler. In a standard conﬁguration of
+CCSM, the model timesteps are {Δtatm , Δtocn , Δtice , Δtland , Δtcpl } = {20, 20, 60, 60, 60} minutes. CCSM’s couplings are
+scheduled, with the interval between the atmosphere, land, and sea-ice models’ interactions with the coupler occuring
+hourly, while the ocean communicates with the coupler once per model-day; thus CCSM has a repeating coupling
+cycle ΔT equal to one model-day. Note that the atmosphere, land, and sea-ice models are more tightly coupled to the
+system than is the ocean model. PE cohorts in coupled models can be deﬁned in a wide variety of conﬁgurations, or
+process compositions [1].
+Consider a coupled model with N constituents. In the load balance analysis that follows, we assume that each
+constituent has its own constant timestep Δti , i ∈ {1, . . . , N}; coupling events fall into a coupling cycle ΔT ≥ Δti ∀i;
+and the constituents are conﬁgured in a parallel composition. These assumptions, though highly restrictive, are present
+in a wide variety of coupled climate, weather, and ocean applications. Our load-balancing schemes analyze constituent
+proﬁling data gathered over a load-sampling interval (LSI); in the analyses presented here, the LSI corresponds to the
+coupling cycle time ΔT . The global iteration time τG is the wall clock time required by the coupled model to evolve
+its state over a period ΔT . The constituent iteration time τi is the wall clock time required for the constituent to evolve
+comp
+coup
++ τi , the sum of the constituent computation
+its state over the period ΔT ; this time is decomposed as τi = τi
+comp
+coup
+and τi are the wall clock times during which the
+and constituent coupling times, respectively. In other words, τi
+constituent computes its internal state (including comcomitant communciations within its cohort) and awaits (supplies)
+comp
+comp
+data from (to) other constituents, respectively. Our objective is to formulate analyses of {τ1 , . . . , τN ; τ1 , . . . , τN }
+that guide constituent cohort reallocation to decrease τG .
+comp
+for a constituent follows a simple curve with respect to the number of PEs Ni allocated
+We assume that τi
+to it. Initially, the curve slopes downward, indicating that the performance increases. At some point, we assume
+performance saturates, and the curve starts to slope upward, indicating that communication and other overheads are
+comp
+starting to dominate τi . The iteration time of the complete coupled application, τG , is a complex function of its PE
+allocation to its constituents. If the models are fully concurrent and never wait on each other except at the end of an
+
+315
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+initialize
+prev iter time = ∞; prev comp sum = ∞;
+prev donor = -1; prev recipient = -1;
+end
+update
+prev iter time = cur iter time;
+prev comp sum = cur comp sum;
+prev donor = donor; prev recipient = recipient;
+end
+initialize;
+repeat
+cur iter time = τG ;
+comp
+cur comp sum = sum of τi
+of all models;
+{Condition 1.}
+if cur iter time ≤ prev iter time and cur comp sum ≤
+prev comp sum then
+Mark [prev recipient, prev donor] pair as a non-viable reallocation direction;
+Choose [donor, recipient] pair using SEL1 or SEL2;
+num procs = 1; try count = 1;
+update;
+{Condition 2.}
+else if (cur iter time ≤ prev iter time or cur comp sum ≤
+prev comp sum) and try count < try count limit then
+{Try again.}
+[donor, recipient] = [prev donor, prev recipient];
+num procs = 1; try count++;
+update;
+else {Condition 3}
+Mark [prev donor, prev recipient] pair as a non-viable reallocation direction;
+{Reverse direction to undo}
+[donor, recipient]= [prev recipient, prev donor];
+num procs = try count;
+initialize;
+end if
+if [donor, recipient] pair is viable then
+reallocate([donor, recipient], num procs);
+end if
+until [donor, recipient] pair is viable
+Figure 1: Optimization algorithm.
+
+{ n models is the number of models. models comp is an array of model
+comp
+references in decreasing τi
+order. models slope is an array of
+comp
+model references sorted in decreasing derivative δτi
+order.}
+{First search.}
+for i = n models − 1 to 0 do
+{Current smallest slope.}
+donor = models slope[i];
+{Pick greatest comp time as recipient.}
+for j = 0 to j = n models − 1 do
+if models comp[ j].comp time > donor.comp time and models comp[ j] not donor then
+recipient = models comp[ j];
+if [donor, recipient] pair is viable reallocation direction then
+return [donor, recipient];
+end if
+end if
+end for
+end for
+{Second search, if slowest model can no longer benefit from more
+processors.}
+for i = 0 to n models − 1 do
+donor = models comp[i];
+for j = 0 to n models − 1 do
+if models slope[ j].comp time < donor.comp time and models slope[ j] not donor then
+recipient = models slope[ j];
+if [donor, recipient] pair is viable reallocation direction then
+return [donor, recipient];
+end if
+end if
+end for
+end for
+{No viable direction}
+return [-1, -1];
+Figure 2: SEL2 selection algorithm.
+
+comp
+
+iteration, the τG will be the same as that of the slowest constituent (i.e., the one with the maximum value of τi ). In
+more realistic cases, however, the situation is more complex.
+We assume that two types of allocation situations may occur. The ﬁrst is where the current PE allocation across
+constituents is performaing poorly and needs to be rebalanced. We consider this an optimization phase. The other
+is where a new PE is to be donated to the application’s global PE pool, and thus a recipient constituent needs to be
+chosen. We call this an expansion phase. The two phases may be interleaved, of course. Contraction, or rescinding a
+PE from the global pool, would also be a useful operation but is not considered in this paper; it will be examined in
+future work.
+Optimization. The algorithm for optimization is described in Figure 1. We assume that each pair of constituents,
+a donor and a recipient, represents a direction for possible reallocation (i.e., taking a PE away from the donor and
+giving it to the recipient). The algorithm reallocates in a direction as long as performance is improved. The directions
+that are tried are selected by the algorithms SEL1 and SEL2 given in Figure 3 and 2, respectively. When it is detected
+that a direction works, the opposite direction is marked false, to indicate that it should not be considered. Once a
+direction fails to improve performance, the last reallocation is undone. The algorithm tries all possible directions for
+reallocation at least once.
+The performance of a constituent may be subject to factors other than the number of processors, such as OS jitter,
+communication bottlenecks caused by other jobs, or computational changes in any particular iteration. We detect
+
+316
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+{ n models is the number of models. models comp is an array of model
+comp
+)RUHDFKGD\^
+)RUHDFKGD\^
+)RUHDFKGD\^
+references sorted in decreasing τi
+order.}
+)RUHDFKKRXU^
+PFWORDG
+{First search.}
+UHFYBDWP
+)RUHDFKKRXU^
+VORDG
+VORDG
+VORDG
+for i = n models − 1 to 1 do
+VHQGBDWP
+VHQGBFSO
+{Current fastest.}
+`
+UHFYBFSO
+PFWORDG
+`
+donor = models comp[i];
+VHQGBRFHDQ
+UHFYBFSO
+`
+for j = 0 to i − 1 do
+UHFYBRFHDQ
+PFWORDG
+PFWORDG
+VHQGBFSO
+{Current slowest.}
+`
+`
+recipient = models comp[ j];
+DWP
+FSO
+RFQ
+if [donor, recipient] pair is viable direction then
+return [donor, recipient];
+Figure 4: Climate benchmark application.
+end if
+end for
+ůŝŵĂƚĞďĞŶĐŚŵĂƌŬ
+end for
+ŽĐŶ
+Ăƚŵ
+ĐƉů
+{Second search, if slow model can no longer benefit from more processors.}
+for i = 0 to n models − 1 do
+ŵƉŝĞǆĞĐ
+KƵƚŽĨĂŶĚŽŵŵƵŶŝĐĂƚŝŽŶ;ƐŽĐŬĞƚͿ
+{Current slowest.}
+donor = models comp[i];
+DW
+>ŽĂĚĂůĂŶĐĞDĂŶĂŐĞƌ
+for j = i + 1 to n models − 1 do
+;DW/,ϮͿ
+;>DͿ
+{Next slowest.}
+recipient = models comp[ j];
+if [donor, recipient] pair is viable reallocation direction then
+Figure 5: Runtime architecture for the Climate benchmarkwith MPD and
+return [donor, recipient];
+LBM.
+Alg., Init. alloc.
+Initial τG
+SEL1
+SEL2
+end if
+end for
+Opt., INIT1
+24.9
+19.4
+19.4
+end for
+Opt., INIT2
+31.7
+21
+19.8
+{No viable direction.}
+Opt., INIT3
+25.9
+19.6
+19.6
+return [-1, -1];
+Exp.
+26.3
+22.8
+21.8
+Figure 6: τG (seconds)
+
+Figure 3: SEL1 selection algorithm.
+
+comp
+
+N
+such an anomaly by using both τG and the sum i=1
+τi . If a reallocation direction reduces one of these quantities
+but not the other, we consider this an ambiguous situation and continue to reallocate in this direction until we can
+unambiguously determine that this direction negatively aﬀects performance.
+To choose the donor and recipient constituents, we tried two diﬀerent algorithms. The SEL1 algorithm uses only a
+comp
+comp
+to make its decisions. The SEL2 algorithm uses a constituent’s τi
+and the ratio
+constituent’s computation time τi
+comp
+comp
+comp
+δτi
+= τi /Ni . We call the term δτi
+the derivative, which is under the assumption of perfect intraconstituent
+comp
+is proportional
+load balance, a ﬁnite-diﬀerence approximation of dτcompi /dNi ; the uncertainty in the derivative δτi
+to load imbalance within the ith constituent. For both SEL1 and SEL2, the guiding heuristic is that we should try to
+comp
+speed the slowest constituent (i.e., the one with the greatest τi ).
+comp
+SEL1 proceeds by iterating through the constituents in increasing order of their τi , choosing each in turn as
+a candidate donor. For each candidate donor, the slowest constituent is chosen as a recipient. This pair is used as a
+candidate direction, and the ﬁrst viable direction is used. If no viable directions can be found, we assume that the
+slowest constituent has reached the point of negative returns. SEL1 then tries to donate from the slower constituents.
+Details are given in Figure 3.
+We noted that SEL1 did not always work well, as discussed in Section 5. To address this issue, we modiﬁed the
+algorithm to also consider the derivative. SEL2 proceeds by iterating through the constituents in increasing order of
+comp
+their derivative δτi , choosing each in turn as a candidate donor. For each candidate donor, the slowest constituent
+comp
+(one with the greatest τi ) is chosen as a recipient. This pair is used as a candidate direction, and the ﬁrst viable
+direction is used. If no viable directions can be found this way, we assume that the slowest constituent has reached the
+point of negative returns. We then try to donate from the slower constituents instead. Details are given in Figure 2.
+Expansion. The expansion algorithm uses the same algorithm as the optimization algorithm execpt that no donor
+constituent is chosen. Instead, the processor is a free processor obtained externally. The recipient can be chosen by
+comp
+comp
+two means. The ﬁrst is based on τi ; the second is based on δτi .
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+317
+
+4. Malleable MCT
+We extended MCT for use in developing MCMs by adding a communicator management system that employs
+dynamic process management, a global constituent load diagnosis and balance calculation system that employs the
+algorithms described in Section 3, and a central load balance manager that coordinates constituent cohort reapportionment. The current implementation of MMCT is a research prototype but is fully capable of supporting malleable
+parallel composition of models such as the testbed application described and evaluated in Section 5. Two new modules
+were added to MCT to implement these features. EMCTWorld implements dynamic process management to enable
+constituent cohort malleability. EMCT LB implements interconstituent dynamic load balancing. The current MCT
+programming model is unchanged aside from these additions; in fact, legacy MCT applications can use the nonmalleability features in MMCT without modiﬁcation. No modiﬁcations to the MCTWorld source code were required.
+EMCTWorld represents a profound change in how MCT’s constituent registry is initialized and functions. In
+MCT, constituents’ individual communicators are created by splitting the global communicator. This top-down approach, however, is not appropriate for MCMs because any initial PE that belongs to MPI COMM WORLD cannot be
+removed at runtime; hence MCTWorld is considered a singleton class in MCT. In MMCT we employed a bottom-up
+approach that leverages MPI2’s [16] dynamic process management facility to create and manipulate communicators.
+MPI-2 allows one to spawn new PEs that can be merged into the global communicator. In MMCT the global communicator is constructed by combining constituents’ communicators via invocations of MPI Comm Connect() and
+MPI Comm Accept(). These operations reside in the EMCTWorld init() method. Under MMCT, an MCM with N
+constituents is initialized with a global communicator containing N PEs, one per constituent; these PEs are each
+constituent’s head nodes and are the only PEs guaranteed to remain with the constituent throughout the full run of
+the MCM. PEs are added incrementally to each constituent’s communicator to establish the initial conﬁguration of
+(P1 , . . . , PN ) PE’s. EMCTWorld init() also registers the constituents’ and global communicators in the MCTWorld
+module, allowing the rest of MCT to function as is.
+The LoadBalance module encapsulates system constituent load information and implements the initialization,
+load assessment and rebalancing, and PE reallocation mechanisms. EMCT LB init() initializes the LoadBalance
+module by referring to communicators registered in the MCTWorld object. ECMT LB proﬁle() is the constituent load
+balance analysis system and is called periodically in the global time integration loop of an MCM. This function is
+typically invoked at the beginning of the time loop of the malleable constituent to measure the constituent’s compucomp
+coup
+tation and coupling times, τi
+and τi (e.g., execution times for routines such as MCT Send(), MCT Recv(), and
+MCT Wait()), respectively. This function also serves as a synchronization point in the MCM, which is vital to ensuring constituent cohort reallocation proceeds correctly. EMCT LB resizeset() performs constituent cohort resizing.
+Each constituent PE cohort undergoes one of three actions—expand, shrink, or preserve—that result in respective
+increased, decreased, or unchanged size.
+Each PE in an MMCT-based system has a status that evolves as the system runs. Five possible status values
+exist—BEGIN, SHRINK, EXPAND, PRESERVE, and RUN. The process status can be queried at any time by calling
+the MMCT function Get emctstatus(). BEGIN indicates the malleable coupled model is to be initialized. SHRINK,
+EXPAND, and PRESERVE indicate constituent cohort reallocation must occur, with appropriate action required to
+resize allocated memory for data and/or data redistribution. RUN indicates no cohort reapportionment is necessary;
+that is, the system is in between load diagnosis or rebalancing events. Note that when the PE status is not RUN,
+constituents will likely require re-handshaking of interconstituent parallel data transfer communication schedules.
+The centralized load balance manager (LBM) runs on a physical processor distinct from the MPI global communicator. It communicates with constituents’ head nodes using out-of-band, socket-based communications; thus the
+communications burden on the LBM scales as the number of an MCM’s constituents rather than the total number
+of MPI PEs, lowering the likelihood the LBM will be a bottleneck. Socket-based communications were chosen to
+separate concerns between the LBM and issues of the MPI-based malleable simulation environment, such as communicator management. The LBM is initialized with the machine information of the cluster on which the MCM will run
+and sends a list of machines and/or free PEs to the MCM’s constituents’ head nodes. The LBM receives proﬁling data
+reports from each constituent’s head node; these reports are generated by constituents’ calls to ECMT LB proﬁle().
+The LBM analyzes constituents’ proﬁling data using one of its load balance algorithms, computing a reﬁned resource
+allocation for the MCM. The LBM sends reconﬁguration decisions to each constituent’s head node, with orders on
+whether the constituent must SHRINK, EXPAND, or PRESERVE its cohort; for SHRINK or EXPAND decisions, a
+
+318
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+list of machines/PEs to be respectively eliminated or added to the cohort is included.
+The runtime architecture for a simple MMCT-based MCM is depicted in Figure 5. Constituents’ argument lists
+must be extended to include the following arguments: NPEi, the initial number of PEs assigned to the ith constituent;
+LBM HOST, the hostname of machine where LBM will run; and LBM PORT, the port number constituents’ head
+nodes will use to communicate with the LBM. Runtime overhead for the LBM was measured as part of the testbed
+experiments described in Section 5. The LBM, out-of-band LBM/MCM, communications, constituent proﬁling, and
+optimization algorithms occupied approximately 3% of the total wall-clock runtime—well below the performance
+gains realized by enabling interconstituent dynamic load balance. This initial result augurs well for MMCT’s viability
+in implementing model coupling malleability.
+The prototype MMCT provides a scientist-friendly programming model for implementing constituent cohort malleability in MCMs. Creating a fully functional MCM also requires the model developers to change the number of PEs
+in the middle of a run, with accompanying reinstantiation and reinitialization of constituents and re-handshaking of
+interconstituent M × N connections.
+5. Results
+To validate our algorithms and evaluate the performance of MMCT, we have built a malleable coupled model
+testbed application that mimics a coupled climate model running in parallel composition. The testbed consists of three
+constituents: atmosphere (atm), ocean (ocn), and coupler (cpl) that computes interfacial ﬂuxes exchanged between
+atm and ocn. The atm grid is identical to that of CCSM’s atmosphere’s T42 spectral solver, with 64 latitudes and
+128 longitudes. The ocn grid corresponds to CCSM’s ocean grid, with 384 latitudes and 320 longitudes. The domain
+decompositions of these two-dimensional grids are described by using MCT GlobalSegMaps. Parallel data transfer
+schedules are stored in MCT Routers. The domain decompositions for this test case are purely one-dimensional by
+latitude. The cpl uses both atmosphere and ocean grids and performs intergrid interpolation of ﬁeld and ﬂux data. The
+amount of data is not large, but our goal in this work was to focus on the feasibility of the implementing a malleable
+MCT and using it with a variety of possible load balancing algorithms. Larger data sets would result in greater data
+redistribution costs, which would aﬀect the scheduling and trade-oﬀs of reallocation decisions, but not our primary
+contributions.
+Figure 4 shows the simpliﬁed structure of the climate testbed and the communication pattern between atmosphere
+model, ocean model, and coupler. Each model invokes four routines denoted as sload(), mctload(), send(), and recv()
+inside the time evolution loop. The sload() functions in atm, cpl, and ocn use the sleep() function to simulate the
+amount of time taken by each model to integrate its equations of evolution during intervals between coupling events.
+The amount of sleep time is determined from previously measured CCSM performance data [17] on a number of
+PE cohort sizes. The function mctload() performs several MCT data transformation operations, including intergrid
+interpolation, implemented as sparse matrix-vector multiplication, and time averaging/accumulation of state/ﬂux data.
+Taken together, these loads provide a plausible picture of constituent load balance in a coupled climate model. Interconstituent communications occur between atm and cpl and between ocn and cpl. These parallel data transfers
+are implemented by using MCT, encapsulated in interconstituent communication via send() and receive(). These
+M × N transfers comprise numerous point-to-point nonblocking MPI messages, but the overall transfers employ
+MPI Waitall(); this means the overall parallel data transfer constitutes blocking communication. The intercommunication pattern (arrows in Figure 4) allows all models to run concurrently since the ocean model can perform its own
+work while the atmosphere model is doing computation and communication with the coupler in a nested time loop
+representing 24 hours.
+We benchmarked the optimization and expansion algorithms and the performance of MMCT LBM on Argonne
+National Laboratory’s Fusion cluster. Fusion contains 320 compute nodes, each with dual 2.53 GHz Xeon quad core
+processors and 36 GB or 96 GB memory. The nodes are connected by InﬁniBand QDR.
+The optimization algorithm was tested by running the climate model simulator benchmark with three initial PE
+allocations. For all these allocations the initial global processor pool has 160 PEs, a number drawn from previous benchmarking data [17]. Through trial and error, CCSM developers had discovered that a PE conﬁguration
+(Ncpl , Natm , Nocn ) = (16, 64, 80) worked well for the model for its standard resolution and conﬁguration; in the discussion that follows, we refer to this as the “ideal” conﬁguration. For reference purposes, we ran the benchmark with
+
+319
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+ϭϬϬ
+
+Ϯϳ
+
+ϭϮϬ
+
+Ϯϱ
+
+ϭϬϬ
+
+ϯϰ
+
+ϵϬ
+
+ϯϮ
+
+ϴϬ
+
+Ϯϭ
+
+ϱϬ
+ϰϬ
+
+ϭϵ
+
+ϯϬ
+ϮϬ
+
+Ăƚŵͺ^>ϭ
+ŽĐŶͺ^>ϭ
+ĐƉůͺ^>Ϯ
+Ăƚŵͺ^>Ϯ
+
+ϴϬ
+
+Ϯϲ
+ϲϬ
+Ϯϰ
+ϰϬ
+
+ŽĐŶͺ^>Ϯ
+
+ϮϮ
+
+ƚĂƵͺ'ͺ^>ϭ
+
+ϮϬ
+
+ƚĂƵͺ'ͺ^>Ϯ
+
+ϭϳ
+
+Ϯϴ
+
+ĐƉůͺ^>ϭ
+Ăƚŵͺ^>ϭ
+ŽĐŶͺ^>ϭ
+ĐƉůͺ^>Ϯ
+Ăƚŵͺ^>Ϯ
+ŽĐŶͺ^>Ϯ
+ƚĂƵͺ'ͺ^>ϭ
+ƚĂƵͺ'ͺ^>Ϯ
+
+ϮϬ
+ϭϴ
+
+ϭϬ
+ϭϱ
+ϯ
+
+ϭϵ
+
+ϯϱ
+
+ϱϭ
+
+ϲϳ
+
+ϴϯ
+
+ϵϵ
+
+Ϭ
+
+ϭϲ
+
+ϭϭϱ ϭϯϭ ϭϰϳ ϭϲϯ ϭϳϵ ϭϴϳ ϮϬϯ Ϯϭϵ Ϯϯϱ
+
+ϯ
+
+ϭϵ
+
+ϯϱ
+
+ϱϭ
+
+ϲϳ
+
+ϴϯ
+
+Figure 7: Optimization with SEL1 and SEL2 for INIT1 case: SEL1 found
+(23, 55, 82) with τG = 19.4s was found at the 195th coupling cycle, and
+SEL2 found (22, 53, 85) with τG = 19.2s at the 183th coupling cycle.
+
+Figure 8: Optimization with SEL1 and SEL2 for the INIT2 case: SEL1
+found (8, 93, 59) τG = 23.5s at the 139th coupling cycle, and SEL2 found
+(16, 61, 83) τG = 19.5s at the 251th coupling cycle.
+
+Ϯϵ
+
+Ϯϳ
+
+ϭϬϬ
+
+ϭϭϱ ϭϯϭ ϭϱϱ ϭϳϭ ϭϵϱ Ϯϭϭ ϮϮϳ Ϯϰϯ Ϯϱϵ
+
+EƵŵďĞƌŽĨĐŽƵƉůŝŶŐĐǇĐůĞƐ
+
+EƵŵďĞƌŽĨĐŽƵƉůŝŶŐĐǇĐůĞƐ
+
+ϭϮϬ
+
+ϵϵ
+
+ϵϬ
+
+Ϯϳ
+
+ϴϬ
+
+Ϯϲ
+Ϯϱ
+
+ϲϬ
+Ϯϭ
+ϰϬ
+ϭϵ
+ϮϬ
+
+ϭϳ
+
+Ϭ
+
+ĐƉůͺ^>ϭ
+Ăƚŵͺ^>ϭ
+ŽĐŶͺ^>ϭ
+ĐƉůͺ^>Ϯ
+Ăƚŵͺ^>Ϯ
+ŽĐŶͺ^>Ϯ
+ƚĂƵͺ'ͺ^>ϭ
+
+ϭϵ
+
+ϯϱ
+
+ϱϭ
+
+ϲϳ
+
+ϴϯ
+
+ϵϵ
+
+Ϯϯ
+
+ϱϬ
+ϮϮ
+
+ϰϬ
+Ϯϭ
+
+ϯϬ
+
+ϮϬ
+
+ϮϬ
+
+ϭϵ
+
+ƚĂƵͺ'ͺ^>Ϯ
+
+ϭϱ
+ϯ
+
+Ϯϰ
+
+ϲϬ
+
+EƵŵďĞƌŽĨWƐ
+
+Ϯϯ
+
+'ůŽďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+ďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+
+ϳϬ
+Ϯϱ
+ϴϬ
+
+ϭϭϱ ϭϯϭ ϭϰϳ ϭϲϯ ϭϳϱ ϭϵϭ ϮϬϳ ϮϮϯ ϮϰϬ
+
+EƵŵďĞƌŽĨĐŽƵƉůŝŶŐĐǇĐůĞƐ
+
+Figure 9: Optimization with SEL1 and SEL2 on initial conﬁguration for
+the INIT3 case: SEL1 found (15, 65, 80) with τG = 19.6s at the 175th
+coupling cycle, and SEL2 found (16, 63, 81) τG = 19.6s at the 167th
+coupling cycle.
+
+ϭϬ
+
+'ůŽďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+ďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+
+Ϭ
+
+EƵŵďĞƌŽĨWƐ
+
+'ůŽďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+ďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+
+ϲϬ
+
+ĐƉůͺ^>ϭ
+
+EƵŵďĞƌŽĨWƐ
+
+EƵŵďĞƌŽĨWƐ
+
+Ϯϯ
+
+'ůŽďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+ďĂůŝƚĞƌĂƚŝŽŶƚŝŵĞ;ƐĞĐͿ
+
+ϯϬ
+
+ϳϬ
+
+ĐƉůͺ^>ϭ
+Ăƚŵͺ^>ϭ
+ŽĐŶͺ^>ϭ
+ĐƉůͺ^>Ϯ
+Ăƚŵͺ^>Ϯ
+ŽĐŶͺ^>Ϯ
+ƚĂƵͺ'ͺ^>ϭ
+ƚĂƵͺ'ͺ^>Ϯ
+
+ϭϴ
+
+Ϭ
+
+ϭϳ
+
+ϯ
+
+ϭϵ
+
+ϯϱ
+
+ϱϭ
+
+ϲϳ
+
+ϴϯ
+
+ϵϱ
+
+ϭϭϭ ϭϮϳ ϭϰϯ ϭϱϵ ϭϳϱ ϭϵϭ ϮϬϳ ϮϮϯ Ϯϯϵ Ϯϱϱ
+
+EƵŵďĞƌŽĨĐŽƵƉůŝŶŐĐǇĐůĞƐ
+
+Figure 10: Expansion algorithm with SEL1 and SEL2: SEL1 found (14,
+51, 61) with τG = 23.1s at the 143rd coupling cycle, and SEL2 found (16,
+54, 83) with τG = 19.5s at the 247th coupling cycle.
+
+the ideal constituent PE cohort conﬁguration, with the LBM active but no PE redistribution performed. This setup
+allowed us to measure for our simulator the “ideal” value of τG = 19.5s, analogous to that found by hand tuning
+CCSM. We will use this ideal value to estimate PE cohort reallocation overhead.
+We performed three experiments with try count limit = 2, shown in Figure 1, and diﬀering initial allocations. In
+the discussion that follows we describe model conﬁgurations as the triple (Ncpl , Natm , Nocn ). The ﬁrst initial allocation,
+INIT1 = (54, 53, 53), was as uniform an apportionment of PEs between constituents as possible; this allocation
+overprovisions cpl with PEs. The second initial allocation, INIT2 = (10, 110, 40) overprovisions the atm constituent.
+The third initial allocation, INIT3 = (10, 40, 110), overprovisions the slowest constituent (ocn).
+Figure 6 summarizes throughput improvements realized by performing cohort reallocation employing the SEL1
+and SEL2 criteria. For the INIT1 case, values of τG obtained by the SEL1 and SEL2 algorithms were almost the same
+as the ideal τG . Both SEL1 and SEL2 improved the throughput by 22% from the initial allocation. Moreover, the
+ﬁnal allocations obtained by SEL1 and SEL2 were similar to the ideal allocation; the reason is that all constituents
+had suﬃcient PEs so that reconﬁguration for any donor/recipient pair resulted in smooth changes to τG , allowing both
+SEL1 and SEL2 to ﬁnd near-ideal allocations. For the INIT2 and INIT3 cases, both SEL1 and SEL2 found good
+cohort PE allocations but were not always able to match the ideal value of τG . Instabilities in our benchmark’s global
+iteration time is the likely cause. For example, underprovisioning cpl often makes the τG noisy because it adversely
+impacts interconstituent communications times, notably the hourly interactions with atm.
+For the INIT2 case, SEL2 performed superior load balancing to SEL1 because SEL2 can avoid choosing constituents with a large derivatives as either donor or recipient. Moreover, the ﬂuctuation caused by a constituent that
+is allocated too few processors can be reduced as its PE cohort size is increased. Additionally, SEL2 always tries to
+
+320
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+reallocate PEs in a way that reduces noise. For the INIT2 case, in 67% of the runs (4 times out of 6) SEL2 found an
+allocation that resulted in a τG < 20 s. The other runs were very close, with τG = 20.4 s and 20.8 s. By contrast, SEL1
+found a near-ideal conﬁguration in only 33% (2 times out of 6) of the runs. As a result, SEL2 reduced τG by 37.5% on
+average for this case. For the INIT3 case, both SEL1 and SEL2 found a near-ideal allocation (τG < 20s) 83% of the
+time (5 times out of 6), with the remaining trials for SEL1 and SEL2 producing values of τG of 20 s and 20.1 s, respectively. On average, SEL1 and SEL2 reduced τG by about 24% from its initial value. Figures 7, 8, and 9 display the
+time evolution of constituent PE cohort conﬁgurations determined by the SEL1 and SEL2 algorithms for the INIT1,
+INIT2, and INIT3 cases, respectively. Superimposed on these plots are curves for the time evolution of τG (the scale
+for τG is on right vertical axis in each plot). The time unit for all of these plots is the LBI, which corresponds to the
+coupling cycle (one model-day). SEL2 reduced τG smoothly. In Figure 7, SEL2 found an optimal allocation of (22,
+53, 85) with τG = 19.2 s, slightly better than the ideal value. This implies the allocation for constituents could diﬀer
+from their ideal allocations depending on the degree of concurrency of the coupled model. Figure 8 shows the time
+evolution of SEL1 and SEL2 for the INIT2 case. Here, SEL1 chose cpl as the donor, handing over PEs to ocn at the
+fourth coupling cycle even though cpl was starved for resources; cpl ceased donating PEs to ocn at the 35th iteration
+and took back two PEs from ocn to undo previous reconﬁguration, an action caused by large increments in τG . By
+this point, however, cpl had already lost 5 of its initially allocated 10 PEs, making it so badly underallocated that it
+made τG unstable, disrupting the optimization process. By contrast, SEL2 chose atm as the donor because it realized
+that atm had suﬃcient processors and its iteration time would not be greatly changed even if it lost a processor; this
+decision stabilized τG until optimization was completed.
+Figure 9 demonstrates that both SEL1 and SEL2 determined good, though slightly diﬀerent allocations for the
+INIT3 case. SEL1 encounters a similar problem here as with INIT2, but less dramatic. SEL1 chose cpl as the donor
+for atm early in the run. But, cpl did not lose as many processors as in the INIT2 case because the beneﬁt generated
+by adding processors to atm was often less pronounced than the disadvantage resulting from removing PEs from cpl.
+Moreover, cpl did not donate any PEs to ocn because ocn was initially overallocated. Hence, cpl maintained 8 PEs,
+which is enough to reduce—though not eliminate—the ﬂuctuations in τG caused by underprovisioning cpl.
+To evaluate the expansion algorithm, we ran the climate benchmark on an initial conﬁguration of (10,40,50) PEs
+with try count limit = 2. We chose this initial allocation as it represents a 38% across-the-board cut in constituents’
+resource allocations in the ideal conﬁguration of (16,64,80). Figure 6 shows τG when run with the expansion algorithm
+using the SEL1 and SEL2 criteria. Both variations reduce τG , but the performance was worse than we expected.
+Figure 10 shows the time evolution of the PE cohorts for the expansion algorithm with SEL1 and SEL2; time evolution
+curves for corresponding τG values are also included (refer to right vertical axis for scale). The expansion algorithm
+with SEL1 found the ideal allocation for one of the six trials because it just kept adding processors to ocn, which was
+the slowest model. This caused the communication overhead imposed on other constituents to be large and unstable,
+since the other constituents maintained their PE cohort sizes as the ocn cohort was expanded. Eventually, ocn could
+not be a recipient once the communication or noise was larger than the decreased time by adding a processor to ocn.
+At the 51st coupling cycle, τG increased while ocn gained processors, meaning that ocn could not be a recipient
+during the rest of the expansion process. When recipients were selected with SEL2, the algorithm determined good
+allocations 50% of the time (3 times out of 6) and on average improved τG by 13%. For the three trials where this
+approach failed, we found that after adding processors to atm, whose derivative was biggest at the beginning of
+iteration, τG slightly increased (by less than 0.05 s). We believe this noise in τG originates in unstable communication
+costs and overhead; future work will seek to address these ﬂuctuations by appropriate ﬁltering or weighting.
+Our performance results demonstrate MMCT can support coupling malleability and achieve faster runtimes. To
+determine the overhead, we measured the wall clock time measured from ocn under the expansion algorithm, and
+found that to remove a PE, the reconﬁguration (the cost of adding or removing a PE) and rerouting (re-handshaking
+the M × N communications schedules) took 0.05 and 0.44 seconds, respectively. To create an intra-cohort PE took
+0.1 and .45 seconds, while to create an extra-cohort PE took 3.2 and .52 seconds, respectively. In our test case, the
+model grids are still rather coarse, and data redistribution costs were low compared to τG . The overhead for rerouting
+is nearly equal to that of adding or removing a PE if the operation is performed on a machine where the current cohort
+resides. The wall clock time to create a processor on an extra-cohort machine, however, is more than 3 seconds. We
+believe that this overhead is caused by MPI-2 mechanisms to spawn processes. Consequently, when reconﬁguration
+occurs for removing processors or creating a processor on an intra-cohort machine, it would increase the ideal global
+iteration time by 3% approximately; if it creates a processor on an extra-cohort machine, it increases the ideal global
+
+Daihee Kim et al. / Procedia Computer Science 4 (2011) 312–321
+
+321
+
+iteration time by 19%. We believe these overheads can be reduced by weighing the frequency of reallocation with the
+possible beneﬁts. This will be an area of future study.
+6. Conclusion and Future Work
+Coupled systems are an important feature on the scientiﬁc computing landscape. Achieving the scalability required
+for these systems to use exascale platforms will prove a tremendous challenge. We have identiﬁed top-level load
+balance to be a crucial problem. We have shown the feasibility of malleable coupling by developing a simple yet
+eﬀective research prototype that is an extension of the widely used Model Coupling Toolkit. This coupling malleability
+mechanism, MMCT, extends the MCT API to runtime reallocation of PE resources in a wide class of parallel coupled
+models. Benchmark results for the simple load-balancing strategies currently included in MMCT demonstrate their
+eﬀectiveness; the schemes reported here provide signiﬁcant improvements in model throughput with acceptably low
+overhead. Both of these performance characteristics will be studied further, with an eye to their optimization.
+Future research and development will focus on creating a production environment. Further investigation of the
+current load balance schemes in our LBM is warranted, along with investigations into a wider variety of load-balancing
+strategies. Such research will become critical once we move beyond the current assumption of a purely parallel
+composition to nested compositions such as those used in CCSM4. MMCT’s LBM requires further design to make it
+open to inclusion of third-party load diagnosis and management software. Additionally, MMCT’s architecture must
+be expanded to oﬀer interoperability with current and emerging parallel application checkpointing mechanisms.
+Acknowledgments
+We thank the Laboratory Research Computing Resource Center at Argonne National Laboratory for access to
+their Fusion cluster. Argonne National Laboratory is supported by the U.S. Department of Energy, under Contract
+DE-AC02-06CH11357. Work at SUNY Binghamton is supported by the National Science Foundation.
+References
+[1] J. W. Larson, Ten organising principles for coupling in multiphysics and multiscale models, ANZIAM Journal 48 (2009) C1090–C1111.
+[2] F. Bertrand, R. Bramley, D. E. Bernholdt, J. A. Kohl, A. Sussman, J. W. Larson, K. Damevski, Data redistribution and remote method
+invocation for coupled components, J. Parallel Distrib. Comput. 66 (7) (2006) 931–946.
+[3] D. G. Feitelson, L. Rudolph, Towards convergence in job schedulers for parallel supercomputers, in: Proceedings of the Workshop on Job
+Scheduling Strategies for Parallel Processing, Springer-Verlag, 1996, pp. 1–26.
+[4] R. Sudarsan, C. Ribbens, ReSHAPE: A framework for dynamic resizing and scheduling of homogeneous applications in a parallel environment, in: Parallel Processing, 2007, ICPP2007., IEEE, 2007.
+[5] K. E. Maghraoui, B. K. Szymanski, C. Varela, An architecture for reconﬁgurable iterative mpi applications in dynamic environments, in:
+Proceedings of the Sixth International Conference on Parallel Processing and Applied Mathematics (PPAM2005), number 3911 in LNCS,
+Springer Verlag, 2005, pp. 258–271.
+[6] K. El Maghraoui, T. J. Desell, B. K. Szymanski, C. A. Varela, Dynamic malleability in iterative MPI applications, in: Proceedings of the
+Seventh IEEE International Symposium on Cluster Computing and the Grid, CCGRID ’07, IEEE, 2007, pp. 591–598.
+[7] S. S. Vadhiyar, J. J. Dongarra, SRS - a framework for developing malleable and migratable parallel applications for distributed systems,
+Parallel Processing Letters. 13 (2) (2003) 291–312.
+[8] S.-H. Ko, N. Kim, J. Kim, A. Thota, S. Jha, Eﬃcient runtime environment for coupled multi-physics simulations: Dynamic resource allocation
+and load-balancing, in: Proceedings of the 2010 10th IEEE/ACM International Conference on Cluster, Cloud and Grid Computing, 2010, pp.
+349–358.
+[9] Institute for Combinatorial Scientiﬁc Computing and Petascale Simulations, http://www.cscapes.org/.
+[10] J. Larson, R. Jacob, E. Ong, The Model Coupling Toolkit: A new Fortran90 toolkit for building multi-physics parallel coupled models, Int. J.
+High Perf. Comp. App. 19 (3) (2005) 277–292. doi:10.1177/1094342005056115.
+[11] R. Jacob, J. Larson, E. Ong, M×N communication and parallel interpolation in CCSM3 using the Model Coupling Tookit, Int. J. High Perf.
+Comp. App. 19 (3) (2005) 293–308. doi:10.1177/1094342005056116.
+[12] J. C. Meza, Steepest descent, in: Wiley Interdisciplinay Revies: Computational Statistics, Vol. 2, 2010, pp. 719–722.
+[13] Model Coupling Toolkit Web site, http://mcs.anl.gov/mct/.
+[14] Community Climate System Model Web Site, http://www.cesm.ucar.edu/models/ccsm4.0/.
+[15] A. P. Craig, B. Kaufmann, R. Jacob, T. Bettge, J. Larson, E. Ong, C. Ding, H. He, CPL6: The new extensible high-performance parallel
+coupler for the Community Climate System Model, Int. J. High Perf. Comp. App. 19 (3) (2005) 309–327. doi:10.1177/1094342005056117.
+[16] The Message Passing Interface (MPI) standard, http://www-unix.mcs.anl.gov/mpi/.
+[17] J. W. Larson, R. L. Jacob, E. T. Ong, A. Craig, B. Kauﬀman, T. Bettge, Y. Yoshida, J. Ueno, H. Komatsu, S.Ichikawa, C. Chen, P. Worley,
+Benchmarking a parallel coupled model, poster presented at Supercomputing ’03.
+
+

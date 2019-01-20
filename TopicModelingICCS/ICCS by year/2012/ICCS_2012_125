@@ -1,0 +1,782 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 17 – 26
+
+International Conference on Computational Science, ICCS 2012
+
+A class of communication-avoiding algorithms for solving general
+dense linear systems on CPU/GPU parallel machines
+Marc Baboulina , Simplice Donfacka , Jack Dongarrab,c,d , Laura Grigoria , Adrien R´emya , Stanimire Tomovb
+a Inria
+
+and University Paris-Sud, France
+of Tennessee, USA
+c Oak Ridge National Laboratory, USA
+d University of Manchester, United Kingdom
+b University
+
+Abstract
+We study several solvers for the solution of general linear systems where the main objective is to reduce the
+communication overhead due to pivoting. We ﬁrst describe two existing algorithms for the LU factorization on hybrid
+CPU/GPU architectures. The ﬁrst one is based on partial pivoting and the second uses a random preconditioning of
+the original matrix to avoid pivoting. Then we introduce a solver where the panel factorization is performed using a
+communication-avoiding pivoting heuristic while the update of the trailing submatrix is performed by the GPU. We
+provide performance comparisons and tests on accuracy for these solvers on current hybrid multicore-GPU parallel
+machines.
+Keywords: hybrid multicore/GPU computing, dense linear algebra libraries, linear system solvers,
+communication-avoiding algorithms, LU factorization
+
+1. Introduction
+There have been several main changes in the development of dense linear algebra libraries over the years. These
+changes have always been triggered by major hardware developments. For example, LINPACK [1] in the 70’s targeted
+the vector machines at the time for which cache reuse was not essential, and as a result LINPACK had relied on just
+Level 1 BLAS. In the 80’s LINPACK had to be rewritten, leading to LAPACK [2], that would rely on Level 3 BLAS
+for cache based machines. In the 90’s it was extended to ScaLAPACK [3] for parallel platforms, relying on the
+PBLAS [4] message passing. Now with the increase in parallelism and heterogeneity as well as the ever increasing
+data-communication costs, the previous libraries had to be redesigned once again. An example is the MAGMA1
+library - a collection of this next generation linear algebra libraries [5, 6, 7].
+MAGMA, similarly to LAPACK, is being build as a community eﬀort, incorporating the newest developments in
+hybrid algorithms and scheduling, and aiming at minimizing synchronizations and communication in these algorithms.
+Email addresses: marc.baboulin@inria.fr (Marc Baboulin), simplice.donfack@lri.fr (Simplice Donfack),
+dongarra@eecs.utk.edu (Jack Dongarra), laura.grigori@inria.fr (Laura Grigori), adrien.remy@lri.fr (Adrien R´emy),
+tomov@eecs.utk.edu (Stanimire Tomov)
+1 Matrix Algebra on GPU and Multicore Architectures, http://icl.cs.utk.edu/magma/
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.003
+
+18
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+The goal of these eﬀorts is to redesign the dense linear algebra algorithms in LAPACK to fully exploit the power of
+current heterogeneous systems of multi/manycore CPUs and accelerators, and deliver the fastest possible time to an
+accurate solution. Indeed, the algorithms included so far in MAGMA 1.1 manage to overcome bottlenecks associated
+with just multicore or GPUs, to signiﬁcantly outperform corresponding packages for any of these components taken
+separately. MAGMA’s one-sided factorizations for example (and linear solvers) on a single Fermi GPU (and a basic
+CPU host) can outperform state-of-the-art CPU libraries on high-end multi-socket, multicore nodes (e.g., using up
+to 48 modern cores). In parallel to the success stories in the development of hybrid algorithms, there have been a
+number of new developments related to minimizing the communication in one-sided factorizations (e.g. [8]). Such
+improvements have become essential due to the increasing gap between communication and computation costs.
+For the linear system solvers on current multicore or GPU architectures, a bottleneck in terms of communication cost and parallelism comes from the pivoting, a technique used to prevent divisions by too-small numbers in
+the Gaussian Elimination (GE) process. The commonly used method of Gaussian Elimination with partial pivoting
+(GEPP) is implemented in current linear algebra libraries for solving square linear systems Ax = b resulting in very
+stable algorithms. These systems are in general solved using the well-known LU factorization that decomposes the
+input matrix A into the product L × U, where L is a lower triangular matrix and U is an upper triangular matrix.
+Current libraries like LAPACK implement GE using a block algorithm, which factors the input matrix by iterating
+over its blocks of columns (panels). At each iteration, the LU factorization of the current panel is computed, and then
+the trailing submatrix is updated. In the LAPACK implementation, pivoting is used during the factorization of each
+column of a panel, and leads to swapping rows. Pivoting not only requires communication (or synchronization in a
+shared memory environment), but it also limits the exploitation of asynchronicity between block operations. This is
+because the update of the trailing submatrix can be performed only when the panel factorization is completed. We can
+ﬁnd in [9] an evaluation of the communication overhead due to partial pivoting using MAGMA on a given CPU/GPU
+architecture. This cost can represent on some hybrid architectures up to 40% of the global factorization time, depending on the matrix size. The communication cost of GEPP is asymptotically larger than the lower bounds on
+communication [10]. Other classical pivoting strategies can be used, as rook pivoting or complete pivoting (see [11]
+for a comprehensive review), but they always require between O(n2 ) and O(n3 ) comparisons to search for the pivot. In
+this paper we consider two alternative strategies to these pivoting techniques, that can be eﬃciently applied to hybrid
+CPU/GPU computing. These approaches have the property of reducing communication in the LU factorization while
+providing a satisfying accuracy.
+The ﬁrst alternative is tournament pivoting, introduced in the last years in the context of CALU, a communicationavoiding LU factorization algorithm [12]. It is shown in [10] that tournament pivoting is as stable as partial pivoting
+in practice and that CALU minimizes communication. With this strategy, the panel factorization, referred to as TSLU
+(Tall Skinny LU), can be eﬃciently parallelized as follows. The panel is partitioned into Pr blocks. From each block,
+a set of local pivots is selected in parallel using GEPP. A tournament is used on the Pr local sets to select a set of global
+pivots. These global pivots are moved to the diagonal positions, and then the LU factorization with no pivoting of the
+entire panel is performed. The tournament is implemented as a reduction operation, with GEPP being the operator
+used at each step of the reduction.
+The second alternative is proposed in [9] where the communication overhead due to pivoting is completely removed by considering a randomization technique referred to as Partial Random Butterﬂy Transformation (PRBT).
+This method revisits the approach initially proposed in [13] where the original matrix A is transformed into a matrix
+that would be suﬃciently “random” so that, with a probability close to 1, pivoting is not needed. It consists of a
+multiplicative preconditioning U T AV where the matrices U and V are chosen among a particular class of random
+matrices called recursive butterﬂy matrices. Then Gaussian Elimination with No Pivoting (GENP) is performed on
+the randomized matrix U T AV. It has been shown in [9] that a small number of recursions (2 in practice) is suﬃcient
+to obtain a satisfying backward error. Moreover, by exploiting the particular structure of the recursive butterﬂies, this
+technique of randomization is attractive in terms of Gﬂop/s (O(n2 ) operations) and data storage.
+We show in this paper that the usage of these techniques in the context of hybrid CPU/GPU architectures allows
+us to take advantage of each computational unit. The paper is organized as follows. First we describe in Section 2 two
+existing algorithms for LU factorization on hybrid CPU/GPU machines. The ﬁrst one is implemented in the parallel
+library MAGMA and is based on partial pivoting. The second algorithm uses randomization to avoid pivoting and
+performs GENP on the randomized matrix. Then in Section 3 we introduce tournament pivoting, a strategy based
+on CALU that we adapt speciﬁcally for CPU/GPU architectures. In this new implementation, the panel is factored
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+1
+
+2
+
+3
+
+b
+Figure 1: Block splitting in hybrid LU factorization
+on the CPU using a modiﬁed CALU factorization while the update of the trailing submatrix is performed on the
+GPU. The resulting solver will be called H-CALU in the reminder of this paper. Finally we propose in Section 4
+performance and accuracy results where we compare H-CALU with LU solvers using partial pivoting (MAGMA) and
+PRBT. Concluding remarks are given in Section 5.
+2. Two existing hybrid algorithms for LU factorization
+2.1. LU factorization based on partial pivoting
+Let us illustrate how the hybrid multicore + GPU approach can be applied to the LU factorization by describing
+the algorithm as it is implemented in the MAGMA library. The method is based on splitting the computation as shown
+in Figure 1 that represents a matrix factored via a right-looking block LU factorization [14, p. 85], where the dark part
+has been already factored. The initial matrix has been downloaded to the GPU. We describe in Algorithm 1 a current
+iteration of the factorization.
+Algorithm 1 Iteration for LU factorization using MAGMA
+The current panel (1) is downloaded to the CPU.
+(1) is factored by the CPU using GEPP and the result is sent back to the GPU.
+3: The GPU updates (2) (next panel).
+4: The updated panel (2) is sent back to the CPU to be factored while the GPU updates the rest of the matrix (3).
+1:
+2:
+
+The technique consisting of factoring (2) while still updating (3) is often referred to as look-ahead [15]. In the
+current implementation of MAGMA, the panel factorization is performed using GEPP but this algorithm is general
+enough to be applicable to many forms of LU factorizations, where the distinction can be made based on the form of
+pivoting that they employ. In Section 3.2 we will use a diﬀerent pivoting strategy that turns out to be very eﬃcient
+for factoring the panel due to its particular “tall and skinny” structure. Depending on the problem size n and on the
+hardware used, MAGMA proposes a default value for the parameter b (width of the panel). Note that the design of
+the hybrid LU in MAGMA avoids communicating by having only panels transferred between CPU and GPU (O(n ∗ b)
+data vs O(n∗n∗b) computation in the updates), enabling also the total overlap of the panel computation by the updates
+for n large enough.
+2.2. PRBT solver
+Using the PRBT solver, we solve the general linear system Ax = b as described in Algorithm 2.
+
+19
+
+20
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+Algorithm 2 Solving Ax = b with PRBT
+1:
+2:
+3:
+4:
+
+Compute randomized matrix Ar = U T AV, with U and V recursive butterﬂies.
+Factorize Ar with GENP.
+Solve Ar y = U T b.
+Solution is x = Vy.
+
+In this section, we present an implementation of a PRBT solver for hybrid CPU/GPU architectures. The randomization by recursive butterﬂies uses 2 recursions and the resulting computational cost for randomization is 4n2 ﬂops
+(see [9] for more details on the computational kernels that exploit the particular structure of the recursive butterﬂies).
+The PRBT solver for hybrid CPU/GPU architectures performs the following tasks:
+• Random generation and packed storage of U and V on the CPU, while sending A to the device memory.
+• The packed representation of U and V are sent from the host memory to the device memory.
+• Randomization is performed on the GPU, updating A in-place (no additional memory needed) on the device
+memory.
+• The randomized matrix is factorized with GENP on the GPU, the panel factorization being performed on the
+CPU host.
+• We compute U T b on the GPU, Ar y = U T b is solved on the GPU, followed by the solution x = Vy.
+• The solution is sent to the host memory.
+When using the PRBT solver, the bulk of the computation corresponds to the GENP factorization (the randomization represents less than 2% of the global computational time). Since in this approach we know in advance that we
+are not going to pivot, GENP that follows randomization is implemented as a very eﬃcient fully BLAS 3 algorithm.
+Then we expect that the Gﬂop/s performance of the PRBT solver will provide us with an upper bound for other LU
+solvers on hybrid CPU/GPU architectures. Note that when the initial matrix is randomized, we systematically add
+iterative reﬁnement in the working precision for better stability, as indicated in [11, p. 232].
+3. Hybrid communication-avoiding LU factorization
+3.1. Communication-avoiding LU
+The poor evolution of latency and memory bandwidth that we observed over recent years for parallel architectures
+is a major bottleneck for algorithms that require communication like GEPP. New approaches have been recently
+proposed to minimize the amount of communication due to pivoting. Among them are the communication-avoiding
+algorithms introduced for distributed-memory machines [12] and for multicore architectures [16]. These algorithms
+are eﬀective in the sense that they reduce signiﬁcantly the communication while being stable in practice. CALU is an
+algorithm that partitions the input matrix into block of columns (panels), iteratively factors the panel and updates the
+trailing submatrix. The factorization of the panel is one of the most important task in the LU fatorization since it is
+part of the critical path in the diagram of tasks and its eﬀective execution inﬂuences the performance of the algorithm.
+In CALU, the panel factorization is performed by the TSLU algorithm which factors a panel of size b as explained in
+Algorithm 3.
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+Algorithm 3 Panel factorization with TSLU
+Require: Pr is the number of threads participating in the panel factorization.
+Require: Ai is the block assigned to each thread.
+1: Each thread applies GEPP to its block and we have Πi Ai = Li U i . C i = (Πi Ai )(1 : b, 1 : b) is the block containing
+the potential pivots, where Πi is the permutation matrix resulting from the LU factorization of Ai .
+2: for all step of the reduction tree (see [16] for more details on the most adapted reduction tree) do
+3:
+Let j be the thread number exchanging data with thread i and Ci = [Ci ; C j ] then
+4:
+Compute ΠiCi = Li Ui and (ΠiCi )(1 : b, 1 : b) is the new pivot candidate.
+5: end for
+6: Apply the latest permutation computed in 4) to the original panel in order to compute the column-block of L and
+the row-block of U.
+Once the panel is factored using TSLU then we update the trailing submatrix. Following the approach presented
+in [17, 18], the CALU algorithm can be represented as a Directed Acyclic Graph (DAG) where nodes are elementary
+tasks that operate on one or several b × b blocks and where edges represent the dependencies among them. A dependency occurs when a task must access data that is the output of another task, either to further update or just read that
+data. In Figure 2 we represent an example of LU factorization with CALU as a sequence of DAGs using 2 threads.
+The panel is partioned into 3 column blocks. Black tasks represent the factorization of the panel via TSLU and the
+gray tasks represent the update of the trailing submatrix.
+
+Figure 2: Example of asynchronous LU factorization using multithreaded CALU (2 threads, 3 column blocks).
+
+3.2. Hybrid version of CALU (H-CALU)
+As explained in Section 2.1, the LU algorithm implemented in MAGMA factors each block of columns iteratively.
+Each step is essentially decomposed into two distinct phases: the factorization of the panel by the CPU followed by
+the update of the trailing submatrix by the GPU. The algorithm’s design minimizes the CPU-GPU communications.
+In the following we describe an algorithm that further improves the algorithm in MAGMA by minimizing the communication associated with the panel factorizations.
+At each step, a panel of size B is factored on the CPU by applying CALU to a rectangular matrix and the update of
+the trailing submatrix is performed by the GPU. CALU factors the panel by splitting the initial block of columns into
+smaller rectangular blocks containing b columns that are factored iteratively using TSLU. Thus, the factorization of
+the panel is considered as a variant of the algorithm at the ﬁrst level where we factor a rectangular matrix using only the
+CPU. The use of this second level of blocking is important for performance on hybrid CPU/GPU architectures because
+the CPU and GPU processors have diﬀerent sizes of cache memory. The block size B is chosen in order to optimize the
+performance of the matrix-matrix product on the GPU and to ensure a good grain for increasing parallelism. Then the
+block size b is tuned in order to optimize the utilization of the multicore cache. This decomposition of the algorithm
+into small tasks allows us to operate on block of data that ﬁt into the cache. It results in an asynchronous and dynamic
+execution of the panel factorization on the CPU, yielding to good performance on multicore machines [16]. This
+asynchronous execution keeps busy most of the CPU threads. When b = B, CALU behaves simply as TSLU. If B is
+large enough (which will be the case for our hybrid implementation), the panel is factored using CALU rather than
+TSLU because CALU can be executed asynchronously [16]. Our approach also uses the look-ahead technique but
+adapted here so that the CPU and the GPU can work together while minimizing the number of memory transfers. In
+this approach, we start factoring the next panel as soon as possible.
+
+21
+
+22
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+Figure 3 depicts an example of the factorization of a matrix. We consider that the matrix is initially stored on the
+GPU. Black tasks represent the factorization of the panel using multithreaded CALU and the gray tasks represent the
+update of the trailing submatrix in the GPU. At each step of the factorization, the block corresponding to the panel
+is transfered to the CPU and factored using CALU. Once the panel is factored, it is sent back to the GPU in order to
+update the trailing submatrix. The GPU updates in priority the column block corresponding to the next panel. Note
+that, similarly to [6], the data transfer between CPU and GPU is overlapped by computation.
+C
+P
+U
+Step 1
+
+G
+P
+U
+Step 2
+
+C G
+P P
+U U
+Step 3
+
+···
+
+Figure 3: Hybrid CALU factorization (4 panels).
+
+4. Numerical experiments
+In this section we present performance results for the H-CALU algorithm described in Section 3.2. These numerical experiments were carried out using a hybrid CPU/GPU system where:
+• The GPU device is an NVIDIA Fermi Tesla S2050 with 448 CUDA cores running at 1.15 GHz and 2687 MB
+memory.
+• The multicore host is a 48 cores system (4 sockets × 12 cores) AMD Opteron 6172 (2.1 GHz).
+For experiments involving only the multicore host (panel factorization), comparisons are made against the MKL [19]
+multithreaded library. For experiments involving both CPU and GPU (factorization of the whole matrix), comparisons
+are made against version 1.1 of the MAGMA library. All computations are performed on random matrices and in double precision arithmetic.
+4.1. Panel factorization
+As described in Section 3.2, the panel factorization is performed by the CPU while the update of the trailing submatrix is executed on the GPU. Let us evaluate speciﬁcally the performance for the panel factorization phase in an
+LU factorization. This performance is measured by summing the total number of ﬂops executed in factoring successively each panel throughout the factorization and dividing it by the time spent during these steps. This performance
+(expressed in Gﬂop/s) is plotted in Figure 4 for the factorization of four square matrices, each associated with a given
+panel size (parameter B deﬁned in Section 3.2, corresponding to the number of columns for the panel). For factoring
+the panel, we consider diﬀerent numbers of threads (one CPU core being used for each thread) varying from 1 to
+26. Note that using more than 26 threads does not provide us with better performance, due to the too-large amount
+of communication involved in the panel factorization. The panel size B considered in Figure 4 for each matrix size
+corresponds to a value empirically tuned in order to provide the best global factorization time for each matrix when
+using a hybrid implementation.
+In these experiments, we compare the performance of the panel factorization for the following routines:
+• CALU factorization routine modiﬁed for the H-CALU solver and linked with the sequential version of MKL
+for the required BLAS and LAPACK routines.
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+• MKL implementation of the LAPACK routine dgetrf, used in the MAGMA implementation of LU for factoring the panel.
+• A recursive routine for GEPP rgetf2 (linked with MKL multithreaded BLAS) described in [20] and known to
+give good performance on “tall and skinny” matrices.
+• PRBT where the panel is factored using the GENP routine dgetrf nopiv (no pivoting).
+The routines compared in this section have been selected on the fact that they can be used as kernels for our hybrid
+CPU/GPU implementation. If we use only multicore machines without GPU, then other solvers can be considered
+(see e.g. recursive tile version in [21]). The performance of PRBT, based on a GENP routine can be considered
+here as a “peak” performance for the panel factorization. In this respect, we observe that, in percentage of this peak
+performance and depending on the matrix size n, CALU achieves between 36 % (n = 5120) and 48 % (n = 21504),
+dgetrf achieves between 35 % (n = 5120) and 23 % (n = 21504), and rgetf2 achieves between 31 % (n = 5120) and
+38 % (n = 21504). We also observe that CALU is even faster for larger ratios rows/columns. Moreover, CALU and
+PRBT have better scalability properties. This can be explain by the fact that CALU minimizes communication thanks
+to its pivoting strategy and PRBT does not pivot at all. The plateau observed for each curve after a certain number
+of threads corresponds to cases where the amount of communication becomes too large and cannot be overlapped by
+computation. For n = 5120, CALU, dgetrf and rgetf2 give similar performance. However, when the matrix size
+increases and then the panel becomes more “tall and skinny”, CALU outperforms the two other solvers and achieves
+a reasonable fraction of the PRBT rate. This good behavior of CALU for factoring the panel was already mentioned
+in [16]. In particular this better scalability of CALU enables us to use more CPU threads in factoring the panel and
+then to improve the overall performance of a hybrid LU solver.
+4.2. Performance of hybrid LU implementations
+In this section we study the performance of LU factorization routines that utilize resources from multicore (16
+threads) and one GPU. We compare in Figure 5a the following routines, applied to square matrices of various sizes:
+• The MAGMA routine magma dgetrf, where the panel is factored using the MKL routine dgetrf.
+• H-CALU, where the panel is factored using the CALU routine mentioned in Section 4.1.
+• The PRBT solver (randomization + GENP).
+As expected, PRBT outperforms the other routines because it does not pivot and the randomization time is negligible. We can also observe that in the range 1024-5120, H-CALU gives similar performance as MAGMA but it is
+slightly faster for matrix sizes larger than 5120. This trend can be explained by the fact that, for matrix sizes smaller
+than 5120, the panels are not enough “tall and skinny” to take advantage of the CALU algorithm. We notice that the
+diﬀerence of performance observed for the panel in Section 4.1 has a moderate impact on the whole factorization since
+the update phase performed on the GPU represents the bulk of the computation. In particular we do not mention in
+these results the experiments performed with a MAGMA routine modiﬁed so that the panel is factored by the routine
+rgetf2 mentioned in Section 4.1 because we obtained performance results similar to that of magma dgetrf. Note
+that asymptotically, the performance of the three routines should be close because communication becomes negligible
+compared to the O(n3 ) computations for large dimensions.
+In Figure 5b we compare the performance of hybrid LU factorization routines for rectangular matrices of size
+m × n with m > n, using 16 threads. Such an LU factorization exists when A(1 : k; 1 : k) is nonsingular for
+k = 1 : n (see [22, p. 102]). In our experiments n = 2048 and m varies from 3072 to 21504. Comparisons are made
+against the MAGMA routines magma dgetrf and magma dgetrf nopiv (instead of PRBT since the latter has no
+implementation for rectangular matrices). We also compare with the MAGMA routine magma dgetrf modiﬁed by
+factoring the panel using the recursive GEPP kernel (this routine is named H-rgetf2 in our graph). On this type of
+matrices, H-CALU outperforms magma dgetrf and H-rgetf2.Hybrid factorization on rectangular matrices could be
+for instance useful in a future hybrid factorization with multiple GPUs where the (rectangular) panel could be factored
+using CPU and a GPU.
+
+23
+
+24
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+35
+
+40
+dgetrf
+rgetf2
+CALU
+PRBT
+
+30
+
+dgetrf
+rgetf2
+CALU
+PRBT
+
+35
+
+30
+25
+
+Gflop/s
+
+Gflop/s
+
+25
+20
+
+15
+
+20
+
+15
+10
+10
+5
+
+0
+
+5
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+0
+
+9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+Threads
+
+1
+
+2
+
+3
+
+4
+
+(a) Matrix size = 5120, panel size = 256
+
+5
+
+6
+
+7
+
+8
+
+9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+Threads
+
+(b) Matrix size = 10240, panel size = 320
+
+50
+
+70
+dgetrf
+rgetf2
+CALU
+PRBT
+
+45
+
+dgetrf
+rgetf2
+CALU
+PRBT
+
+60
+
+40
+50
+
+35
+
+Gflop/s
+
+Gflop/s
+
+30
+25
+20
+15
+
+40
+
+30
+
+20
+
+10
+10
+5
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+0
+
+9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+Threads
+
+1
+
+2
+
+3
+
+4
+
+(c) Matrix size = 15360, panel size = 512
+
+5
+
+6
+
+7
+
+8
+
+9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+Threads
+
+(d) Matrix size = 21504, panel size = 768
+
+Figure 4: Comparison of CPU multi-threaded panel factorizations.
+
+300
+
+130
+
+magma_dgetrf
+H-rgetf2
+H-CALU
+120 magma_dgetrf_nopiv
+
+magma_dgetrf
+H-CALU
+PRBT
+
+250
+110
+200
+
+Gflop/s
+
+Gflop/s
+
+100
+
+150
+
+90
+
+80
+100
+70
+50
+60
+
+0
+1024
+
+3072
+
+5120
+
+7168
+
+9216
+Matrix size
+
+11264
+
+13312
+
+(a) Performance on square matrices
+
+15360
+
+17408
+
+50
+3072
+
+5120
+
+7168
+
+9216
+
+11264
+13312
+Number of rows
+
+15360
+
+17408
+
+19456
+
+(b) Performance on rectangular matrices (2048 columns)
+
+Figure 5: Performance on AMD + Tesla 2050, 16 threads
+
+21504
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+Backward error
+
+1e-13
+
+magma_dgetrs
+H-CALU
+PRBT
+
+1e-14
+
+1e-15
+1024
+
+3072
+
+5120
+
+7168
+
+9216
+11264
+Matrix size
+
+13312
+
+15360
+
+17408
+
+Figure 6: Comparison of componentwise backward error
+4.3. Tests on accuracy
+First we study the backward error obtained for the linear system solution computed with the solvers LU MAGMA
+(based on the factorization routine magma dgetrf), H-CALU and PRBT, using the random matrices considered in
+the previous experiments. The quantity plotted in Figure 6 corresponds to the componentwise backward error given
+in [2, p. 78] and expressed by
+|Ax − b|i
+,
+ω = max
+i
+(|A| · |x| + |b|)i
+where x is the computed solution. We observe that the backward errors are very similar for the three hybrid solvers.
+Now we present additional experiments using LAPACK test cases given in [23]. Table 1 lists the 11 matrices
+used in our experiments (size 512, all in double precision). In this table, ε denotes the machine precision and κ is the
+inﬁnity-norm condition number of the matrix. We report in Table 2 the componentwise backward error obtained for
+the three hybrid solvers LU MAGMA, H-CALU and PRBT. Iterative reﬁnement (in the working precision) is added if
+necessary using the LAPACK routine dgerfs on the multicore host. The iterative reﬁnement is based on the stopping
+criterion given in [24] (ω ≤ (n + 1)ε), with a maximum of 5 iterations. Matrices 5 to 7 are singular and have at
+least one row and column equal to zero. These are used in [23] to test the error return codes. Nevertheless, for these
+matrices the random transformation of A allows the LU factorization to continue while the pivoting is not capable of
+removing the zero pivots. For the ill-conditioned matrix 9, the backward error is slightly less accurate than the other
+solvers. Matrix 10 is scaled to near underﬂow and the three solvers give similar results but less acurate than other
+matrices. For all the other matrices, the three solvers give the same accuracy. Tests on accuracy for speciﬁc matrix
+collections can be found in [9] and [10] respectively for PRBT and CALU.
+5. Conclusion
+In this paper we presented diﬀerent LU factorization routines using a multicore machine accelerated with one
+GPU. The diﬀerence beween these approaches comes from the pivoting strategy chosen for factoring the panel. We
+proposed a new hybrid communication-avoiding solver H-CALU where the panel is factored on the CPU while the
+update is performed by the GPU. In our experiments, this solver turns out to be faster than the classical GEPP implementation in MAGMA for square matrices larger than 5120 and in all cases for rectangular matrices. H-CALU
+is scalable, allowing us to use larger panels and thus to limit the amount of transfer between the CPU and the GPU
+memory. We point out that further optimizations are possible with e.g. additional tuning and scheduling but our
+experiments give a general trend for the performance of algorithms as dictated by the amount of communication that
+they perform. However, the solver based on randomization always outperforms other solvers since we do not pivot at
+all and the computational cost for randomizing is small.
+
+25
+
+26
+
+Marc Baboulin et al. / Procedia Computer Science 9 (2012) 17 – 26
+
+Table 1: Test matrices
+
+1
+2
+3
+4
+5
+6
+
+Diagonal
+Upper triangular
+Lower triangular
+Random, κ = 2
+First column zero
+Last column zero
+
+7
+8
+9
+10
+11
+
+Last n/2 columns
+√ zero
+Random, κ = 0.1/ε
+Random, κ = 0.1/ε
+Scaled near underﬂow
+Scaled near overﬂow
+
+Table 2: Componentwise Backward Error
+
+Matrix
+Type
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+
+MAGMA LU
+(magma dgetrf)
+0.0
+1.32e-16
+1.85e-16
+2.16e-16
+2.10e-16
+2.70e-16
+7.60e-14
+2.27e-16
+
+H-CALU
+
+PRBT
+
+0.0
+1.32e-16
+1.85e-16
+2.76e-16
+3.76e-16
+6.37e-16
+7.40e-14
+2.11e-16
+
+1.42e-16
+4.02e-16
+2.46e-16
+2.93e-16
+2.64e-16
+1.16e-13
+4.01e-14
+2.41e-16
+
+References
+[1] J. J. Dongarra, C. B. Moler, J. R. Bunch, G. W. Stewart, LINPACK Users’ Guide, SIAM, 1979.
+[2] E. Anderson, Z. Bai, C. Bischof, S. Blackford, J. Demmel, J. Dongarra, J. D. Croz, A. Greenbaum, S. Hammarling, A. McKenney,
+D. Sorensen, LAPACK Users’ Guide, SIAM, 1999, third edition.
+[3] L. Blackford, J. Choi, A. Cleary, E. D’Azevedo, J. Demmel, I. Dhillon, J. Dongarra, S. Hammarling, G. Henry, A. Petitet, K. Stanley,
+D. Walker, R. Whaley, ScaLAPACK Users’ Guide, SIAM, 1997.
+[4] J. Choi, J. Dongarra, L. Ostrouchov, A. Petitet, D. Walker, R. Whaley, A proposal for a set of parallel basic linear algebra subprograms, Tech.
+rep., LAPACK Working Note 100 (1995).
+[5] R. Nath, S. Tomov, J. Dongarra, An improved MAGMA GEMM for Fermi GPUs, International Journal of High Performance Computing
+Applications 24 (4) (2010) 511–515.
+[6] S. Tomov, J. Dongarra, M. Baboulin, Towards dense linear algebra for hybrid GPU accelerated manycore systems, Parallel Computing
+36 (5&6) (2010) 232–240.
+[7] S. Tomov, R. Nath, J. Dongarra, Accelerating the reduction to upper Hessenberg, tridiagonal, and bidiagonal forms through hybrid GPU-based
+computing, Parallel Computing 36 (12) (2010) 645–654.
+[8] M. Anderson, G. Ballard, J. Demmel, K. Keutzer, Communication-Avoiding QR decomposition for GPUs, Tech. rep., LAPACK Working
+Note 240, proceedings of IPDPS’11 (2011).
+[9] M. Baboulin, J. Dongarra, J. Herrmann, S. Tomov, Accelerating linear system solutions using randomization techniques, Tech. rep., LAPACK
+Working Note 246 (2011).
+[10] L. Grigori, J. Demmel, H. Xiang, CALU: a communication optimal LU factorization algorithm, SIAM J. Matrix Anal. and Appl. 32 (2011)
+1317–1350.
+[11] N. J. Higham, Accuracy and Stability of Numerical Algorithms, SIAM, 2002, second edition.
+[12] L. Grigori, J. Demmel, H. Xiang, Communication avoiding Gaussian elimination, in: Proceedings of the 2008 ACM/IEEE conference on
+Supercomputing, IEEE Press, 2008, p. 29.
+[13] D. S. Parker, Random butterﬂy transformations with applications in computational linear algebra, Technical Report CSD-950023, Computer
+Science Department, UCLA (1995).
+[14] J. Dongarra, I. Duﬀ, D. Sorensen, H. van der Vorst, Numerical Linear Algebra for High-Performance Computers, SIAM, 1998.
+[15] J. Kurzak, J. Dongarra, Implementing linear algebra routines on multi-core processors with pipelining and a look ahead, Tech. rep., LAPACK
+Working Note 178 (2006).
+[16] S. Donfack, L. Grigori, A. K. Gupta, Adapting communication-avoiding LU and QR factorizations to multicore architectures, in: Parallel &
+Distributed Processing (IPDPS), 2010 IEEE International Symposium on, IEEE, 2010, pp. 1–10.
+[17] A. Buttari, J. Dongarra, J. Kurzak, J. Langou, P. Luszczek, S. Tomov, The impact of multicore on math software, in: Proceedings of PARA
+2006, Workshop on state-of-the art in scientiﬁc computing, 2006.
+[18] A. Buttari, J. Langou, J. Kurzak, J. Dongarra, Parallel tiled QR factorization for multicore architectures, Concurr. Comput. : Pract. Exper. 20
+(2007) 1573–1590.
+[19] Intel, Math Kernel Library (MKL), http://www.intel.com/software/products/mkl/.
+[20] F. G. Gustavson, Recursion leads to automatic variable blocking for dense linear-algebra algorithms, IBM Journal of Research and Development 41 (6) (1997) 737–755.
+[21] J. Dongarra, M. Faverge, H. Ltaief, P. Luszcsek, Achieving numerical accuracy and high performance using recursive tile LU factorization,
+Tech. rep., LAPACK Working Note 259 (2011).
+[22] G. H. Golub, C. F. van Loan, Matrix Computations, The Johns Hopkins University Press, 1996, third edition.
+[23] S. Blackford, J. Dongarra, Installation Guide for LAPACK, Tech. rep., LAPACK Working Note 41, revised version 3.0 (1999).
+[24] R. D. Skeel, Iterative reﬁnement implies numerical stability for Gaussian elimination, Math. Comput. 35 (1980) 817–832.
+
+

@@ -1,0 +1,404 @@
+Higher Order Flattening
+Roman Leshchinskiy , Manuel M. T. Chakravarty, and Gabriele Keller
+University of New South Wales
+School of Computer Science and Engineering
+Programming Languages and Systems
+{rl, chak, keller}@cse.unsw.edu.au
+
+Abstract. We extend the ﬂattening transformation, which turns nested
+into ﬂat data parallelism, to the full higher-order case, including lambda
+abstractions and data parallel arrays of functions. Our central observation is that ﬂattening needs to transform the closures used to represent
+functional values. Thus, we use closure conversion before ﬂattening and
+introduce array closures to represent arrays of functional values.
+
+1
+
+Introduction
+
+Nested data parallelism [2] enables the concise speciﬁcation of irregular parallel
+computations involving sparse data structures (e.g., trees and sparse matrixes)
+and comes with a simple language-based cost model. Following [5], we add nested
+data parallelism to Haskell by including a type of parallel arrays, denoted [:α:],
+such that we can use variants of all special list syntax and Prelude list operations
+that only involve ﬁnite lists. To distinguish arrays from lists, we add colons to
+the square brackets (as in [:1, 2, 3:]) and append the suﬃx P to function names
+(e.g., mapP (+1) [:1, 2, 3:] adds 1 to each element of [:1, 2, 3:]). The main diﬀerence
+between lists and arrays is that the latter have a parallel evaluation semantics;
+i.e., all elements are evaluated as soon as one is demanded.
+Given an array of arrays, xs :: [:[:Float :]:], we may evaluate the sum of each
+subarray by mapP sumP xs. As sumP itself is a parallel operation, we overall have a nested parallel computation, where lengthP xs parallel summations
+are performed in parallel. A nested array, such as xs, generally constitutes an
+irregular structure as the subarrays may be of varying length; hence it goes
+beyond Fortran’s notion of an array. Nevertheless, we want to avoid a pointerbased representation, where the outer array is an array of pointers to the subarrays, and prefer a ﬂat representation, which stores the elements of all subarrays
+in one contiguous block of memory and keeps the information about subarray boundaries in a separate structure called a segment descriptor. For example,
+[:[:1, 2:], [::], [:3, 4, 5:]:] would be represented by the pair ([:2, 0, 3:], [:1, 2, 3, 4, 5:])
+of segment descriptor and ﬂat value array. This improves locality of reference,
+and hence, increases cache utilisation as well as decreases communication on a
+distributed-memory parallel machine.
+Partly funded by the Australian Research Council under grant number DP0211203.
+The ﬁrst author was, in part, at the Technische Universit¨
+at Berlin, Germany.
+V.N. Alexandrov et al. (Eds.): ICCS 2006, Part II, LNCS 3992, pp. 920–928, 2006.
+c Springer-Verlag Berlin Heidelberg 2006
+
+Higher Order Flattening
+
+921
+
+Flattening is a program transformation that turns nested data structures
+into ﬂat representations (of the form just described) and vectorises the code
+that operates on these nested structures [1]. For example, mapP sumP xs turns
+into sumP ↑ xs, where sumP ↑ is the lifted variant of sumP that simultaneously
+computes the sum of all segments of a ﬂat representation of a nested array. In
+previous work [3], we showed how ﬂat data representations and vectorised code
+can be derived for functional programs operating on nested arrays of arbitrary
+recursive product-sum types. However, we could not ﬂatten arrays of functions
+nor vectorise partial function applications. This eﬀectively restricted the approach to ﬁrst-order programs and precluded a seamless integration of nested
+data parallelism into Haskell or any other functional language. The present paper closes this gap. We show how to extend ﬂattening to the higher-order case
+by introducing an explicit notion of closures, which leads to the concepts of array closures and closure vectorisation. Consequently, we need to apply closure
+conversion [7] to a program before ﬂattening.
+In summary, our main contributions are threefold:
+– a ﬂat representation of arrays of functions and closures (Sect. 3);
+– a method to combine and concatenate arrays of functions (Sect. 4); and
+– a new approach to ﬂattening nested mapP s (Sect. 5).
+Before addressing these technical contributions, Sect. 2 explains the shortcomings of previous approaches to ﬂattening with respect to arrays of functions and
+partial applications. Space constraints restrict us to an illustration of the core
+ideas by example in this paper; more details are available in [6].
+
+2
+
+Why Flattening Higher-Order Functions Is Hard?
+
+The ﬂattening transformation comprises (1) a ﬂattened array representation and
+(2) code vectorisation. The ﬂattened array representation turns arrays containing arbitrary tree structures into tree structures that contain arrays of unboxed
+primitive types.1 As an example, an array of rose trees storing ﬂoats in their
+leaves is ﬂattened to a list of arrays of ﬂoats. The length of the list corresponds
+to the height of the tallest rose tree, and each list element (i.e., array) contains
+the ﬂoats of one level of the original rose trees.
+Code vectorisation pairs every function f with a version f ↑ lifted into vector
+space—think of f ↑ as the data-parallel version of f . Code vectorisation also
+replaces all computations of the form mapP f by f ↑ . It turns out that code
+vectorisation transforms a program exactly such that it can directly operate on
+a ﬂattened representation of its array data.
+Now for some examples. The code of the identity function id = λn.n remains
+the same after lifting, but where id ’s type is α → α, that of id ↑ is [:α:] → [:α:].
+The increment function inc = λn.1 + n is slightly more interesting. Assuming
+its type is Int → Int, the type of of inc ↑ is [:Int:] → [:Int:]. The code of inc ↑ is
+1
+
+Arrays of unboxed primitive types are C- or Fortran-style arrays that are essentially
+represented as chunks of memory full of integer and ﬂoating-point values.
+
+922
+
+R. Leshchinskiy, M.M.T. Chakravarty, and G. Keller
+
+λns.(replicateP (lengthP ns) 1) +↑ ns , where replicateP n e = [:e, . . . , e:]
+(i.e., e repeated n times) and (+↑ ) denotes the pairwise addition of two arrays.
+Slightly more involved is the treatment of sum types. In Haskell, we have
+data Either α β = Left α | Right β
+either
+:: (α → γ) → (β → γ) → Either α β → γ
+either f g x
+= case x of {Left x → f x ; Right x → g x }
+The ﬂat representation of an array of sums [:Either α β:] is a product of a selector
+and two arrays containing the values of the two alternatives ([:Bool :], [:α:], [:β:]);
+e.g., [:Left 5, Right 4, Left 2:] becomes ([:True, False, True:], [:5, 2:], [:4:]).
+Let us combine these two examples into a larger one:
+foo :: Either Int Int → Int
+foo x = either inc id x
+We lift this into vector space as foo ↑ xs = either ↑ inc ↑ id ↑ xs with
+either ↑ f g (sel , left , right ) = combineP sel (f left ) (g right )
+The array primitive combineP :: [:Bool :] → [:α:] → [:α:] → [:α:] merges its two [:α:]
+arguments, arranging the elements in the order determined by the selector of type
+[:Bool :]. For example, if we apply foo to [:Left 5, Right 4, Left 2:], combineP will
+be invoked as combineP [:True, False, True:] [:6, 3:] [:4:], resulting in [:6, 4, 3:].
+In its full glory, the story is slightly more complicated as we need to replace
+a function f by a pair of its original and lifted version (f , f ↑ ) and adjust all
+function applications by adding appropriate projections. However, these details
+are secondary for demonstrating the core diﬃculty in ﬂattening higher-order
+functions; please refer to [3, 4] for a more detailed introduction to ﬂattening.
+Now, let us turn to the core of the problem that we solve in this paper. We
+vary the example function foo to get
+bar
+:: (Either Int Int, Int ) → Int
+bar (x , y) = either ((+) y) id x
+The ﬁrst argument to either , namely (+) y, is a partial application of addition to
+the new argument y, replacing the previously added constant 1 with the variable
+y. It might seem as if we can lift bar in essentially the same way as foo:
+bar ↑ (xs, ys) = either ↑ ((+↑ ) ys) id ↑ xs
+Unfortunately, we will see that this gets us into trouble quickly. We ﬂatten
+an array of products [:(α, β):] as a product of arrays ([:α:], [:β:]). For example,
+[:(Left 5, 1), (Right 4, 2), (Left 2, 7):] is represented by (([:True, False, True:],
+[:5, 2:], [:4:]), [:1, 2, 7:]). We can now calculate as follows:
+bar ↑ (([:True, False, True:], [:5, 2:], [:4:]), [:1, 2, 7:])
+= {Unfolding bar ↑ }
+either ↑ ((+↑ ) [:1, 2, 7:]) id ↑ ([:True, False, True:], [:5, 2:], [:4:])
+= {Unfolding either ↑ }
+combineP [:True, False, True:] ((+↑ ) [:1, 2, 7:] [:5, 2:]) (id ↑ [:4:])
+
+Higher Order Flattening
+
+923
+
+Now we have a bogus subexpression: (+↑ ) [:1, 2, 7:] [:5, 2:]. The length of the
+two arguments to (+↑ ) does not match! This is not only a matter of choosing
+an appropriate preﬁx of the longer array (as with Haskell’s zipWith). We would
+need to evaluate (+↑ ) [:1, 7:] [:5, 2:] to achieve the correct result; i.e., drop the
+middle element of the ﬁrst array. Why does the ﬁrst argument have to be [:1, 7:]?
+Because the selector [:True, False, True:] determines that only the ﬁrst and third
+element may be used by the ﬁrst argument of either . Unfortunately, the partial
+application (+↑ ) [:1, 2, 7:] drags the entire array [:1, 2, 7:] into the body of either ,
+completely disregarding the selector, instead of narrowing the array according
+to the selector, as in packP [:True, False, True:] [:1, 2, 7:] = [:1, 7:].
+Similar problems arise from local function deﬁnitions with free variables; e.g.,
+if we replace (+) y in bar by λx .y + x , we arrive at the same situation as above.
+As we will see next, key to solving these problems is an appropriate ﬂattened
+representation of arrays of functions.
+
+3
+
+Flattening Closures
+
+The crucial observation of last section was that either ↑ needs to packP its functional arguments, or rather the arrays embedded in these arguments. Hence, we
+need to represent function values in a form that permits array operations (such
+as packP ) to inspect these values and modify them. The standard method to
+separate code from data, and thus make data embedded in function values explicit, is closure conversion [7]. It replaces all function values by closures, which
+are pairs of a closed binary function and its environment. The latter is a value
+for the ﬁrst argument of the binary function and contains all the data items
+embedded in the function value represented by the closure.
+With ﬂattening, each closure contains two binary functions: the standard
+version and its lifted counterpart—we’ll discuss later why this is crucial to our
+approach. Thus, we denote closures as expressions (f , f ↑ ), e of type α ⇒ β if
+f :: (γ, α) → β, f ↑ :: ([:γ:], [:α:]) → [:β:] and e :: γ; e.g., we represent (+) 1 by the
+closure (λ(v1 , v2 ).v1 + v2 , λ(vs1 , vs2 ).vs1 +↑ vs2 ), 1 , or just ((+), (+↑ )), 1 ,
+where f :: (α, β) → γ is the uncurried version of f :: α → β → γ. The application
+of a closure of type α ⇒ β to a value x :: α is deﬁned as (f , f ↑ ), e † x = f (e, x ).
+To solve our problem with lifting partial applications, we need a suitable representation of partial applications of lifted functions, such as (+↑ ) [:1, 2, 7:]. Is
+a closure of the form ((+↑ ), (+↑↑ )), [:1, 2, 7:] , where (+↑↑ ) is addition lifted
+twice, suﬃcient? Unfortunately, no! In particular, it prevents typing closure converted, ﬂattened programs. After all, the type of packP is [:Bool :] → [:α:] → [:α:];
+so, it’s second argument should be an array. Hence, if we want to apply packP
+to a closure value, that value should better be the ﬂattened representation of an
+array type. Not surprisingly, it turns out that packable closures are the ﬂattened
+representation of arrays of functions. They diﬀer slightly from vanilla closures,
+as their environment is always an array. In other words, an array closure has the
+β if f :: (γ, α) → β, f ↑ :: ([:γ:], [:α:]) → [:β:], and
+form :(f , f ↑ ), es: of type α
+es :: [:γ:]. The type α
+β represents arrays of standard closures [:α ⇒ β:].
+
+924
+
+R. Leshchinskiy, M.M.T. Chakravarty, and G. Keller
+
+For example, we represent both the partial application (+↑ ) [:1, 2, 7:] and
+the local function λxs .ys +↑ xs , where ys = [:1, 2, 7:], by the array closure
+:((+), (+↑ )), [:1, 2, 7:]: . The closure’s environment ﬁxes the length of arrays
+acceptable as the second argument to (+↑ ). We deﬁne the application of an array
+closure of type α
+β to a value xs :: [:α:] as :(f , f ↑ ), es: ‡ xs = f ↑ (es, xs).
+As we will see in the rest of the paper, this representation directly supports the
+full range of array operations. For instance, standard closures can be replicated
+to array closures simply by replicating the environment:
+replicateP n (f , f ↑ ), e
+
+= :(f , f ↑ ), replicateP n e:
+
+Conversely, we obtain a standard closure from an array closure by indexing:
+:(f , f ↑ ), es: !: n =
+
+(f , f ↑ ), es !: n
+
+— !: is indexing of parallel arrays
+
+NB: To convert between standard closures and array closures, it is crucial that
+both closure types include the standard and the lifted version of the function.
+Pivotal to our running example is the ability to packP array closures:
+packP bs :(f , f ↑ ), es: = :(f , f ↑ ), packP bs es:
+More generally, an array closure :(f , f ↑ ), es: represents mapP (curry f ) es and,
+therefore, satisﬁes the usual parametric map laws [8]. Thus, a wide range of polymorphic array operations, including permutations, can be implemented analogously to packP by propagating the operation to the environment.
+Now, let us return to the problematic function bar of the previous section.
+This time, we replace the two function arguments to either ↑ by array closures:
+bar ↑ (xs, ys) = either ↑ :((+), (+↑ )), ys: :(id0 , id0↑ ), [:(), (), ():]: xs
+where id0 = λ(v1 , v2 ).v2
+id0↑ = λ(vs1 , vs2 ).vs2
+and re-deﬁne either ↑ such that it packs its ﬁrst two arguments:
+either ↑ f g (sel , left , right ) =
+combineP sel ((packP sel f ) ‡ left ) ((packP (mapP not sel ) g) ‡ right )
+Now, we can redo the calculation for the bar example:
+bar ↑ (([:True, False, True:], [:5, 2:], [:4:]), [:1, 2, 7:])
+= {Unfolding bar ↑ }
+either ↑ :((+), (+↑ )), [:1, 2, 7:]: :(id0 , id0↑ ), [:(), (), ():]:
+([:True, False, True:], [:5, 2:], [:4:])
+= {Unfolding either ↑ }
+combineP [:True, False, True:]
+((packP [:True, False, True:] :((+), (+↑ )), [:1, 2, 7:]: ) ‡ [:5, 2:])
+((packP [:False, True, False:] :(id0 , id0↑ ), [:(), (), ():]: ) ‡ [:4:])
+= {Applying packP }
+combineP [:True, False, True:]
+:((+), (+↑ )), [:1, 7:]: ‡ [:5, 2:]) ( :(id0 , id0↑ ), [:():]: ‡ [:4:])
+
+Higher Order Flattening
+
+925
+
+= {Unfolding ‡}
+combineP [:True, False, True:] ((+↑ ) ([:1, 7:], [:5, 2:])) (id0↑ ([:():], [:4:]))
+= {Applying +↑ and id0↑ }
+combineP [:True, False, True:] [:6, 9:] [:4:]
+= {Applying combineP }
+[:6, 4, 9:]
+In summary, to ﬂatten higher-order programs, we ﬁrst apply closure conversion to make closures explicit, hence admitting the manipulation of closures as
+ﬁrst-class values. All remaining function values (which now only occur inside
+closures) are supercombinators; i.e, closed functions, which also only use supercombinators inside. Moreover, we use array closures as the representation of
+arrays of functional values, so that we can perform standard array operations,
+such as packP , on lifted partial applications and arrays of functions.
+
+4
+
+Combining Closures
+
+Data parallelism dictates that an array closure :(f , f ↑ ), e: represents the partial
+application of a single function to multiple arguments. Many array operations,
+such as replicateP , mapP , and packP , maintain this property, but unfortunately
+some don’t. For instance, consider
+combineP [:True, False, True:] :((+), (+↑ )), [:1, 2:]: :((∗), (∗↑ )), [:3:]:
+The result is of type Int
+Int and represents the partial applications of both
+addition and multiplication. In a data parallel environment, can we express this
+as a partial application of a single function?
+The following observation suggests a solution: Elementwise application of a
+combined closure to an argument array is equivalent to splitting the argument
+array, applying the two closures individually, and combining the results:
+(combineP [:True, False, True:] :((+), (+↑ )), [:1, 2:]: :((∗), (∗↑ )), [:3:]: )
+‡ [:4, 5, 6:]
+= {Splitting the argument array}
+combineP [:True, False, True:]
+( :((+), (+↑ )), [:1, 2:]: ‡ [:4, 6:]) ( :((∗), (∗↑ )), [:3:]: ‡ [:5:])
+= {Merging the results}
+[:5, 15, 8:]
+This scheme is easily encoded by a closure :(capp, capp ↑ ), es: whose environment es contains the two original closures along with the selector. The function
+capp ↑ , deﬁned below, uses the selector to split the argument and combines the
+result of applying the two closures.
+Crucially, this approach ﬁts nicely with the rest of the ﬂattening transformation, as the environment can be directly represented by a parallel array of type
+[:Either (Int ⇒ Int) (Int ⇒ Int):]. As described in Section 2, this is ﬂattened to
+the product ([:Bool :], Int
+Int, Int
+Int) which stores precisely the selector
+and the two closures and is constructed by combineP as follows:
+
+926
+
+R. Leshchinskiy, M.M.T. Chakravarty, and G. Keller
+
+combineP bs fs gs = :(capp, capp ↑ ), (bs, fs, gs):
+where we deﬁne the split/combine procedure as follows
+β, α
+β), [:α:]) → [:β:]
+capp ↑ :: (([:Bool :], α
+capp ↑ ((bs, fs, gs), xs) =
+combineP bs (fs ‡ packP bs xs) (gs ‡ packP (mapP not bs) xs)
+Our deﬁnition of capp ↑ sequentialises the two applications of fs and gs. This is
+a natural consequence of data parallelism, as fs and gs will generally be entirely
+diﬀerent computations. This corresponds closely to either ↑ from Section 3.
+The result of combineP is a regular array closure and, thus, naturally supports
+all array operations. For instance, packing clearly has the desired semantics by
+propagating the operation into the environment. Moreover, indexing extracts
+a single element from the environment by, depending on the index, selecting
+it from either of the two closures. Depending on which closure is selected, the
+result will be embedded into a Left or Right constructor. Applying the resulting
+closure to an argument invokes capp which is implemented as
+capp
+:: (Either (α ⇒ β) (α ⇒ β), α) → β
+capp (h, x ) = case h of {Left f → f † x ; Right g → g † x }
+In fact, capp ↑ is, as expected, precisely the lifted version of capp; i.e., we can
+derive capp ↑ from capp by vectorisation.
+This idea can be extended to other joining operations, such as concatenation,
+which is a special case of combining, but we only have space to discuss combineP .
+
+5
+
+Nesting Closures
+
+The purpose of the ﬂattening transformation is the elimination of nested parallelism, of which the archetypal example is the nested application of mapP , as
+in mapP (mapP (1+)) [:[:1, 2:], [::], [:3, 4, 5:]:], which increments every integer element while preserving the array’s nesting structure. As discussed in Section 1,
+the nested array of our example is implemented by the ﬂattened representation
+([:2, 0, 3:], [:1, 2, 3, 4, 5:]), where the the segment descriptor [:2, 0, 3:] encodes the
+nesting structure. In the ﬂat representation, we can increment all integer elements without aﬀecting the nesting structure by simply applying the non-nested
+mapP (+1) to the second component of the representation. So, we have
+mapP (mapP f ) (segd , xs) = (segd , mapP f xs)
+In the following, we discuss how to realise this with array closures.
+After closure conversion, mapP expects a closure as its ﬁrst argument, which
+we simply replicate to get an array closure that we can apply as follows:
+mapP
+:: (α ⇒ β) → [:α:] → [:β:]
+mapP c xs = replicateP (lengthP xs) c ‡ xs
+The partial application mapP (1+) in our nested example ultimately evaluates
+to (mapP , mapP ↑ ), ((+), (+↑ )), 1 , which we map over the nested array:
+mapP ( (mapP , mapP ↑ ), ((+), (+↑ )), 1
+
+) ([:2, 0, 3:], [:1, 2, 3, 4, 5:])
+
+Higher Order Flattening
+
+927
+
+= {Unfolding mapP }
+replicateP 3 (mapP ,mapP ↑ ), ((+),(+↑ )),1 ‡ ([:2, 0, 3:],[:1, 2, 3, 4, 5:])
+= {Unfolding replicateP twice}
+:(mapP , mapP ↑ ), :((+), (+↑ )), [:1, 1, 1:]: : ‡ ([:2, 0, 3:], [:1, 2, 3, 4, 5:])
+= {Unfolding ‡}
+mapP ↑ ( :((+), (+↑ )), [:1, 1, 1:]: , ([:2, 0, 3:], [:1, 2, 3, 4, 5:]))
+Not surprisingly, the two nested applications of mapP are resolved to a single
+application of mapP ↑ . The implementation of the latter can be derived by lifting
+the deﬁnition of mapP ; here, we present a slightly simpliﬁed version:
+β) → ([:Int:], [:α:]) → ([:Int:], [:β:])
+mapP ↑ :: (α
+mapP ↑ :(f , f ↑ ), es: (segd , xs) = (segd , :(f , f ↑ ), expandP segd es: ‡ xs)
+where
+expandP [:n1 , . . . , nk :] [:x1 , . . . , xk :] = [:x1 , . . . , x1 , . . . , xk , . . . , xk :]
+n1 times
+
+nk times
+
+Conceptually, the mapped array closure contains one element for each subarray
+of the nested array. Hence, we blow the array closure up, such that each element
+is replicated as often as the length of the corresponding subarray dictates—this
+is the job of expandP . Afterwards, we can simply apply the expanded array
+closure to the representation of the nested array. The nesting structure remains
+invariant under this operation. Returning to our example, we now have:
+mapP ↑ :((+), (+↑ )), [:1, 1, 1:]: ([:2, 0, 3:], [:1, 2, 3, 4, 5:])
+= {Unfolding mapP ↑ }
+([:2, 0, 3:], :((+), (+↑ )), [:1, 1, 1, 1, 1:]: ‡ [:1, 2, 3, 4, 5:])
+= {Unfolding ‡}
+([:2, 0, 3:], [:2, 3, 4, 5, 6:])
+As expected, the result is the ﬂat representation of [:[:2, 3:], [::], [:4, 5, 6:]:]; moreover,
+it has been computed in one parallel step.
+
+References
+1. G. E. Blelloch. Vector Models for Data-Parallel Computing. MIT Press, 1990.
+2. G. E. Blelloch. Programming parallel algorithms. CACM, 39(3):85–97, 1996.
+3. M. M. T. Chakravarty and G. Keller. More types for nested data parallel programming. In P. Wadler, editor, 5th ACM SIGPLAN Intl. Conf. on Functional
+Programming (ICFP’00), pages 94–105. ACM Press, 2000.
+4. M. M. T. Chakravarty and G. Keller. An approach to fast arrays in Haskell. In
+J. Jeuring and S. Peyton Jones, editors, Lecture notes for The Summer School on
+Advanced Functional Programming ’02, LNCS 2638, 2003.
+5. M. M. T. Chakravarty, G. Keller, R. Lechtchinsky, and W. Pfannenstiel. Nepal—
+Nested data parallelism in Haskell. In R. Sakellariou, J. Keane, J. R. Gurd, and
+L. Freeman, editors, Euro-Par 2001: Parallel Processing, number 2150, pages 524–
+534. Springer-Verlag, 2001.
+
+928
+
+R. Leshchinskiy, M.M.T. Chakravarty, and G. Keller
+
+6. R. Leshchinskiy. Higher-Order Nested Data Parallelism: Semantics and Implementation. PhD thesis, Technische Universit¨
+at Berlin, 2005.
+7. Y. Minamide, G. Morrisett, and R. Harper. Typed closure conversion. In POPL
+’96: Proc. of the 23rd ACM SIGPLAN-SIGACT Sym. on Principles of Programming
+Languages, pages 271–283. ACM Press, 1996.
+8. P. Wadler. Theorems for free! In FPCA’89: Proceedings 4th International Conference
+on Functional Programming Languages and Computer Architecture, pages 347–359,
+New York, 1989. ACM Press.
+
+

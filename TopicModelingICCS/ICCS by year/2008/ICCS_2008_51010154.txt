@@ -1,0 +1,522 @@
+Functional Meta-programming for Parallel
+Skeletons
+Jocelyn Serot1 and Joel Falcou2
+1
+
+LASMEA, UMR 66O2 CNRS/U. Blaise Pascal, Campus des C´ezeaux
+F-63177 Aubi`ere, France
+2
+IEF, Universit´e Paris-Sud, F-91405 Orsay Cedex, France
+Jocelyn.Serot@lasmea.univ-bpclermont.fr, falcou@ief.u-psud.fr
+
+Abstract. We describe the implementation in MetaOcaml of a small
+domain speciﬁc language for skeleton-based parallel programming. We
+show how the meta-programming facilities oﬀered by this language make
+it possible to virtually eliminate the run-time overhead for the resulting
+programs, compared to a hand-crafted, low-level implementation.
+Keywords: Parallel programming, skeletons, meta-programming.
+
+1
+
+Introduction
+
+The now well-known concept of skeletons [1] has been proposed as a solution
+to the problems raised by low-level parallel programming using message-passing
+libraries such as MPI. With skeletons, parallel programming boils down to choosing, instantiating and combining high-level, generic constructors taken from a
+predeﬁned library. Skeletons therefore deﬁne a small domain speciﬁc language
+(DSL) providing the requested level of abstraction, by which parallel programs
+can be built without having to deal with low-level implementation details. Several practical realisations of the skeleton concept have been proposed [2,4,7,6,14].
+These realisations essentially diﬀer in the way the related DSL is implemented.
+In practice, one has to deﬁne 1) the syntax and semantics of this DSL 2) the
+transformation rules used for turning the DSL-level expressions into a low-level
+implementation (using MPIcalls for instance).
+For most cited systems, the DSL is implemented as a library within a classical,
+sequential host language (C, C++, Caml). This has two advantages. First, this
+spares the implementor from having to write a dedicated lexical analyser and
+parser. Second, it greatly eases the interfacing to sequential functions (either
+because these functions are written within the host language or because its
+foreign function interface can be directly reused). The price to pay, on the other
+hand, is a signiﬁcant run-time overhead for the resulting code, compared with a
+hand-crafted implementation of the same application using low-level MPI calls.
+In this paper, we explain how partial evaluation and meta-programming techniques – which have already been successfully applied in other contexts – can
+be used to solve the aforementioned problem. More precisely, we describe the
+implementation, in MetaOcaml, of a small DSL allowing
+M. Bubak et al. (Eds.): ICCS 2008, Part I, LNCS 5101, pp. 154–163, 2008.
+c Springer-Verlag Berlin Heidelberg 2008
+
+Functional Meta-programming for Parallel Skeletons
+
+155
+
+– high-level speciﬁcation of parallel programs as a combination of skeletons,
+– automatic generation of the underlying, equivalent low-level parallel code as
+a set of sequential communicating processes,
+– execution of this code on a cluster architecture supporting the MPIlibrary.
+The paper is organised as follows. Section 2 brieﬂy recalls what is metaprogramming and how it is supported within the MetaOcaml programming
+language. In Section 3, we explain why this technique is interesting in the context of message-based parallel programming. In Section 4 we introduce a DSL
+dedicated to skeleton-based parallel programming, giving its syntax and semantics. We then describe how this (formal) semantics can be used to derive an
+implementation in MetaOcaml. Preliminary experimental results are given in
+Section 6. Related work is discussed in Section 7. We conclude by summarizing
+our contributions and giving hints for further work.
+
+2
+
+Meta-programming with MetaOcaml
+
+Meta-programming is a technique allowing programs (so-called meta-programs)
+to analyse, transform and generate other programs (so-called object programs).
+MetaOcaml [15] is an extension of the Ocaml language oﬀering support for
+meta-programming thanks to three special value constructors, named brackets,
+escape and run, and a special type constructor, named code.
+– Brackets (.< >.) enclose an object program part :
+# let a = .< 1+2 >.;;
+val a : int code = .<(1+2)>.
+The expression 1+2 is not evaluated and the meta-variable a now holds its
+representation. The corresponding code fragment can now be inserted in
+other programs or compiled and executed.
+– The escape operator (.~) inserts an object program part into a larger part :
+#let b = .< 3 * .~a >.;;
+val b : int code = .<(3*(1+2))>.
+– The run operator (.!) evaluates (compile and run) an object program :
+#let c = .!b;;
+val c : int = 9
+
+3
+
+Meta-programming Applied to Parallel Programming
+
+In order to see how meta-programming “`a la MetaOcaml” can be be interesting
+in the context of parallel programming, let’s consider the (otherwise meaningless)
+program depicted in Figure 1-a. In this program, each process with an even
+rank sends a value (computed by the f function) to the process with a rank
+
+156
+
+P0
+send;
+recv
+
+J. Serot and J. Falcou
+
+P2
+
+P1
+
+send;
+
+recv;
+send
+
+recv
+
+P3
+
+let myrank = get_proc_rank() in
+if myrank % 2 = 0 then
+send (f()) (myrank+1);
+recv (myrank+1)
+else
+let y = recv (myrank-1)
+send (g y) (myrank-1);
+
+recv;
+send
+
+-a-
+
+-bFig. 1. Example 1
+
+immediately above and then waits for a return value from the same process.
+Each process with an odd rank waits for a value from the process with a rank
+immediately below, applies a function g to this value and sends the result to this
+process.
+On almost all cluster architectures, the execution model is SPMD (Single
+Program Multiple Data). Written with point-to-point communication primitives
+like send and recv, the corresponding program would therefore look like in
+Figure 1-b1 .
+In this program, the communication pattern is ﬁxed. The code to be executed by each process is then known as soon as its rank is known. We can take
+advantage of this to rewrite it in the following manner with MetaOcaml:
+let pgm rank =
+if rank % 2 = 0 then .< send (f()) (rank+1); recv (rank+1) >.
+else .< let y = recv (rank-1) in send (g y) (rank-1) >.
+let myrank = get_proc_rank() in
+.!(pgm myrank)
+Now, the code to be executed is dynamically generated by each process and
+then executed. This technique is powerful because it allows this code to be
+specialised – and optimized – according to parameters which are only known
+at launch time2 . It could be objected that this incurs a runtime overhead but
+this overhead is only paid once, at launch time, and can therefore completely be
+covered by the gain in performance resulting from executing an optimized code.
+In the sequel, we will apply this idea to obtain an eﬃcient implementation of a
+DSL for skeleton-based parallel programming.
+
+1
+
+2
+
+We assume here that the primitives send and recv have signatures :
+val send: ’a -> pid -> unit and val recv: pid -> ’a and that the primitive
+get proc rank returns, at runtime, the rank of the executing process.
+This should be contrasted to other languages supporting compile-time metaprogramming, such as C++ or Template Haskell [9].
+
+Functional Meta-programming for Parallel Skeletons
+
+4
+
+157
+
+A DSL for Skeleton-Based Parallel Programming
+
+Syntax. The abstract syntax of this DSL – let’s call it Skl– is deﬁned below:
+Σ ::= Seq f
+| Pipe Σ1 . . . Σn
+| Pardo Σ1 . . . Σn
+| Farm n Σ
+f ::= sequential function
+n ::= integer ≥ 1
+The skeleton set is classical. Intuitively, Seq encapsulates sequential userdeﬁned functions in such a way they can be used as parameters to other skeletons;
+Pipe and Farm are the usual data-parallel skeletons. Pipe handles situations in
+which computations are performed in stages. Farm uses a master/workers scheme
+to implement dynamic load-balancing strategies. Pardo models parallel, independent computations, where n distinct tasks are run on n distinct processors.
+Semantics. Due to space limitations, we only give here the semantics of a subset
+of the language, namely the one built upon the Pipe and Pardo skeletons. This
+simpliﬁed version should suﬃce to convey the general ideas and show that the
+implementation sketched in Section 5 is well-founded. The full version of the
+semantics can be found in [12].
+The implementation model of Skl is CSP-based. A parallel program is described as a process network, i.e. a set of processes communicating by channels
+and executing each a sequence of instructions.
+Formally, a process network (PN) is a triple π = P, I, O where
+– P is a set of labeled processes, i.e. pairs (pid , σ) where pid is a (unique)
+process id and σ a triple containing: a list of predecessors (pids of processes
+p for which a communication channel exists from p to the current process),
+a list of successors (pids of processes p for which a communication channel
+exists from the current process to p) and a descriptor Δ. We note L(π) the
+set of pid s of a process network π. For a process p, its predecessors, successors
+and descriptor will be denoted I(p), O(p) et δ(p) respectively.
+– I(π) ⊆ L(π) denotes the set of source processes for the network π (i.e. the
+set of processes p for which I(p) = ∅)
+– O(π) ⊆ L(π) denotes the set of sink processes for the network π (i.e. the set
+of processes p for which O(p) = ∅)
+The process descriptor Δ is a sequence of (abstract) instructions, implicitly
+iterated (processes never terminate). Instructions use implicit addressing, with
+each process holding two variables named vi, vo. A (simpliﬁed) instruction set is
+given below. In the subsequent explanations, p designates the process executing
+the instruction.
+instr ::= SendTo | RecvFrom | CallFn ﬁd
+The SendTo instruction sends the contents of variable vo to the process whose
+pid is given in O(p). The RecvFrom instruction receives data from the process
+
+158
+
+J. Serot and J. Falcou
+
+whose pid is given in O(p) and puts it in the variable vi. The CallFn instruction
+performs a computation by calling a sequential function. This function takes one
+argument (in vi) and produces one result (in vo).
+The transformation of the skeleton tree describing the application into a process network is formalized by means of a set of production rules derived from a
+basic process algebra.
+The following notation will be used. If E is a set, we denote by E[e ← e ] the set
+obtained by replacing e by e (assuming E[e ← e ] = E if e ∈
+/ E). This notation is
+left-associative: E[e ← e ][f ← f ] means (E[e ← e ])[f ← f ]. If e1 , . . . , em is an
+indexed subset of E and φ : E → E a function, we will note E[ei ← φ(ei )]i=1..m
+the set (. . . ((E[e1 ← φ(e1 )])[e2 ← φ(e2 )]) . . .)[em ← φ(em )]. Except when ex1
+n
+plicitly indicated, we will note I(πk ) = {i1k , . . . , im
+k } and O(πk ) = {ok , . . . , ok }.
+j
+j
+j
+j
+For concision, the lists I(ok ) et O(ik ) will be noted sk et dk respectively. For
+lists, we deﬁne the a concatenation operation ++ as usual : if l1 = [e11 , . . . , em
+1 ]
+1
+n
+and l2 = [e12 , . . . , en2 ] then l1 ++l2 = [e11 , . . . , em
+1 , e2 , . . . ; e2 ]. The empty list is
+noted []. The length of list l (resp. cardinal of a set l) is noted |l|.
+The . operator creates a process network containing a single process from a
+process descriptor, using the function New() to provide “fresh” process ids :
+δ∈Δ
+l = New()
+δ = {(l, [], [], δ )}, {l}, {l}
+
+(Singl)
+
+The • operation “serializes” two process networks, by connecting outputs of
+the ﬁrst to the inputs of the second :
+πi = Pi , Ii , Oi (i = 1, 2)
+
+|O1 | = |I2 | = m
+
+π1 • π2 = (P1 ∪ P2 )[(oj1 , σ) ← φd ((oj1 , σ), ij2 )]j=1...m [(ij2 , σ) ← φs ((ij2 , σ), oj1 )]j=1...m ,
+I1 , O2
+(Serial)
+
+This rule uses two auxiliary functions φs and φd deﬁned as follows :
+φs ((p, s, d, δ ), p ) = (p, [p ]++s, d, [RecvFrom]++δ )
+φd ((p, s, d, δ ), p ) = (p, s, d++[p ], δ++[SendTo] )
+The function φs (resp. φd ) adds a process p as a predecessor (resp. successor) to process p and updates accordingly its instruction list. This involves
+prepending (resp. appending) a RecvFrom (resp. SendTo) instruction) to this
+instruction list.
+The operation puts two process networks in parallel, merging their inputs
+and outputs respectively.
+
+π1
+
+πi = Pi , Ii , Oi (i = 1, 2)
+π2 = P1 ∪ P2 , I1 ∪ I2 , O1 ∪ O2
+
+(Par)
+
+Functional Meta-programming for Parallel Skeletons
+
+159
+
+Skeletons can now be deﬁned in terms of the operations deﬁned above, using
+the following conversion function C :
+C[[Seq f ]] = f
+C[[Pipe Σ1 . . . Σn ]] = C[[Σ1 ]] • . . . • C[[Σn ]]
+C[[Pardo Σ1 . . . Σn ]] = C[[Σ1 ]]
+
+5
+
+...
+
+C[[Σn ]]
+
+Implementation
+
+Embedding the Skl language within MetaOcaml is done by providing an interpretation function (run) which converts an Skl program into distinct pieces
+of residual code on each processor. This conversion is performed in two steps:
+First, the process network representation of the program is obtained from the
+tree-based one using the production rules deﬁned by the semantics. Second, the
+residual code is generated by ﬁnding, in this representation, the process having
+the rank of the current process – the one executing the run function – and by
+converting its sequence of instructions into Ocaml code :
+let myrank = Mpi.comm_rank Mpi.comm_world
+let run pgm =
+let pnet = expand_tree pgm in
+let mycode = code pnet myrank in
+.! (mycode)
+
+The expand_tree function implements the ﬁrst step. For example, we have
+let (expand_tree : skl_tree -> process_network) = function
+...
+| Pipe (t::ts) -> serial (expand t) (expand (Pipe ts))
+...
+
+where serial implementes the • operator deﬁned in the previous section.
+The code function implements the second step :
+let code pnet rank =
+let mydesc = List.assoc rank pnet.procs in
+.< while true do .~(code_instrs mydesc mydesc.instrs) done >.
+
+The residual code is producing by traversing the list of macro-instructions
+attached to the current process:
+let code_instrs pdesc instrs =
+let pstate = build_initial_state () in
+List.fold_left
+(fun c i -> .< begin .~c; .~(code_instr pdesc pstate i) end >.)
+.< () >.
+instrs
+
+160
+
+J. Serot and J. Falcou
+
+The pstate variable will hold the (dynamic) process state. This state includes
+the last input and output values (iv and ov resp.), the pid of the sending process
+for the last receive instruction and the list of idle workers (for farm masters)3
+Translation of macro-instructions into Ocaml code is performed by the
+code_instr function. The use of implicit addressing greatly eases this translation, since arguments and results are read (resp. written) directly from (resp.
+to) the process state (no variable environment is needed). For example, we have:
+let rec code_instr pdesc pstate = function
+Comp f -> .< f pstate >.
+| SendTo ->
+let dst = List.hd (List.rev pdesc.sendto) in
+.< Mpi.send pstate.ov dst 0 >.
+| RecvFrom ->
+let src = List.hd (pdesc.recvfrom) in
+.< pstate.iv <- Mpi.receive src Mpi.any_tag >.
+| Ifq (instrs1,instrs2) ->
+.< if pstate.q = List.hd pdesc.recvfrom
+then .~(code_instrs pdesc instrs1)
+else .~(code_instrs pdesc instrs2) >.
+...
+
+A CallFn f instruction generates a call to the sequential function f . SendTo,
+and RecvFrom instructions are translated into direct calls to MPIprimitives (we
+use here the OcamlMpi [13] library, v1.0.1). For the conditional instruction Ifq
+, the escape operator of MetaOcaml allows the insertion of the selected branch
+in the residual code4 .
+Example 1. Consider a simple Skl program describing a three-stage pipeline:
+data are produced at stage 1, processed at stage 2, and results are consumed at
+stage 3. In MetaOcaml, this program will be written as:
+let
+let
+let
+let
+let
+
+f () = (* code of the sequential function producing data *)
+g x = (* code of the sequential processing function *)
+h x = (* code of the sequential function consuming results *)
+pgm = Pipe [seq f; seq g; seq h]
+_ = run pgm
+
+The residual code produced on each processor is as follows:
+PID Code
+2 while true do f s; Mpi.send s.ov 1 0 done
+1 while true do
+s.iv <- Mpi.receive 2 0; g s; Mpi.send s.ov 0 0
+done
+0 while true do s.iv <- Mpi.receive 1 0 ; h s done
+3
+
+4
+
+Our approach therefore explicitly relies on cross-stage persistence, i.e. the possibility
+of deﬁning of variable – like pstate – at stage i and using it at stage i + 1.
+The RecvFrom and Ifq instructions are used by processes involved in the farm skeleton; they were therefore not introduced in simpliﬁed semantics described in the
+previous section.
+
+Functional Meta-programming for Parallel Skeletons
+
+161
+
+Example 2. Consider now a three-stage pipeline, in which the second stage is
+a farm involving a master and two workers :
+let pgm = Pipe [seq f; Farm (2, seq g); seq h]
+let _ = run pgm
+The residual code produced on each processor is now :
+PID Code
+4
+while true do f s; Mpi.send s.ov 3 0 done
+3
+while true do
+let r, q, _ = Mpi.receive_status 0 0 in
+s.ov <- r; s.q <- q;
+if s.q = List.hd pd.recvfrom then begin
+let q = get_idle_worker iws in Mpi.send s.ov q 0 end
+else begin
+update_workers s.q s.iws; Mpi.send <- s.ov 0 0 end
+done
+2
+while true s.iv <- Mpi.receive 3 0; f s; Mpi.send s.ov 3 0 done
+1
+while true s.iv <- Mpi.receive 3 0; f s; Mpi.send s.ov 3 0 done
+0
+while true s.iv <- Mpi.receive 3 0; f s done
+
+In both cases, the code is very similar to the one that an experienced MPIprogrammer would have written.
+
+6
+
+Results
+
+We have assessed the impact of this implementation technique by measuring the
+overhead ρ on the completion time over hand-written Ocaml +OcamlMpi code
+for both single skeleton application and when skeletons are nested at arbitrary
+level. For single skeleton tests, we observe the eﬀect of two parameters: τ , the
+execution time of the inner sequential function and N , the ”size” of the skeleton
+(number of stages for pipeline, number of workers for farm. The test case for
+nesting skeletons involved nesting P farm skeletons, each having ω workers.
+Results were obtained on a PowerPC G5 cluster with 30 processors and for
+N = 2 − 30 and τ = 1ms, 10ms, 100ms, 1s.
+For pipeline, ρ stays under 2%. For farm, ρ is no greater than 3% and
+becomes negligible for N > 8 or τ > 10ms. For the nesting test, worst case is
+obtained with P = 4 and ω = 2. In this case, ρ decreases from 7% to 3% when
+τ increases from 10−3 s to 1s.
+These results are signiﬁcantly better than those obtained with skeleton-based
+parallel programming systems which do not exploit meta-programming. In the
+implementation described in [10], for instance, where skeletons are implemented
+as simple higher-order functions dynamically scheduling MPI calls, the overhead
+was between 10 and 20 %. For the last version of the skipper system [11], in
+which skeletons were translated into macro data-ﬂow graphs executed by a distributed interpreter, this overhead could reach reach 100%. For implementations
+
+162
+
+J. Serot and J. Falcou
+
+relying on object-oriented techniques, such as that described by Kuchen [4],
+the reported overhead (compared to C+MPI code in this case) is between 20
+and 120 %.
+
+7
+
+Related Work
+
+The idea of exploiting meta-programming techniques to implement a DSL is
+deﬁnitely not new. Reviews of related issues can be found for example in [8]
+(in the context of functional programming) or in [5] (in the context of parallel
+programming).
+In [12] we have already described a skeleton-based parallel programming system exploiting the static meta-programming facilities oﬀered by the C++ template mechanism. The work described here is based upon the same semantics and
+process network model but diﬀers in the host language and in the fact that the
+residual code is now produced at runtime, using the dynamic code generation
+facilities of MetaOcaml.
+This idea of exploiting the dynamic meta and multi-stage programming facilities oﬀered by a language such MetaOcaml to implement a DSL seems to
+have been followed only by Herrmann in [3]. The system which he describes is
+very similar to ours but nevertheless diﬀers in several points. First, skeletons
+are not part of the DSL per se. Instead, they can be deﬁned in terms of the
+constructs introduced by this DSL. Second, skeletons for which the scheduling
+of communications cannot be computed at compile-time – such as Farm – are
+not supported. Third, the semantics of the DSL is not deﬁned formally but
+is instead directly encoded in the MetaOcaml interpreter (there’s no explicit
+intermediate representation such as a process network).
+
+8
+
+Conclusion
+
+We have shown in this paper how the meta-programming facilities oﬀered by
+a language such as MetaOcaml can be used to implement eﬃciently a DSL
+dedicated to skeleton-based parallel programming. The (runtime) specialisation
+of code for each distinct processor makes it possible to eliminate the overhead
+observed in other skeleton-based approaches to parallel programming. The resulting system oﬀers a high level of abstraction and performances on the par
+with hand-crafted MPIcode.
+The prototype described here is however more a proof-of-concept than a fullﬂedged programming system and several issues could be further investigated.
+In particular, the fact that the residual code is generated at run-time on each
+processor makes it possible to customize and optimize this code according to
+the actual proﬁle of this processor. This possibility is clearly “under-used” in
+our implementation, in which only the processor rank is taken into account.
+More sophisticated strategies could easily be developed, taking into account the
+processor computing capabilities, actual workload, etc. This could prove very
+useful for handling heterogeneous architectures, for instance.
+
+Functional Meta-programming for Parallel Skeletons
+
+163
+
+References
+1. Cole, M.: Algorithmic skeletons, ch.13. Research Directions in Parallel Functional
+Programming. Springer, Heidelberg (1999)
+2. Bacci, B., Danelutto, M., Orlando, S., Pelagatti, S., Vanneschi, M.: P3L: A Structured High Level Programming Language And Its Structured Support. Concurrency: Practice and Experience, 225–255 (1995)
+3. Herrmann, C.: Generating message-passing programs from abstract speciﬁcations
+by partial evaluation. Parallel Processing Letters 15(3), 305–320 (2005)
+4. Kuchen, H.: A skeleton library. In: Monien, B., Feldmann, R.L. (eds.) Euro-Par
+2002. LNCS, vol. 2400, pp. 620–629. Springer, Heidelberg (2002)
+5. Lengauer, C., Batory, D., Consel, C., Odersky, M. (eds.): Domain-Speciﬁc Program
+Generation. LNCS, vol. 3016. Springer, Heidelberg (2004)
+6. Michaelson, G., Scaife, N., Horiguchi, S.: Parallel Standard ML with Skeletons.
+Scalable Computing, Practise and Experience 6(4) (2006)
+7. S´erot, J., Ginhac, D.: Skeletons for parallel image processing: an overview of the
+SKiPPER project. Parallel Computing 28(12), 1785–1808 (2002)
+8. Sheard, T.: Accomplishments and research challenges in meta-programming. In:
+Taha, W. (ed.) SAIG 2001. LNCS, vol. 2196, pp. 2–44. Springer, Heidelberg (2001)
+9. Sheard, T., Peyton-Jones, S.: Template metaprogramming for Haskell. In:
+Chakravarty, M.M.T. (ed.) ACM SIGPLAN Haskell Workshop 2002, pp. 1–16.
+ACM Press, New York (2002)
+10. S´erot, J.: Embodying parallel functional skeletons: an experimental implementation
+on top of mpi. In: Lengauer, C., Griebl, M., Gorlatch, S. (eds.) Euro-Par 1997.
+LNCS, vol. 1300, pp. 629–633. Springer, Heidelberg (1997)
+11. S´erot, J.: Tagged-token data-ﬂow for skeletons. Parallel Processing Letters 11(4),
+377–392 (2002)
+12. Falcou, J., S´erot, J.: Formal semantics applied to the implementation of a skeletonbased parallel programming library. In: Proceedings of the International Conference ParCo 2007, Aachen. Advances in Parallel Computing, vol. 15, IOS Press,
+Amsterdam (2008)
+13. OcamlMPI, http://caml.inria.fr/cgi-bin/hump.en.cgi?contrib=401
+14. OcamlP3L, http://ocamlp3l.inria.fr
+15. MetaOcaml, http://www.metaocaml.com
+
+

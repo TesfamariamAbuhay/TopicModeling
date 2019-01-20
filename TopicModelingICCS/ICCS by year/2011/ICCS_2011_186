@@ -1,0 +1,1332 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 821–830
+
+Scalable parallel preconditioners for an open source cardiac
+electrophysiology simulation package
+Miguel O. Bernabeua,∗, David Kaya
+a Oxford
+
+University Computing Laboratory, Oxford, United Kingdom
+
+Abstract
+The numerical solution of the bidomain equations is a fundamental tool in the ﬁeld of computational cardiac
+electrophysiology. The multi-scale nature of the processes involved and the increasing complexity of the tissue and
+ionic models of interest make the use of High Performance Computing techniques mandatory. The solution of the
+linear system arising from the Finite Element discretisation of the bidomain equations is the main bottleneck in terms
+of performance and parallel scalability. In this work we present and evaluate parallel implementations of two problemspeciﬁc block preconditioners, namely BD and LDU, in the framework of the open source cardiac electrophysiology
+simulation package Chaste. Both rely upon providing a reliable and practical method for calculating the action of the
+inverse of certain matrix subblocks. Our results show that: a) total execution time can be reduced by using diﬀerent
+approximation methods for diﬀerent matrix subblocks, b) there exists a good correlation between the coeﬃcient Δt/h2
+and the cases where BD and LDU outperform generic Algebraic Multigrid (AMG) preconditioning, and c) when
+applied to simulations with current state-of-the-art cardiac geometries, BD and LDU are over 3 times faster than
+AMG preconditioning and show similar scaling.
+Keywords: bidomain simulation, parallel preconditioning, open source, Chaste
+
+1. Introduction
+The numerical solution of the bidomain equations [1] is a fundamental tool in the ﬁeld of computational cardiac
+electrophysiology. The bidomain equations model electrical propagation in cardiac tissue as a multi-scale reactiondiﬀusion process. Their numerical approximation involves the solution of a system of two partial diﬀerential equations
+(PDEs) describing the evolution of the homogenised intracellular and extracellular potentials, coupled at each point
+in space to a system of ordinary diﬀerential equations (ODEs) describing ion kinetics across the cellular membrane
+(i.e. the ionic model).
+The multi-scale nature of the processes involved and the increasing complexity of the tissue and ionic models
+of interest make the use of High Performance Computing (HPC) techniques mandatory. When choosing a semiimplicit temporal discretisation of the system [2], one can successfully decouple the solution of the ODEs from the
+system of PDEs. The solution of the ionic models then becomes embarrassingly parallel and does not compromise
+∗ Corresponding
+
+author address: Oxford University Computing Laboratory, Wolfson Building, Parks Rd, Oxford OX1 3QD, United Kingdom
+Email addresses: miguel.bernabeu@comlab.ox.ac.uk (Miguel O. Bernabeu), david.kay@comlab.ox.ac.uk (David Kay)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.087
+
+822
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+scalability. However, solution of tissue level diﬀusion (system of PDEs) via the Finite Element Method (FEM) is
+a tightly coupled problem and often the main parallel bottleneck [3]. Linear systems arising from bidomain FEM
+discretisation are naturally ill-conditioned and in recent years there has been an increasing interest in the development
+of eﬃcient preconditioners in order to speed up simulations, both in sequential [4, 5] and in parallel [6, 7].
+In previous work [4], we presented two eﬃcient sequential preconditioners for the solution of the bidomain equations on unstructured grids, namely BD and LDU. Both achieved good performance and in most cases outperformed
+generic preconditioning techniques such as Algebraic Multigrid (AMG). We also proved theoretically and empirically
+the mesh-independent convergence properties of LDU.
+In the current work, we will present parallel implementations of BD and LDU and extend the convergence analysis
+to other problem characteristics. BD and LDU rely upon providing a reliable and practical method for calculating the
+action of the inverse of certain matrix subblocks. In [4] we used 1 AMG V-cycle, but in this work we will investigate
+other options. Unlike previous publications [4, 5, 6], we will not consider AMG a black box, instead we will explore
+some of the conﬁguration options of one of the most mature libraries for parallel AMG preconditioning: the HYPRE
+library developed at the Lawrence Livermore National Laboratory. Previous studies of bidomain preconditioning
+scalability [6, 7] did not go beyond a few hundred processors. We will present results for core counts one order of
+magnitude larger.
+The purpose of this paper is two-fold. First, present two parallel preconditioners for the numerical solution of
+the bidomain equations. Second, study their eﬃciency as a function of number of processors, spatial, and temporal
+discretisation in simpliﬁed geometries as well as in realistic 3-D anatomically based geometries.
+Section 2 describes the numerical methods employed for the solution of the bidomain equations. The linear
+solver and preconditioners considered in this work are introduced in Section 3, followed by a description of their
+parallelisation in Section 4. Section 5 presents the benchmarks used to evaluate performance and scalability. Finally,
+Section 6 presents the benchmarks results and Section 7 analyses them and summarises the main ﬁndings.
+2. Numerical solution of the bidomain equations including a passive surrounding medium
+2.1. Formulation
+We consider bidomain simulations of cardiac tissue contained in a conductive surrounding medium, i.e. the
+bath. The magnitudes of interest are intracellular and extracellular potential (φi and φe ), as well as their diﬀerence
+(V = φi − φe ). We suppose there are two disjoint domains: the tissue Ω and the bath Ωb , with interface ∂Ω. In this
+problem φi , and therefore V, is only deﬁned in Ω, but φe is deﬁned throughout Ω ∪ Ωb .
+The problem to be solved is: ﬁnd V ∈ H 1 (Ω) and φe ∈ H 1 (Ω ∪ Ωb ) satisfying
+χ C
+
+∂V
++ Iion − ∇ · (σi ∇φi )
+∂t
+
+=
+
+−Ii(vol) , in Ω
+
+(1)
+
+∇ · (σi ∇φi + σe ∇φe )
+
+=
+
+0,
+
+in Ω
+
+(2)
+
+in Ωb
+(3)
+∇ · (σb ∇φe ) = 0,
+∂u
+= f (u, V) , in Ω
+∂t
+where σb is the bath conductivity, σi is the intracellular conductivity tensor, σe the extracellular conductivity tensor, χ
+is the surface-area-to-volume ratio and C is the membrane capacitance per unit area. The vector u contains cell-level
+variables, such as ionic concentrations and membrane gating variables, and Iion ≡ Iion (u, V) is the ionic current per
+unit surface area. Functional forms for Iion and f are determined by an electrophysiological cell model, examples of
+which can be found in the CellML repository1 . The source term Ii(vol) is the intracellular stimulus per unit volume.
+Note, we have used φi here instead of V + φe in order to simplify the equations.
+Appropriate boundary conditions are
+n · (σi ∇φi )
+n · (σb ∇φe )
+1 http://models.cellml.org/
+
+=
+
+0,
+
+on ∂Ω (i.e. bath-tissue boundary)
+
+(4)
+
+=
+
+I , on ∂Ωb \∂Ω (i.e. external bath boundary)
+
+(5)
+
+(E)
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+823
+
+where n is the outward-facing unit normal. Here I (E) is a stimulus current per unit area representing an external
+current ﬂowing into the domain and causing an electrical shock on the tissue surface. The problem is stated without
+any Dirichlet boundary conditions and therefore φe and φi are deﬁned up to a constant. For a solution to exist, the
+compatibility condition ∂Ω \∂Ω I (E) dS = 0 (i.e. input current is equal to output current) must be satisﬁed.
+b
+
+2.2. Finite element solution
+We now brieﬂy describe the linear system arising from the FEM spatial and semi-implicit temporal discretisation
+of (1)-(5) (see [2] for a more detailed discussion). Let V m denote the voltage at time tm , and similarly with other
+variables. Let us suppose the ﬁrst N nodes are contained in the closure of Ω, and the next M nodes are the remaining
+nodes in the bath (Ωb \ Ω). We can write V m (x) = Nj=1 V mj ψ j (x), which has to be understood to apply only for x ∈ Ω,
+N+M m
+m
+m
+m
+m
+m
+m
+m
+m
+m
+and φm
+e (x) =
+j=1 Φ j ψ j (x). Let V = (V1 , . . . , VN ), Φ = (Φ1 , . . . , ΦN+M ) and deﬁne Φ(1) = (Φ1 , . . . , ΦN ) and
+m
+m
+m
+m+1
+m+1
+m+1
+Φ(2) = (ΦN+1 , . . . , ΦN+M ). The ﬁnite element problem is to ﬁnd V , Φ(1) , and Φ(2) such that
+⎡
+⎢⎢⎢
+⎢⎢⎢
+⎢⎢⎣
+
+χC
+Δt M
+
++ K[σi ]
+K[σi ]
+0
+
+K[σi ]
+K(1,1)
+K(2,1)
+
+0
+K(1,2)
+K(2,2)
+
+⎤ ⎡ m+1
+⎥⎥⎥ ⎢⎢⎢ V
+⎥⎥⎥⎥ ⎢⎢⎢⎢ Φm+1
+⎥⎦ ⎢⎣ (1)
+Φm+1
+(2)
+
+⎤ ⎡
+⎥⎥⎥ ⎢⎢⎢
+⎥⎥⎥ ⎢⎢⎢
+⎥⎥⎦ = ⎢⎢⎣
+
+⎤
++ cm ⎥⎥⎥ } size N
+⎥⎥⎥
+0
+⎥⎥⎦ } size N
+} size M
+d
+
+χC
+m
+Δt MV
+
+where
+M jk
+
+=
+
+(K[σ]) jk
+
+=
+
+cmj
+
+=
+
+dj
+
+=
+
+Ω
+Ω
+
+−
+
+ψ j ψk d3 x
+∇ψ j · (σ∇ψk ) d3 x
+
+Ω
+
+Ii(vol) (tm+1 ) + χIion (um , V m ) ψ j d3 x.
+
+∂Ωb \∂Ω
+
+I (E) ψ j+N dS .
+
+and K(a,b) are the subblocks of a large N + M by N + M stiﬀness matrix K
+K jk =
+
+Ω
+
+((σi + σe )∇ψk ) · ∇ψ j d3 x +
+
+Ωb
+
+(σb ∇ψk ) · ∇ψ j d3 x,
+
+In practice, for implementation reasons, we introduce a set of dummy voltage values at the bath nodes, VN+1 , . . . , VN+M
+and add the equations
+V j = 0,
+j = N + 1, . . . , N + M,
+so that the linear system becomes of size (2N + 2M).
+m
+Letting Vm
+(1) = V , and V(2) = (VN+1 , . . . , VN+M ) (i.e. the vector of dummy values), and letting I M denote the M by
+M identity matrix, we have
+⎡
+⎢⎢⎢
+⎢⎢⎢
+⎢⎢⎢
+⎢⎢⎢
+⎢⎣
+
+χC
+Δt M
+
++ K[σi ]
+0
+K[σi ]
+0
+
+0
+IM
+0
+0
+
+K[σi ]
+0
+0
+0
+K(1,1) K(1,2)
+K(2,1) K(2,2)
+
+⎤ ⎡ m+1
+⎥⎥⎥ ⎢⎢⎢ V(1)
+⎥⎥⎥ ⎢⎢⎢ V
+(2)
+⎥⎥⎥ ⎢⎢⎢
+⎥⎥⎥⎥ ⎢⎢⎢⎢ Φm+1
+(1)
+⎦ ⎢⎣ m+1
+Φ(2)
+
+⎤ ⎡
+⎥⎥⎥ ⎢⎢
+⎥⎥⎥ ⎢⎢⎢
+⎥⎥⎥ ⎢⎢⎢
+⎥⎥⎥⎥ = ⎢⎢⎢⎢
+⎥⎦ ⎢⎣
+
+⎤
++ cm ⎥⎥⎥ } size N
+⎥⎥⎥ } size M
+0
+⎥⎥⎥
+⎥⎥⎥ } size N
+0
+⎥⎦
+} size M
+d
+
+χC
+m
+Δt MV(1)
+
+(6)
+
+3. The preconditioned conjugate gradient algorithm
+For notational ease, we will rewrite (6) as
+Ax =
+
+A1
+B
+
+BT
+A2
+
+x=b
+
+(7)
+
+824
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+χC
+Δt M
+
+K[σi ] 0
++ K[σi ] 0
+and A2 = K.
+,B=
+0
+0
+0
+IM
+A is symmetric and positive semi-deﬁnite. In realistic 3D simulations, A is also very large and sparse. Therefore
+Conjugate Gradient (CG) is often the linear solver of choice [2, 5, 6]. The reader can refer to [2] for a discussion on
+how the non-uniqueness of the solution is handled. Good CG performance is known to be subject to the eﬀectiveness
+of the preconditioner used. We will consider both generic full-matrix AMG preconditioning (see [8] for details) and
+problem-speciﬁc block preconditioning techniques for the solution of (7).
+We deﬁne the preconditioner
+with blocks A1 =
+
+T
+I −A−1
+1 B
+0
+I
+
+P−1
+LDU =
+
+A−1
+1
+0
+
+0
+A−1
+2
+
+0
+I
+
+I
+−BA−1
+1
+
+(8)
+
+where A−1
+2 represents the pseudo-inverse of the singular matrix A2 . This inverse is not computed explicitly but approximated and acts upon a consistent right-hand side. Along with this choice, the computationally cheaper approximation
+P−1
+BD
+
+=
+
+A−1
+1
+0
+
+0
+A−1
+2
+
+(9)
+
+is also considered. The eﬀectiveness of the proposed preconditioners rely upon providing an eﬀective and practical
+method for calculating the action of the inverse of certain matrix subblocks.
+4. Solver parallelisation and tuning
+4.1. Linear system parallelisation
+Parallelising the assembly and solution of (6) should not be seen as two independent problems. The eﬀective
+parallelisation of the whole bidomain solver requires considering how design decisions taken for some portion of the
+solver will aﬀect other stages. As part of the assembly of c in (6) we need to solve Iion (un , V n ) at each grid point. In
+order to achieve good load-balance, we evenly distribute the number of grid points among the available processors.
+With the original data layout proposed in (6) (and assuming a row-wise distribution of the matrix), processors owning
+rows N + M + 1 to 2N + 2M would have to communicate values Iion computed locally to the processors owning the
+ﬁrst N rows for them to assemble c. Therefore, it makes sense to rearrange the equations in way that c is assembled
+from values of Iion computed locally avoiding communication. Similarly we would like to have all the processors
+m
+cooperating in the evaluation of χC
+Δt MV and not only those owning the ﬁrst N rows. In order to satisfy the previous
+two requirements, we decided to interleave the rows of A and b in a way that all the processors contribute equally
+and with minimum degree of communication to the assembly of b. The same permutation is applied to the columns
+of A and the rows of x so that the symmetry is preserved. This process can be summarised as applying the following
+permutation to (7):
+(10)
+QAQT Qx = Qb
+with the orthogonal permutation matrix Q = [qi j ] ∈ R(N+M)×(N+M)
+⎧
+⎪
+⎪
+1, i is even ∧ j = i+n
+⎪
+2
+⎪
+⎪
+⎨
+i+1
+qi j := ⎪
+1,
+i
+is
+odd
+∧
+j
+=
+⎪
+2
+⎪
+⎪
+⎪
+⎩0, otherwise
+
+(11)
+
+This is how (10) would look like for a bidomain simulation in a domain made of two grid points and with 2
+processors (solid line indicates border between processors):
+⎛
+⎜⎜⎜ V11
+⎜⎜⎜ V
+⎜⎜⎜ 31
+⎜⎜⎜ V21
+⎝
+V41
+
+φ11
+φ31
+φ21
+φ41
+
+V12
+V32
+V22
+V42
+
+φ12
+φ32
+φ22
+φ42
+
+⎞⎛
+⎞ ⎛
+⎟⎟⎟ ⎜⎜⎜ V1 ⎟⎟⎟ ⎜⎜⎜
+⎟⎟⎟ ⎜⎜⎜ φ ⎟⎟⎟ ⎜⎜⎜
+⎟⎟⎟ ⎜⎜⎜ 1 ⎟⎟⎟ = ⎜⎜⎜
+⎟⎟⎠⎟ ⎜⎜⎝⎜ V2 ⎟⎟⎟⎠ ⎜⎜⎜⎝
+φ2
+
+b1
+b3
+b2
+b4
+
+⎞
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎠
+
+where {V, φ}i j is the coeﬃcient associated with unknown {V, φ} j in the i-th equation.
+
+(12)
+
+825
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+4.2. Preconditioners parallelisation
+In every CG iteration k the following preconditioning operation is performed
+zk = M −1 rk
+
+(13)
+
+where rk is the residual of the solution, M −1 is the preconditioner and zk is used in the computation of the next search
+direction. Note that depending on the choice of preconditioner this may or may not involve an explicit matrix-vector
+product but the application of a linear operator. In this section, we will consider M −1 = P−1
+BD but the discussion can
+k
+k k T k
+N+M
+.
+For
+performance
+reasons,
+and
+assuming
+that
+r
+=
+(r
+,
+r
+)
+,
+r
+and similarly
+be easily extended to P−1
+LDU
+V φe
+{V,φe } ∈ R
+k
+with z , (13) can be rewritten as
+k
+zkV = A−1
+1 rV
+k
+zkφe = A−1
+2 rφe
+
+(14)
+(15)
+
+In order to ensure good parallel scalability in the application of P−1
+BD one has to minimise the amount of data to be
+exchanged between processors for the assembly of data structures rkV and rkφe from rk (scatter operation) and zk from
+zVk and zφk e (gather operation). We will now show how our underlying data structures ensure this. If we have a closer
+look at how (13), (14), and (15) are distributed (based on the data layout of model problem (12))
+⎛ k
+⎜⎜⎜ zV1
+⎜⎜⎜ k
+⎜⎜⎜ zφ1
+⎜⎜⎜ zk
+⎜⎜⎝ V2
+zkφ2
+
+⎞
+⎛ k
+⎟⎟⎟
+⎜⎜⎜ rV1
+⎟⎟⎟
+⎜⎜⎜ k
+⎟⎟⎟
+−1 ⎜ rφ
+⎟⎟⎟ = M ⎜⎜⎜⎜⎜ rk 1
+⎟⎟⎠
+⎜⎜⎝ V2
+rφk 2
+
+⎞
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟
+⎟⎟⎟ ,
+⎟⎟⎠
+
+zkV1
+zkV2
+
+= A−1
+1
+
+rVk 1
+rVk 2
+
+,
+
+zkφ1
+zkφ2
+
+= A−1
+2
+
+rφk 1
+rφk 2
+
+it can be seen that intermediate data structures can be assembled with data local to each processor, therefore avoiding
+communication.
+If we were not using the interleaved data layout described in Section 4.1, rV would be entirely owned by processors owning the ﬁrst M + N equations and rφ by the rest. One could think that (14) and (15) can be executed
+independently and therefore data does not need to be interchanged with the other half of the processors. Later we will
+see how diﬀerent inverse approximations are used for (14) and (15) yielding diﬀerent computational cost. Therefore,
+decoupling their computation would compromise load balancing. For P−1
+LDU the situation is even worse because (14)
+needs to be solved twice per CG iteration.
+5. Benchmarks
+In this section we describe the benchmarks designed to evaluate performance and parallel scalability of the preconditioners presented in Section 3.
+5.1. Preconditioners tuning
+−1
+In [4], we used one AMG V-cycle for the approximation of A−1
+1 and A2 in BD and LDU. We would like to
+−1
+and
+A
+.
+This
+is
+motivated
+by
+the fact that factorisation-based prestudy alternatives for the approximation of A−1
+1
+2
+conditioners are faster per required iteration. We also want to investigate domain decomposition techniques such as
+Block Jacobi (BJ) or Additive Schwarz Method (ASM) for their obvious beneﬁts in terms of communication reduction. Multiple combinations of these techniques are compared for the solution of a benchmark consisting of 2 ms of
+bidomain simulation on a simpliﬁed version of the anatomically-based ventricular model by Bishop et al. [9]. Tissue
+is stimulated with a 0.5 ms long extracellular shock of magnitude −11 × 103 μA/cm2 delivered at t = 0 ms through
+electrode plates located at the boundaries of the bath parallel to the sagittal plane. The cell model used is Luo Rudy
+1991 [10] integrated with a backward Euler numerical scheme. Both PDE and ODE timesteps are 0.01 ms.
+
+826
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+5.2. Δt- and h-dependence analysis
+We will extend the mesh-dependence convergence analysis presented in [4] by evaluating how Δt aﬀects convergence of the preconditioners presented in Section 3. For this purpose, we generated a set of ﬁve 3D tissue slabs
+immersed in conductive bath. The original volume is a 11 × 11 × 11 mm cube meshed as a regular grid with constant
+distance between nodes along each dimension h ∈ {1, 0.5, 0.25, 0.125, 0.0625} mm. Nodes in the internal 7 × 7 × 7
+mm volume are deﬁned as tissue and the rest as bath. Tissue is stimulated with a 1 ms long extracellular shock of
+magnitude −11 × 103 μA/cm2 delivered at t = 0 ms through electrode plates located at the boundaries of the bath in
+the yz plane. Stimulation is applied for long enough to trigger depolarisation in the area of tissue closer to the negative
+electrode. After that, electrodes are switched oﬀ and a planar wave travels along the x direction. The cell model used
+is Luo Rudy 1991 [10], integrated with a backward Euler numerical scheme. PDE timesteps considered are 0.1, 0.05,
+and 0.01 ms. ODE timestep is 0.01 ms.
+In order to also study parallel scaling of the preconditioners, the following combinations of number of processors
+and discretisations were considered: i) p = 16, h ∈ {1, 0.5, 0.25} mm, ii) p = 128, h ∈ {0.5, 0.25, 0.125} mm, and iii)
+p = 1024, h ∈ {0.25, 0.125, 0.0625} mm. This choice ensures that the number of nodes per processor stays almost
+constant for the three experiments run no matter the value of p.
+5.3. Realistic 3D simulations strong scaling
+In order to evaluate the techniques presented in realistic 3D cardiac models, we designed a benchmark with the
+anatomically-based ventricular geometry by Bishop et al. [9]. This is the rabbit tetrahedral mesh with highest level
+of detail currently available, with an average edge length of 125μm. It consists of approximately 6.45M grid points
+and 38.3M tetrahedral elements. Bidomain activity is simulated for 5 ms. In order to elicit propagation, a 0.5 ms long
+square extracellular shock of magnitude −11 × 103 μA/cm2 is delivered at t = 0.2 ms through electrode plates located
+at the boundaries of the bath parallel to the saggittal plane. The cell model used is Luo Rudy 1991 [10], integrated
+with a backward Euler numerical scheme. PDE timestep is 0.1 ms and ODE timestep is 0.01 ms.
+6. Results
+All the simulations presented in this work were run with the open source cardiac simulation environment Chaste
+[11]. The following parameters were used in equations (1)–(5): χ = 1400 cm−1 , C = 1.0 μF/cm2 , σi = 8.0 mS /cm,
+σi = diag(1.7, 0.19, 0.19) mS /cm, and σe = diag(6.2, 2.4, 2.4) mS /cm, where diag(x, y, z) is a 3 × 3 diagonal matrix
+with values x, y, z along the diagonal. Chaste uses the implementation of CG, sequential ILU(0) factorisation, and
+BJ and ASM preconditioning found in PETSc 3.0.0-p8 with no changes to the default conﬁguration. Parallel AMG
+preconditioning and parallel ILU(0) factorisation is performed with the BoomerAMG and EUCLID algorithms found
+in the HYPRE library version 2.4.0b (through its PETSc interface) We choose this AMG implementation for its
+maturity in terms of parallel performance [12] and for having being successfully applied to the solution of the bidomain
+equations before [4, 6]. BoomerAMG is a sophisticated algorithm with a large number of conﬁguration options that
+can have a real impact in performance. A complete exploration of the parameter conﬁguration space is beyond the
+scope of this work. However, we tuned the parameters considered to have the greatest impact in parallel performance:
+strong connectivity threshold, coarsening algorithm, smoother and interpolation algorithm.
+The impact of strong connectivity threshold in BoomerAMG performance for the solution of the bidomain equations has been studied before. Therefore, we use the value of 0.0 reported as optimal in [6]. From the available
+smoothers, we chose Hybrid Gauss-Seidel based on the scalability results presented in [12]. In that work, the authors
+prove that Hybrid Gauss-Seidel scales well provided that the relative weight of the oﬀ-diagonal block of a row-based
+partitioned system matrix, θ, is strictly larger than 1 [12, Deﬁnition (5.3)] (not to be confused with the strong connectivity threshold also referred as θ in [6]). Several coarsening algorithms are compared in Section 6.1. Interpolation
+algorithm is set to BoomerAMG’s default: classical, since experiments with alternative conﬁgurations did not yield
+any beneﬁt2 .
+Left preconditioning is used throughout this work. In order to make our comparisons as fair as possible, we
+conﬁgure PETSc to use unpreconditioned residual for convergence testing. This is known to introduce an overhead
+2 Results
+
+not shown here, available upon request
+
+827
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+when evaluating the convergence condition. A relative tolerance of 10−10 and PETSc’s default stop criteria is used.
+Preconditioners and benchmarks will be available in Chaste release 2.2 (www.comlab.ox.ac.uk/chaste).
+All the simulations presented were run in HECToR Phase 2a. This is a Cray XT4 system with 3072 compute
+nodes (at the time of writing). Each compute node is a AMD 2.3 GHz Opteron Barcelona quad-core. Each quad-core
+socket shares 8 GB of memory and a Cray SeaStar2 chip router with 6 links which are used to implement a 3D-torus
+network topology.
+6.1. Preconditioners tuning
+Table 1 compares diﬀerent choices of block inverse approximation for the benchmark described in Section 5.1 run
+with 8 processors.
+Table 1: Total linear system solution time and average number of iterations for benchmark described in Section 5.1. BJ(xxx) means BJ domain
+decomposition with xxx preconditioning at each block and similarly with ASM(xxx). AMG(yyy) means 1 AMG V-cycle with yyy coarsening.
+
+A−1
+1 approximation
+AMG(Falgout)
+BJ(ILU(0))
+BJ(ILU(0))
+BJ(ILU(0))
+BJ(ILU(0))
+BJ(ILU(0))
+BJ(ILU(0))
+BJ(ILU(0))
+ILU(0)
+
+A−1
+2 approximation
+AMG(Falgout)
+BJ(ILU(0))
+BJ(AMG(Falgout))
+ASM(AMG(Falgout))
+AMG(Falgout)
+AMG(Ruge-Stueben)
+AMG(PMIS)
+AMG(HMIS or CLIP)
+AMG (HMIS)
+
+total CG time (s)
+651
+–
+2340
+4230
+518
+498
+464
+431
+406
+
+average CG iterations
+15.23
+aborted after 200
+63.48
+30.13
+11.58
+11.25
+21.55
+19.37
+17.46
+
+6.2. Δt-/h-dependence
+Table 2, 3, and 4 report average number of iterations per solve and total linear system solve time (over the whole
+simulation) for the benchmark described in Section 5.2.
+Table 2: Δt-/h-dependence benchmark with p = 16. (a) average number of iterations, (b) linear solve execution time (s)
+
+Δt
+0.1ms
+
+0.05ms
+
+0.01ms
+
+1mm
+12.07
+13.18
+12.14
+11.42
+12.01
+11.4
+9.93
+10.13
+9.85
+
+h
+0.5mm
+13.3
+16.15
+13.97
+12.37
+14.63
+13.07
+10.65
+11.79
+11.29
+(a)
+
+0.25mm
+14.72
+19.51
+16.17
+13.64
+17.57
+14.55
+11.38
+13.66
+12.31
+
+precond
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+
+Δt
+0.1ms
+
+0.05ms
+
+0.01ms
+
+1mm
+4.19
+4.61
+4.76
+7.6
+8.4
+8.96
+33.1
+35.48
+38.7
+
+h
+0.5mm
+8.24
+8.57
+8.38
+15.34
+15.54
+15.66
+66.19
+62.71
+67.62
+(b)
+
+0.25mm
+38.26
+30.37
+28.44
+71.03
+54.88
+51.21
+297.99
+215.89
+219.44
+
+precond
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+
+6.3. Strong scaling
+Table 5 reports average number of iterations per solve and total linear system solve time (over 50 solves) for the
+benchmark described in Section 5.3. Figure 1 plots parallel scalability.
+
+828
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+Table 3: Δt-/h-dependence benchmark with p = 128. (a) average number of iterations, (b) linear solve execution time (s)
+
+Δt
+0.1ms
+
+0.05ms
+
+0.01ms
+
+h
+0.25mm
+16.3
+21.67
+18.06
+15.65
+19.4
+16.34
+12.99
+15.14
+13.79
+(a)
+
+0.5mm
+14.93
+17.63
+15.23
+13.92
+15.83
+14.26
+12.36
+12.67
+12.28
+
+0.125mm
+34.84
+23.92
+20.76
+27.88
+21.63
+18.23
+13.37
+16.94
+14.17
+
+Δt
+
+precond
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+
+0.1ms
+
+0.05ms
+
+0.01ms
+
+0.5mm
+13.02
+14.94
+14.34
+22.07
+26.8
+26.79
+98.78
+108.03
+115.65
+
+h
+0.25mm
+17.89
+22.62
+20.94
+34.48
+40.78
+38.02
+143.91
+164.7
+171.84
+(b)
+
+0.125mm
+161.65
+52.85
+52.77
+252.63
+95.94
+92.63
+471.04
+445.46
+426.52
+
+precond
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+
+Table 4: Δt-/h-dependence benchmark with p = 1024. (a) average number of iterations, (b) linear solve execution time (s)
+
+0.1ms
+
+0.05ms
+
+0.01ms
+
+0.25mm
+18.73
+23.45
+19.78
+17.43
+21.19
+18
+14.84
+16.6
+15.25
+
+h
+0.125mm
+35.43
+26
+22.78
+28.42
+23.44
+20.17
+15.57
+18.39
+15.72
+(a)
+
+0.0625mm
+61.18
+30.79
+27.98
+57.97
+27.63
+24.62
+40.77
+21.42
+18.33
+
+precond
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+AMG
+BD
+LDU
+
+Δt
+
+0.25mm
+24.03
+31.15
+28.75
+44.7
+56
+52.67
+199.24
+245.55
+247.05
+
+0.1ms
+
+0.05ms
+
+0.01ms
+
+h
+0.125mm
+64.68
+44.12
+40.96
+102.9
+77.24
+72.47
+279.1
+336.44
+316.19
+(b)
+
+0.0625mm
+304.02
+90.28
+92.87
+576.27
+159.71
+161.99
+2114.35
+670.58
+652.76
+
+Table 5: Realistic 3D simulation benchmark. (a) Average CG iterations, (b) Total CG time (s)
+
+p
+128
+256
+512
+1024
+
+AMG
+BD
+109.14 39.92
+109.5 39.86
+110.22 40.58
+110.62 42.86
+(a)
+
+LDU
+36.32
+36.2
+37.06
+39.2
+
+1.2
+Parallel scalability
+
+Δt
+
+p
+128
+256
+512
+1024
+
+AMG (s)
+1310.36
+762.62
+447.43
+328.1
+
+BD (s)
+221.48
+140.04
+102.37
+93.99
+(b)
+
+LDU (s)
+240.58
+150.46
+109.29
+97.68
+
+AMG
+BD
+LDU
+
+1
+0.8
+0.6
+0.4
+0.2
+0
+
+200
+
+400
+600
+800
+# of processors
+
+1000
+
+Figure 1: Realistic 3D simulation benchmark strong scaling comparison. Scalability is deﬁned with respect to p = 128.
+
+preco
+AM
+BD
+LD
+AM
+BD
+LD
+AM
+BD
+LD
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+829
+
+7. Discussion and conclusions
+In this work we present and evaluate parallel implementations of two preconditioners proposed in [4]. In sequential, both show better performance than generic preconditioning techniques such as ILU(0) or AMG. However, their
+parallelisation is challenging because they potentially require data migration for the assembly of intermediate data
+structures, which can compromise their scalability. Our implementation uses a data partitioning scheme that ensures
+no data migration when assembling these intermediate data structures. This guarantees that parallel scalability is only
+restricted by the underlying inverse approximation algorithms and therefore future scalability improvements to them
+will automatically improve BD and LDU without need of recoding.
+−1
+In previous work, we considered 1 AMG V-cycle for the approximation of the action of A−1
+1 and A2 with HYPRE’s
+BoomerAMG algorithm default conﬁguration. In this work, we investigated other options. Table 1 shows how using
+ILU(0) or block jacobi with ILU(0) for the approximation of A−1
+1 slightly increases the average number of iterations
+,
+but reduces total execution time. This is not the case with A−1
+2 where the iteration count increases dramatically with
+approximations diﬀerent from 1 AMG V-cycle. Table 1 also shows how the choice of coarsening algorithm has an
+important impact on performance. In summary, we reduced by 38% the total linear system solution time of the benchmark presented in Section 5.1 by using ILU(0) for A−1
+1 approximation and 1 AMG V-cycle with HMIS coarsening for
+A−1
+compared
+with
+the
+original
+setup
+(1
+AMG
+V-cycle
+with Falgout coarsening for both approximations). The down2
+side to this improvement is that LDU loses the mesh-independent convergence properties proved in [4]. Therefore, we
+expect that there will be a cutoﬀ value of h below which approximating A−1
+1 with AMG will reduce overall execution
+time. This has been investigated and for the ﬁnest discretisation considered in this work h = 0.0625mm (which is one
+order of magnitude ﬁner than current state-of-the-art cardiac models) approximating A−1
+1 with ILU(0) is still between
+19% and 43% faster (depending on the choice of Δt) than using 1 AMG V-cycle.
+We also extended our original h-dependence analysis with a combined h-/Δt-dependence analysis. Results show
+a good correlation between large values of Δt/h2 and the situations where BD and LDU outperform AMG. This is
+due to the fact that the condition number of P−1 A is a function of Δt/h2 when mesh-dependent preconditioners are
+considered [13]. Therefore, the number of iterations required by AMG will grow unbounded as the condition number
+increases. In contrast, LDU iteration count either: i) converges to an asymptotic bound when 1 AMG V-cycle is
+used for the approximation of both subblocks [4], or ii) grows at a smaller rate when the eﬃcacy of the ﬁrst block
+inverse approximation is relaxed (see Table 4). Table 6 gives the value of the coeﬃcient for all the combinations of
+Δt and h considered and highlights in dark grey cases where BD and LDU outperform AMG. In our experiments,
+this happens for values of Δt/h2 greater than 2.5. For values below 2.5, the system is not so ill-conditioned and all
+the preconditioners considered keep iteration count low. In that scenario, the slightly lower computational cost per
+iteration of AMG makes it faster than BD and LDU.
+Table 6: Coeﬃcient Δt/h2 for all the combinations of Δt (ms) and h (mm) considered. In dark grey, cases where BD and LDU outperform AMG
+for any number of processors. In light grey, conﬁgurations where this only happens for low core counts
+
+❍❍
+Δt
+
+h
+1
+❍❍
+❍
+0.1
+0.1
+0.05
+0.05
+0.01
+0.01
+
+0.5
+
+0.25
+
+0.125
+
+0.0625
+
+0.4
+0.2
+0.04
+
+1.6
+0.8
+0.16
+
+6.4
+3.2
+0.64
+
+25.6
+12.8
+2.56
+
+Interesting exceptions are the combinations highlighted in light grey in Table 6 and in particular h = 0.25mm,
+p = 16 (Table 2) where AMG has a lower iteration count than LDU, but the latter is around 27% faster than the
+former. However, this result does not hold for p = 128 (Table 3) and p = 1024 (Table 4) as one would expect for a
+value of Δt/h2 below the given bound. We believe that in this case the number of degrees of freedom per processor
+also has an impact on performance. More precisely, in scenarios where a large number of degrees of freedom are
+stored in each processor, the fact that LDU (and BD) works with two subproblems half the size of the one considered
+by AMG may have a positive impact in memory utilisation reducing cache misses and/or page fault rates. Eﬀectively
+shifting the empirical bound given before. Further proﬁling needs to be carried out to conﬁrm this hypothesis, though.
+In agreement with [12], we see a slight increase in the average iteration count with the number of processors for
+any ﬁxed problem. This is due to a decrease in the relative weight of the oﬀ-diagonal block θ. Figure 2 plots average
+
+830
+
+Miguel O. Bernabeu et al. / Procedia Computer Science 4 (2011) 821–830
+
+Average number of iterations
+
+number of iterations for h = 0.25 mm, Δt = 0.1 ms and 16, 128, and 1024 processors. Similar results are observed in
+the realistic 3D benchmark.
+30
+
+AMG
+BD
+LDU
+
+25
+20
+15
+10
+
+0
+
+200
+
+400
+600
+800
+# of processors
+
+1000
+
+Figure 2: Average number of iterations for benchmark described in Section 5.2, h = 0.25 mm, and Δt = 0.1 ms
+
+Finally, strong scaling of the three methods (Figure 1) is good although not excellent. The reasons are: i) the
+increase in iteration count with number of processors described above, and ii) the tightly-coupled nature of the approximation algorithms. Furthermore, we see that strong scaling is slightly better for AMG than for BD and LDU.
+This is due to the fact that in AMG a single problem of size 2M + 2N is considered while in BD and LDU two
+subproblems of M + N are solved. This reduces the number of degrees of freedom per processor for a ﬁxed problem
+size and therefore scalability tails oﬀ faster. Nevertheless, total linear system solution time with BD and LDU is still
+over 3 times faster than with AMG for the range of core counts considered in the strong scaling study.
+Acknowledgements
+The work of M.O.B., part of the preDiCT project, was supported by a grant from the European commission
+DG-INFSO - grant number 224381. The authors would like to thank Dr Martin Bishop for providing some of the
+geometries used in this study, Dr Nicholas Wilson from Fujitsu Laboratories Europe, HECToR’s helpdesk and the
+Chaste development team (http://web.comlab.ox.ac.uk/chaste/theteam.html).
+[1] C. S. Henriquez, Simulating the electrical behavior of cardiac tissue using the bidomain model., Crit Rev Biomed Eng 21 (1) (1993) 1–77.
+[2] P. Pathmanathan, M. O. Bernabeu, R. Bordas, J. Cooper, A. Garny, J. M. Pitt-Francis, J. P. Whiteley, D. J. Gavaghan, A numerical guide to
+the solution of the bidomain equations of cardiac electrophysiology, Progress in Biophysics and Molecular Biology 102 (2-3) (2010) 136 –
+155.
+[3] J. Southern, N. Wilson, M. O. Bernabeu, J. Pitt-Francis, Chaste: Scalable high-performance simulation of cardiac eletrophysiology, in: 1st
+Virtual Physiological Human Conference - VPH 2010, 2010.
+[4] M. Bernabeu, P. Pathmanathan, J. Pitt-Francis, D. Kay, Stimulus protocol determines the most computationally-eﬃcient preconditioner for
+the bidomain equations, Biomedical Engineering, IEEE Transactions on PP (99) (2010) 1 –1.
+[5] M. Pennacchio, V. Simoncini, Algebraic multigrid preconditioners for the bidomain reaction–diﬀusion system, Appl. Numer. Math. 59 (12)
+(2009) 3033–3050.
+[6] G. Plank, M. Liebmann, R. W. dos Santos, E. J. Vigmond, G. Haase, Algebraic multigrid preconditioner for the cardiac bidomain model,
+IEEE Trans. Biomed. Eng 54 (2007) 585–596.
+[7] L. F. Pavarino, S. Scacchi, Multilevel additive schwarz preconditioners for the bidomain reaction-diﬀusion system, SIAM J. Sci. Comput.
+31 (1) (2008) 420–443.
+[8] P. Wesseling, An Introduction to Multigrid Methods, John Wiley & Sons, 1992, reprinted by www.MGNet.org.
+[9] M. J. Bishop, G. Plank, R. A. Burton, J. E. Schneider, D. J. Gavaghan, V. Grau, P. Kohl, Development of an Anatomically-Detailed MRIDerived Rabbit Ventricular Model and Assessment of its Impact on Simulation of Electrophysiological Function, Am J Physiol Heart Circ
+Physiol (2009) 00606.2009.
+[10] C.-H. Luo, Y. Rudy, A model of the ventricular cardiac action potential - depolarisation, repolarisation and their interaction, Circ Res 68
+(1991) 1501–1526.
+[11] J. Pitt-Francis, P. Pathmanathan, M. O. Bernabeu, R. Bordas, J. Cooper, A. G. Fletcher, G. R. Mirams, P. Murray, J. M. Osborne, A. Walter,
+S. J. Chapman, A. Garny, I. M. van Leeuwen, P. K. Maini, B. Rodr´ıguez, S. L. Waters, J. P. Whiteley, H. M. Byrne, D. J. Gavaghan, Chaste:
+A test-driven approach to software development for biological modelling, Computer Physics Communications 180 (12) (2009) 2452 – 2471,
+40 YEARS OF CPC: A celebratory issue focused on quality software for high performance, grid and novel computing architectures.
+[12] A. Baker, R. Falgout, T. Kolev, U. Yang, Multigrid smoothers for ultra-parallel computing, Tech. Rep. LLNL-JRNL-435315, Lawrence
+Livermore National Laboratory (2010).
+[13] A. J. Wathen, Realistic Eigenvalue Bounds for the Galerkin Mass Matrix, IMA Journal of Numerical Analysis 7 (4) (1987) 449–457.
+
+

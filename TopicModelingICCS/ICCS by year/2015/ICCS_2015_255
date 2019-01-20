@@ -1,0 +1,797 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 2046–2055
+ICCS 2015 International Conference On Computational Science
+
+Accelerating Time Integration for the Shallow Water
+Equations on the Sphere Using GPUs
+R. Archibald1,3 , K. J. Evans1,2 , and A. Salinger4 .
+1
+
+Climate Change Science Institute, Oak Ridge National Laboratory, Oak Ridge, TN
+Computational Earth Sciences Group, Oak Ridge National Laboratory, Oak Ridge, TN
+Computational and Applied Mathematics Group, Oak Ridge National Laboratory, Oak Ridge, TN
+4
+Computational Mathematics, Sandia National Laboratories, Albuquerque, NM
+2
+
+3
+
+Abstract
+The push towards larger and larger computational platforms has made it possible for climate
+simulations to resolve climate dynamics across multiple spatial and temporal scales. This
+direction in climate simulation has created a strong need to develop scalable time-stepping
+methods capable of accelerating throughput on high performance computing. This work details
+the recent advances in the implementation of implicit time stepping on a spectral element
+cube-sphere grid using graphical processing units (GPU) based machines. We demonstrate how
+solvers in the Trilinos project are interfaced with ACME and GPU kernels can signiﬁcantly
+increase computational speed of the residual calculations in the implicit time stepping method
+for the shallow water equations on the sphere. We show the optimization gains and data
+structure reorganization that facilitates the performance improvements.
+Keywords: Implicit Timestepping, GPU, Trilinos
+
+1
+
+Introduction
+
+The United States Department of Energy (DOE) is actively developing very large simulations
+of systems critical to U.S. energy needs. Among these applications is the recent ACME [1]
+project, which is tasked to develop global, coupled high-resolution climate and Earth system
+models for high performance computing. This model is focused on the understanding and
+prediction of the water cycle, biogeochemistry, and cryosphere systems of the Earth’s climate.
+The model is based on time dependent partial diﬀerential equations (PDEs) that are computed
+using MPI and OpenMP parallelism at scale. The evolution of PDEs at extreme scales have
+produced new challenges for time discretization methods, additionally the architecture that
+extreme scale machines have forced massive parallelism even to the node level as is the case
+with GPU base supercomputing. Building on previous work to overcome the time step size
+restriction that is faced by explicit time integration methods, this work focuses on optimizing
+the fully-implicit (FI) solution method option in the Community Atmosphere Model (CAM).
+2046
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.470
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+It has been demonstrated that FI methods converge the multi-physics, multi-scale nonlinear
+dynamics with scalable behavior [7, 8, 23, 28]. We show there are features within the current
+implicit solver in CAM, speciﬁcally a Fortran interface to the Trilinos solver libraries [12], that
+can be specially designed to utilize GPU kernels and provide acceleration of total computational
+time of the implicit residual calculation for benchmark test case results.
+Addressing the need to maintain computational throughput of time dependent simulations as
+spatial resolution is scaled up, either across a large number of processors or number of ensembles
+for example, is an active ﬁeld of research. Traditional time stepping methods advance the entire
+simulation using a serial global-time step. The size of the global time steps is driven by spatial
+resolution and the fastest varying components of the system, which can be unnecessarily small
+for the slower varying components, therefore wasting computational resources. Even if the
+model’s time stepping procedure incorporates subcycling of the faster scale processes, as in
+CAM-SE, there is an issue of stability and the lack of coupling of features that are subcycled.
+Second, a global barrier-like synchronization of the entire simulation is required at the end
+of each (macro)step/stage, which may lead to considerable data dependencies among diﬀerent
+tasks, as well as severe load imbalances. The beneﬁt of FI time integration is that the step size
+of the integrator can converge multi-physics, multi-scale nonlinear applications that are based
+on the relevant dynamics of the problem and not spatial resolution. Other approaches to the
+time-barrier problem include parallel in time methods that take advantage of the computational
+resources to perform independent calculations [6, 25], asynchronous multirate time stepping that
+takes diﬀerent time steps for diﬀerent components to achieve a global target accuracy [15, 5],
+exponential integrators that are eﬃcient for large stiﬀ systems of diﬀerential equations [17, 11],
+and Arbitrary DErivative Riemann (ADER) temporal discretizations that expand high order
+temporal integration using space-time derivative expansions [22, 21]. Careful examination of the
+all the advanced time integrators reveal various strengths and weakness, and given the demands
+of high resolution climate modeling, it is most likely that a suite of these time integrators will
+be necessary to over come the time-barrier problem. This work speciﬁcally focuses on the
+residual calculation within FI time integration, where we demonstrate accelerating residual
+error calculations. Our goal is that this will motivate further exploration of diﬀerent time
+integration strategies.
+In the following sections, we introduce the CAM spectral element dynamical core in ACME
+(Section 2), with a description of the shallow water model (Section 2.1) and the target FI time
+integration method (Section 2.2). We discuss the strategies used to program the residual for
+acceleration using GPUs in Section 3 and the results in Section 4, where we demonstrate the
+acceleration of two key benchmark test cases for atmospheric dynamical cores, zonal ﬂow over
+an isolated mountain test [27] and the barotropic instability test [10]. Concluding remarks are
+given in Section 5.
+
+2
+
+Spectral element dynamical core in CAM
+
+The ACME simulation code has ﬁve major components that simulate diﬀerent aspects of the
+Earth’s climate. They are coupled together using a parallelized coupling framework with a
+speciﬁed coupling frequency, but each component has its own time stepping algorithm structure
+within. The atmospheric model in ACME is the Community Atmosphere Model (CAM) [18] and
+we give a very brief description here for clarity. It is composed of two major parts, the dynamical
+core (‘dycore’ for short) and the cloud physics and radiation packages (‘physics’ for short).
+The spectral element discretized dycore calculates the state variables on a rotating sphere,
+and then performs the numerical advection. The physics package traditionally includes all
+2047
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+atmosphere simulated phenomena that is not calculated by the dycore, including moist and dry
+convective adjustment, radiation, aerosol chemistry, gravity wave drag, eddy transfers of heat
+and momentum, cloud microphysics, and boundary layer eﬀects. Although the physics package
+represents a large number of processes, the spectral element dynamical core accounts for the vast
+majority of the computational time for higher resolution conﬁgurations of the atmospheric model [3]
+. The majority of the time spent in the dynamical
+core is spent in calculating derivative type operators, such as divergence and gradient, and the Figure 1: (a) Cube ﬁnite element type Gausscommunication of boundary elements after each Lobatto quadrature (N e = 2 and N p = 4). (b)
+time step. The communication processes involves Central projection of Gauss-Lobatto quadrapacking boundary elements into a buﬀer, perform- ture points from the inscribed cube faces to the
+ing non-blocking MPI communications, and then surface of the sphere.
+unpacking the buﬀer into proper boundary elements. We explain how the communication process can be used in Section 3 in conjunction
+to the interface between solver libraries for the implicit timestep. Next we outline the shallow
+water model on the cubed sphere and detail the numerics performed by CAM-SE for the two
+dimensional benchmark problems studied in Section 4.
+The cubed sphere, ﬁrst developed in [24], has proven to be a particularly useful gridding
+technique for solving partial diﬀerential equations on the sphere [9, 26]. Only a brief description
+of the cubed sphere SE model is given for completeness, and for more detail, consult the formulations given in [18]. Figure 1 depicts the cubed sphere geometry, where the transformation
+between the inscribed cube and the sphere is determined by the gnomonic (center) projection
+from the sphere to each face of the cube. We use the notation N e to describe the number of
+spectral elements along each face of the cube, and the notation N p to describe the number of
+polynomial basis functions used to deﬁne each spectral element.
+The spherical wind vector v(λ, θ) = (u, v) can be expressed for each face of the cube in
+terms of contravariant vectors (u1 , u2 ) as
+u
+v
+
+=A
+
+u1
+u2
+
+, with
+
+A=R
+
+∂λ
+cos θ ∂x
+1
+∂θ
+∂x1
+
+∂λ
+cos θ ∂x
+2
+∂θ
+∂x1
+
+(1)
+
+Here longitude is given by λ, latitude is given by θ, the coordinates on each face of the cube
+is given in terms of x1 and x2 , A is the gnomonic (equiangular) cube-to-sphere
+transformation
+√
+1
+matrix, and the Jacobian of the transformation (the metric term) is G = det(AT A) 2 .
+The cubed sphere spectral element method has excellent scaling properties since the only
+communication required to compute spatial derivatives on a distributed system is separate MPI
+tasks where spectral element boundary averaging can be calculated independently.
+
+2.1
+
+Shallow Water Model
+
+The shallow water equations on the rotating sphere in advective form [27] can be given as,
+∂U ∂F1 (U) ∂F2 (U)
++
++
+= S(U),
+∂t
+∂x1
+∂x2
+2048
+
+(2)
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+where the state vector U and the ﬂux vectors F1 and F2 are deﬁned by
+⎞
+⎞
+⎛
+⎛
+⎞
+⎛
+E
+0
+u1
+⎠ , and F2 (U) = ⎝
+⎠.
+U = ⎝ √u2 ⎠ , F1 (U) = ⎝ √ 0
+√E 2
+1
+Gh
+Ghu
+Ghu
+The energy is deﬁned as E = Φ +
+1
+
+1
+2
+
+u 1 u 2 + u2 u 2
+
+(3)
+
+in terms of the covariant (u1 , u2 ) and
+
+2
+
+contravariant (u , u ) wind vectors, with free surface geopotential height (above sea level) given
+as Φ = g(hs + h), where g us the gravitational acceleration, h is the depth of the ﬂuid, and
+hs is the height of the underlying mountains. The advantage of this formulation is that all
+diﬀerential operators are taken on the cube face. Finally, the source term is given as
+⎞
+⎛ √ 2
+√Gu 1(f + ζ)
+(4)
+S(U) = ⎝ − Gu (f + ζ) ⎠ ,
+0
+where f = 2ω sin θ is the Coriolis force, and relative vorticity ζ is deﬁned as,
+∂u2
+1 ∂u2
+ζ=√
+.
+−
+∂x2
+G ∂x1
+
+(5)
+
+This study uses the following parameters for the Earth
+R
+ω
+g
+
+2.2
+
+6.37122 × 106 m,
+7.292 × 10−5 s−1 ,
+= 9.80616 × ms−2 .
+
+=
+=
+
+(6)
+
+Time integration methods
+
+We are focused on porting the residual calculation of the prognostic shallow water variables to
+illustrate the veracity of using GPU acceleration in the solver components, and so residual form
+of the shallow water equations given in Equation 2 is given as,
+∂U ∂F1 (U) ∂F2 (U)
++
++
+− S(U) = 0,
+∂t
+∂x1
+∂x2
+
+(7)
+
+where for this study the spatial operators are set to the spectral element operators, deﬁned, for
+example, in [26], and implicit integration schemes, for example BDF2 or Crank-Nicolson, are
+applied to the temporal operator. Once the spatial and temporal operators have been speciﬁed,
+the residual can be solved using a non-linear solver.
+The particular non-linear solver method used for this research is the Jacobian-Free NewtonKrylov (JFNK) method, which has been demonstrated to be eﬀective for many high performance
+computational applications [14] where storing or computing a Jacobian may be relatively expensive. Execution of the JFNK method is performed by links to Trilinos libraries, using Epetra for
+the linear solve and NOX within LOCA for the nonlinear solve, which in turn call the Fortranbased residual calculation within the CAM-SE code base. The initial framework to bind the
+Fortran-based CAM-SE code with the C++ based Trillinos code was developed and presented
+in Evans et al. (2009). This framework passes ﬂattened data structures into one-dimensional
+lists and binds C structs and function prototypes to their Fortran counterparts [4]. As a result,
+CAM-SE has the ability to take advantage of ongoing solver developments performed by the
+large Trillinos community.
+2049
+
+Accelerated Time Integration
+
+3
+
+Archibald, Evans, & Salinger
+
+Programming for acceleration using GPUs
+
+CAM-SE is actively being modiﬁed to eﬀectively utilize threaded computing architectures [3,
+20]. This work uses NVIDIA Graphical Processing Units (GPUs) and takes advantage of CUDA
+native support of languages such as C and Fortran [19]. This allows the Fortran based CAMSE, and eventually other ACME components, to call subroutines or kernels on the GPU. Note
+that this only opens the door for the ACME code to be executed by GPUs, because suﬃcient
+parallelism, coherent memory access, and coherent ﬂow control must be identiﬁed in CAM-SE
+and properly executed, as outlined below.
+The beneﬁt of GPUs is that many threads can be executed simultaneously, hiding latency
+by quickly swapping stalled threads for threads that are ready to execute. In the CUDA
+programming model, subroutines or kernels are split into threads and grouped into programmerdeﬁned thread blocks, where threads within a thread block can synchronize and communicate
+via shared memory. Identifying these blocks requires a performance analysis and understanding
+of what additional parallelism can be exposed beyond MPI. One particular deﬁciency with
+executing work on GPUs is the PCIe traﬃc that takes data from the
+CPU to the GPU and back. The
+PCI-e handles all data transfers between the GPU and CPU and the
+bandwidth of the PCI-e bus is an
+order of magnitude lower than that
+of the DRAM on-board the GPU
+and in main system memory. Eﬀective execution of kernels must take
+into account diﬀerent latency in this
+memory hierarchy and when feasible design kernel execution around
+data ﬂow on and oﬀ the GPU. Performance results of residual calculation shows GPU execution of the
+entire residual to be orders of magFigure 2: Workﬂow for CPU & GPU using Trilinos noxsolve. nitude less then PCI-e transfer rates
+and so block movement to and from
+the GPU of state variables before and after MPI communication is the best strategy for this
+scenario.
+Porting the residual to the GPU takes advantage of the memory reconstruction already
+necessary for the implicit solve of equation 7 by using the C++ based Trilinos solver libraries,
+speciﬁcally, a ﬂattened state vector to pass through the C interface back and forth to the
+Fortran-based climate code. When developing kernels for the residual, the same ﬂattened data
+structure used in the implicit solver can be leveraged to also use for PCI-e traﬃc, which also
+requires a ﬂat data structure. The implementation of GPU solver residual kernels builds oﬀ
+the kernels developed by [3, 20] used in other parts of the code, and completely executes the
+residual on the GPU. This study compares execution of this residual, that is controlled by the
+actively developed third party library (TPL) Trilinos as depicted in Figure 2, using the NVIDIA
+Tesla K20 GPU accelerators against OpenMP execution of the residual on the 16-core AMD
+Opteron CPUs. The hybrid high performance computing platform used in this work is TITAN
+[2], supported by the DOE, at the Oak Ridge Leadership Computing Facility (OLCF), with
+2050
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+rooﬂine models of this architecture given in the report [16].
+
+4
+
+Results
+
+We test the residual calculation of Equation 7 using the JFNK method with a BFD2 discretization on several standard benchmark test cases for atmospheric shallow water dynamical cores,
+(1) a zonal ﬂow over an isolated mountain test and (2) a barotropic instability test with multiple
+time scales of evolution of the ﬂow. We select these because they have been validated with this
+solver conﬁguration using MPI parallelism in [8] and [13], and demonstrate multi scale behavior
+that is similar to the full dycore in CAM-SE. For this study, we used unpreconditioned GMRES
+as the linear solver with a constant forcing term (solver tolerance) at each Newton step of 10−3
+for all cases.
+
+4.1
+
+Zonal ﬂow over an isolated mountain
+
+The ﬁfth test in Williamson et al. (1992) [27] is to solve (2) on the surface of a sphere, with
+initial conditions given by the analytic h ﬁeld,
+gh
+
+=
+
+gh0 − RΩu0 +
+
+hs
+
+=
+
+2000 1 −
+
+r
+,
+L
+
+u20
+sin2 θ,
+2
+(8)
+
+with the advecting wind,
+cos θ cos α + sin θ cos λ sin α
+− sin λ sin α
+
+v = u0
+for α = 0, L =
+
+π
+9,
+
+r2 = min L2 , λ −
+
+3π 2
+π
+) + (θ −
+2
+6
+
+,
+
+2
+
+(9)
+
+,
+
+2 −2
+. This example simulates zonal ﬂow impinging on a
+u0 = 242πa
+days , and gh0 = 5960 m s
+mountain-like feature. Figure 3 depicts the computed solution on day ﬁfteen for a coarse grid
+example, N e = 15 and N p = 4.
+
+4.2
+
+Barotropic instability
+
+The other test explored to evaluate with GPU acceleration in the residual is a test proposed by
+Galewsky et al. (2004). The initial height is given strictly in terms of latitude and obtained by
+numerically integrating the balance equation
+gh(θ)
+
+=
+
+gh0 − R
+
+θ
+−π
+2
+
+u(θ ) f +
+
+tan(θ )
+u(θ ) dθ ,
+a
+
+(10)
+
+where h0 is such that the mean layer depth is 10km, and the Coriolis force f , and R is the radius
+of the Earth. The barotropic instability is initiated by perturbing the ﬂow with a localized bump
+to the balanced height ﬁeld with the function,
+hs (θ, λ)
+
+=
+
+ˆ cos(θ)e(−λ/α)2 e−[(θ2 −θ)/β]2 ,
+h
+
+(11)
+2051
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+Isolated Mountain(Day:15)
+5800
+50
+Latitude
+
+5600
+0
+
+5400
+
+−50
+
+5200
+−150
+
+−100
+
+−50
+
+0
+50
+Longitude
+
+100
+
+150
+
+Figure 3: Day ﬁfteen of the problem in Section 4.1 with N e = 15 and N p = 4. The
+equivalent resolution at the equator on the cube-sphere is 1◦ .
+
+ˆ = 120m. The advecting wind
+with longitude −π < λ < π, θ2 = π/4, α = 1/3, β = 1/15, and h
+is zonally uniform and is speciﬁed to be
+v=
+where
+
+⎧
+⎪
+⎨
+u(θ) =
+
+⎪
+⎩
+
+umax
+en
+
+exp
+
+u(θ)
+0
+
+,
+
+(12)
+
+0
+
+if θ ≤ θ0 ,
+
+1
+(θ−θ0 )(θ−θ1 )
+
+if θ0 < θ < θ1 ,
+if θ ≥ θ1 ,
+
+0
+
+(13)
+
+−4
+
+with umax = 80ms−1 , θ0 = π/7, θ1 = π/2 − θ0 , and en = e (θ1 −θ0 )2 .
+Figure 4 depicts the vorticity computed solution on day six, with N e = 15 and N p = 4. This
+test case is an interesting and favorable choice to use the implicit method because in this case,
+the time step does not need to be restricted to the shorter time scale gravity wave excitation
+for stability and instead can be set to resolve the longer-term and relevant vorticity anomaly
+ﬁeld that develops from the instability [13].
+
+4.3
+
+Kernel Performance
+
+We compare the ratio of the total time it takes to compute the implicit residual calculation
+using the NVIDIA Tesla K20 GPU accelerators versus OpenMP execution on the 16-core AMD
+Opteron CPUs. We report this ratio of GPU vs CPU residual calculation for N p = 4, 8, & 16
+for the test cases described in Section 4.1 and 4.2 in Table 1 and 2, respectively. We note that
+for all cases, the total kernel evaluation time was on the order of 100 times faster than PCIe
+transfer on and oﬀ the GPU, and for this reason bulk movement of state variables between
+CPU and GPU was the best transfer strategy.
+2052
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ï
+
+Figure 4: The numerical solution vorticity at day six for the problem in section 4.2 with
+N e = 15 and N p = 4. The equivalent resolution at the equator on the cube-sphere is 1◦ .
+Table 1: Ratio of time spent computing implicit residual on the GPU as compared to
+CPU for zonal ﬂow over an isolated mountain test case described in Section 4.1.
+
+Ne/Node
+68
+84
+112
+169
+337
+
+Np=4
+0.2163
+0.3104
+0.3391
+0.5889
+1.2614
+
+Ne=15
+Np=8
+0.3140
+0.3336
+0.4430
+0.7584
+1.5951
+
+Np=16
+0.7676
+1.2234
+1.8826
+2.3572
+2.6858
+
+Np=4
+0.2256
+0.3235
+0.3500
+0.6279
+1.2952
+
+Ne=30
+Np=8
+0.2869
+0.3846
+0.4963
+0.6054
+1.4223
+
+Np=16
+0.6983
+1.1625
+1.5383
+2.4673
+2.7972
+
+Upon examination of Table 1 and 2, it can be seen consistently that as the workload is
+increased on the GPU, the ratio of performance for the GPU in comparison to the CPU is
+improved. The improvement for a given value of N e is more pronounced for higher order
+elements decompositions, which can be explained by the additional workload each individual
+node must compute for a ﬁxed number of elements per node as the polynomial order is increased
+for each element, a beneﬁt that can be exploited for higher order solves when more resolution
+and accuracy is required. Performance of the GPU being linked to the workload is consistent
+with ﬁndings in [3, 20], and works well with the fat node design of TITAN.
+Table 2: Ratio of time spent computing implicit residual on the GPU as compared to
+CPU for barotropic instability test case described in Section 4.2.
+
+Ne/Node
+68
+84
+112
+169
+337
+
+Np=4
+0.2076
+0.3001
+0.3733
+0.6392
+1.1039
+
+Ne=15
+Np=8
+0.3332
+0.3440
+0.5054
+0.7097
+1.5328
+
+Np=16
+0.6274
+1.4097
+1.8902
+2.2778
+2.6242
+
+Np=4
+0.1898
+0.2928
+0.4449
+0.3738
+1.3650
+
+Ne=30
+Np=8
+0.3224
+0.4055
+0.5861
+0.7360
+1.1695
+
+Np=16
+0.5973
+1.2307
+1.6744
+2.1181
+2.4919
+
+2053
+
+Accelerated Time Integration
+
+5
+
+Archibald, Evans, & Salinger
+
+Conclusion
+
+This study demonstrates, for two common test cases for the shallow water dycore within CAMSE, how the implicit solver can be accelerated on GPU based machines. The existing framework
+to bind the current implicit solver code to the solver library calls can be modiﬁed to also call
+GPU kernels eﬀectively and work with PCI-e data management. This allows advanced solvers
+produced by the applied mathematics community focusing on Trilinos developement to be used
+by CAM-SE. Note that the acceleration achieved by GPUs is dependent upon an adequate
+workload and improves with high-order elements. Similar results where the GPU is packed
+with additional elements (higher N e) may show similar speed-up, and is the source of near
+term future work.
+
+Acknowledgments
+The submitted manuscript is based upon work, authored in part by contractors [UT-Battelle
+LLC, manager of Oak Ridge National Laboratory (ORNL)], and supported by the U.S. Department of Energy, Oﬃce of Science, Oﬃce of BER and ASCR SciDAC project ”Multiscale
+Methods for Accurate, Eﬃcient, and Scale-Aware Models of the Earth System,” and computed using OLCF computational resources. Accordingly, the U.S. Government retains a nonexclusive, royalty-free license to publish or reproduce the published form of this contribution,
+or allow others to do so, for U.S. Government purposes. This study used the resources of
+the Oak Ridge Leadership Computing Facility at the Oak Ridge National Laboratory, which
+is supported by the Oﬃce of Science of the U.S. Department of Energy under Contract No.
+DE-AC05-00OR22725.
+labelsect:bib
+
+References
+[1] Department of Energy: Project Strategy and Initial Implementation Plan, 2015.
+[2] Oak Ridge Leadership Computing Facility: TITAN, 2015.
+[3] Ilene Carpenter, Rick Archibald, Katherine J Evans, Jeﬀ Larkin, Paulius Micikevicius, Matt Norman, Jim Rosinski, Jim Schwarzmeier, and Mark A Taylor. Progress towards accelerating homme
+on hybrid multi-core systems. International Journal of High Performance Computing Applications,
+2012.
+[4] Ian D. Chivers and Jane Sleightholme. Compiler support for the fortran 2003 and 2008 standards
+revision 10. SIGPLAN Fortran Forum, 31(2):28–39, July 2012.
+[5] B. Engquist and R. Tsai. Heterogeneous multiscale methods for stiﬀ ordinary diﬀerential equations.
+Mathematics of Computation, 74:1707–1742, 2005.
+[6] C. Engstler and C. Lubich. Multirate extrapolation methods for diﬀerential equations with diﬀerent
+time scales. Computing, 58(2):173–185, 1997.
+[7] K. J. Evans, D. Rouson, A. G. Salinger, M. Taylor, W. Weijer, and J. B. White III. A scalable
+and adaptable solution framework within components of the community climate system model.
+Lecture Notes in Comp. Sci., 5545:332–341, 2009.
+[8] K. J. Evans, M. A. Talyor, and J. B. Drake. Accuracy analysis of a spectral element atmospheric
+model using a fully implicit solution framework. Mon. Wea. Rev., 138:3333–3341, 2010.
+[9] X.G. Francis. A spectral element shallow water model on spherical geodesic grids. International
+Journal for Numerical Methods in Fluids, 35(8):869–901, 2001.
+
+2054
+
+Accelerated Time Integration
+
+Archibald, Evans, & Salinger
+
+[10] J. Galewsky, R.K. Scott, and L.M. Polvani. An initial-value problem for testing numerical models
+of the global shallow-water equations. Tellus, 56A:429–440, 2004.
+[11] T. Haut and B. Wingate. An asymptotic parallel-in-time method for highly oscillatory pdes. SIAM
+Journal of Scientic Computing, Submitted, 2013.
+[12] M.A. Heroux and et. al. An overview of the trilinos project. ACM Trans. Math. Softw., 31(3),
+2005.
+[13] J. Jia, J.C. Hill, K.J. Evans, G. I. Fann, and M. A. Taylor. A spectral deferred correction method
+applied to the shallow water equations on a sphere. Mon. Wea. Rev., 141:3435–3449, 2013.
+[14] D. A. Knoll and D. E. Keyes. Jacobian-free newton-krylov methods: A survey of approaches and
+applications. J. Comput. Phys., 193(2):357–397, 2004.
+[15] A. Kværnø. Stability of multirate Runge-Kutta schemes. International Journal of Diﬀerential
+Equations and Applications, 1(1):97–105, 2000.
+[16] Y. J. Lo, S. Williams, B. V. Straalen, T. J. Ligocki, M Cordery, L. Oliker, and M. H. Hall. Rooﬂine
+model toolkit: A practical tool for architectural and program analysis. PMBS, November, 2014.
+[17] J. Loﬀeld and M. Tokman. Comparative performance of exponential, implicit, and explicit integrators for stiﬀ systems of odes. The Journal of Computational and Applied Mathematics, 241:45–67,
+2013.
+[18] Richard B. Neale and et. al. Description of the NCAR Community Atmosphere Model (CAM 5.0).
+Technical report, National Center for Atmospheric Research, June 2010.
+[19] John Nickolls, Ian Buck, Michael Garland, and Kevin Skadron. Scalable parallel programming
+with cuda. Queue, 6(2):40–53, 2008.
+[20] Matt Norman, Jeﬀ Larkin, Rick Archibald, Valentine Anantharaj, Ilene Carpenter, Paulius Micikevicius, and Katherine J Evans. Porting the community atmosphere model - spectral element
+code to utilize gpu accelerators. Cray User Group, 2012.
+[21] M.R. Norman. Algorithmic improvements for schemes using the ader time discretization. Journal
+of Computational Physics, 243(0):176 – 178, 2013.
+[22] M.R. Norman and H. Finkel. Multi-moment ADER-Taylor methods for systems of conservation
+laws with source terms in one dimension. Journal of Computational Physics, 2012.
+[23] P.-O. Persson and J. Peraire. Newton-gmres preconditioning for discontinuous galerkin discretizations of the navier stokes equations. SIAM Journal on Scientiﬁc Computing, 30(6):2709–2733,
+2008.
+[24] R. Sadourny. Conservative ﬁnite-diﬀerence approximations of the primitive equations on quasiuniform spherical grids. Monthly Weather Review, 100(2):136–144, 1972.
+[25] Adrian Sandu and Emil Constantinescu. Multirate explicit adams methods for time integration
+of conservation laws. Journal of Scientiﬁc Computing, 38:229–249, 2009.
+[26] M. Taylor, J. Tribbia, and M. Iskandarani. The spectral element method for the shallow water
+equations on the sphere. Journal of Computational Physics, 130(1):92–108, 1997.
+[27] D. Williamson, J. Drake, J. Hack, R. Jakob, and P. Swarztrauber. A standard test set for numerical
+approximations to the shallow water equations in spherical geometry. Journal of Computational
+Physics, 102(1):211–224, September 1992.
+[28] Chao Yang and Xiao-Chuan Cai. Parallel multilevel methods for implicit solution of shallow water
+equations with nonsmooth topography on the cubed-sphere. Journal of Computational Physics,
+230(7):2523 – 2539, 2011.
+
+2055
+
+

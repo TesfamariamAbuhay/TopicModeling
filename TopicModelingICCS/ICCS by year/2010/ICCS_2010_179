@@ -1,0 +1,889 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 1 (2012) 1055–1064
+
+Procedia Computer Science 00 (2010) 000–000
+
+Procedia
+Computer
+Science
+
+www.elsevier.com/locate/procedia
+www.elsevier.com/locate/procedia
+
+International Conference on Computational Science, ICCS 2010
+
+Implementation of a linear programming solver on the Cell BE
+processor‡*
+Mujahed Eleyata, * and Lasse Natvigb
+b
+
+a
+Miriam AS, Violgata 8, N-1776 Halden, Norway
+Department of Computer and Information Science, Norwegian University of Science and Technology, Sem Sælands vei 7-9
+Gløshaugen, 7034 Trondheim, Norway
+
+Abstract
+We describe an implementation of a parallel linear programming solver on the Cell BE processor. This implementation is based
+on GLPK C routines which solve LP problems using a serial implementation of one of the interior point methods. We have
+identified the computational kernels of the serial version and decided to implement a parallel version of Cholesky factorization
+and integrate it into GLPK. Our decision stemmed from the fact that Cholesky factorization is the most computationally
+expensive kernel that has the most potential to parallelize efficiently on the Cell BE processor. Compared to the execution time of
+serial GLPK on the Cell Power Processing Element (PPE), we were able to obtain a speedup of up to 7 when solving some of the
+large size Netlib problems on Sony’s PlayStation 3.
+c 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+⃝
+Keywords: Cell BE processor, Linear Programming, Sparse Cholesky Factorization, Interior Point Methods
+
+1. Introduction
+Linear programming (LP) is a mathematical technique used to solve an abundance of problems within science
+and engineering, as well as commercial and transportation applications. It is used to find values for variables that
+maximize or minimize a certain objective function while satisfying a set of equality and/or inequality constraints [1].
+The GLPK (GNU Linear Programming Kit) package is a set of ANSI C routines contained into a callable library and
+intended for solving large-scale linear programming, mixed integer programming, and other related problems [2].
+GLKP has routines for solving LP problems using either simplex or one of the primal-dual interior point methods
+(IPMs), namely the Mehrotra’s predictor-corrector method [3].
+Mehrotra’s predictor-corrector method, as well as other primal-dual interior point methods, keeps repeating the
+same set of matrix operations, until it converges to the optimal solution. Main computation includes sparse Cholesky
+
+* Corresponding author. Tel.: +47-99343527; fax: +47-69790623. E-mail address: mujahed.eleyat@miriam.as
+‡ This research has been supported by Miriam AS, http://www.miriam.as, and the Norwegian Research Council. Lasse Natvig is a member of
+HiPEAC2 NoE
+
+c 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+1877-0509 ⃝
+doi:10.1016/j.procs.2010.04.117
+
+1056
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+factorization, sparse matrix-matrix multiplication, and backward/forward solving. However, we have decided to
+parallelize Cholesky factorization only because it is the most computationally expensive kernel [15]. Moreover, its
+efficient parallelization has been the focus of much research and led to techniques that’s allows utilizing cache and
+vector processors. On the other hand, the other kernels represent sparse matrix operations with low computation-tocommunication ratios, and therefore they have less potential to parallelize efficiently on the Cell processor [9].
+In this paper, we implemented a parallel version of GLPK on the Cell BE processor by parallelizing Cholesky
+factorization based on the algorithm suggested by Rothberg and Gupta [13]. We adapted their algorithm, which
+divides the matrix to be factorized into a set of blocks that can utilize cache and SIMD processors, to meet the
+specific features of the Cell BE processor, and implemented all the code required to integrate with GLPK and
+maintain its level of stability.
+This paper is organized as follows: Section 2 gives an overview of the Cell BE architecture. Then, primal dual
+Interior Point Methods (IPM) and its main computational tasks are introduced in section 3. Section 4 describes
+Cholesky factorization and its parallelization while section 5 discusses the stability of parallel GLPK. We present
+related work in section 6 and conclude with experimental results and future work.
+2. The Cell BE Architecture
+The Cell processor architecture is shown in Figure 1 It is mainly composed of one power processing element
+(PPE), 8 synergistic processing elements (SPEs), an on-chip memory controller, and a controller for a configurable
+I/O interface — all linked together by an element interconnection bus (EIB) [5].
+The PPE is a 64-bit Power processor that has two levels of caches, a 32 KB data Level 1 cache and a 512 KB
+Level 2 cache. In addition, it is a dual-issue, dual-thread processor that has a single precision peak of 6.4 Gflops/s
+and a double precision peak of 25.6 Gflops/s. The PPE is usually responsible for running the operating system and
+providing application control.
+SPEs are SIMD cores which each posses a 256 KB local store for storing both data and code, a 128 128-bit
+register file and Memory flow controller (MFC). MFC has the capability to move code and data between main
+memory and local stores using the direct memory access (DMA) technique. Each SPE has a single precision peak of
+25.6 Gflops/s and double precision peak of only 1.83 Gflops/s.
+The EIB is composed of 4 unidirectional rings that are used as a communication bus between the different
+elements that are connected to it. The bus can deliver a 25.6 GB/s to each connected element.
+
+Fig. 1. The Cell Processor Architecture (from [9]).
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+
+1057
+
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+The Cell processor has to have a high speed memory and I/O system which is necessary to feed the other units.
+As shown in the figure, a memory interface controller (MIC) is used to connect a dual-channel Rambus Extreme
+Data Rate (XDR) memory which can deliver a bandwidth of 25.6 GB/s. In addition, the Cell has a high-bandwidth
+configurable I/O interface, called FlexIO interface (labeled as I/O in the figure), which can be dedicated to up to two
+separate logical interfaces [10]. These interfaces provide all chip-to-chip connections and can be used to design an
+efficient dual-processor system.
+3. Mehrotra’s Predictor-Corrector Method:
+A linear programming problem can be expressed in the following standard form [11]:
+Minimize cTx subject to Ax = b, x  0.
+n
+
+Where c, x ± R ,
+
+b ± R m , A is an m x n real matrix and cT is the transpose of the vector c. The dual problem is
+Maximize bTy subject to AT y + z = c, z  0,
+
+m
+
+n
+
+Where y ± R , z ± R and bT, AT denote transpose of the vector b and the matrix A, respectively.
+The main algorithm of Mehrotra’s predictor-corrector method that is used in GLPK is shown in figure 2. The
+method starts by generating a starting point and keeps iterating until the residuals (step 2) are less than an input
+parameter (10-8 in GLPK). In each iteration, a sparse symmetric positive definite (SSPD) system of linear equations
+is solved (steps 3 and 6) to compute some increments that are added to the current solution (Step 8). Moreover,
+generation of the SSPD system involves sparse matrix-matrix multiplication.
+Step 1. choose initial point (x0, y0, z0) using Mehrotra's heuristic.
+Step 2.calculate relative primal infeasibility(rpi), relative dual infeasibility(rdi), and primal-dual gap
+
+|| Ax  b ||
+,
+rpi =
+|| b || 1
+
+|| A T y  z  c ||
+|| c ||  1
+
+rdi =
+
+, gap =
+
+| cT x  bT y |
+1 | c T x |
+
+if rpi < 10-8, rdi < 10-8 , and gap < 10-8 , x is the optimal solution. Stop.
+Step 3. Compute the affine scaling (predictor) direction by solving the following system with respect to (¨xaff, ¨yaff,
+¨zaff ).
+
+A'x aff
+T
+
+A 'y
+
+aff
+
+b  Ax
+ 'z aff
+
+Z'x aff  X'z aff
+
+c  AT y  z
+ XZe
+
+where Z = diag(z1,…,zn), X = diag(x1,…,xn), e=(1,…1)T
+Step 4. calculate the measure of duality
+
+P
+
+Step 5. compute the centering parameter ı
+
+V
+
+P aff
+
+(
+
+P aff 3
+)
+P
+
+xT z
+n
+
+Where
+
+1
+dual
+( x  D affpri 'x aff )( z  D aff
+'s aff )
+n
+
+1058
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+ª
+º
+x
+max{D ± >0,1@ : x  'x aff  0} min «1,{ iaff , 'xiaff  0}»
+¬ 'xi
+¼
+ª
+º
+z
+max{D ± >0,1@ : z  'z aff  0} min «1,{ iaff , 'ziaff  0}»
+¬ 'zi
+¼
+
+D affpri
+dual
+D aff
+
+Step 6. compute the centering (corrector) direction by solving the following system
+
+A'x cor
+T
+
+A 'y
+Z'x
+
+0
+
+cor
+
+cor
+
+ 'z cor
+
+ X'z
+
+cor
+
+0
+
+VPe  XZe
+
+Step 7. Compute
+
+('x, 'y, 'z )
+pri
+D max
+
+dual
+D max
+
+('x aff , 'y aff , 'z aff )  ('x cor , 'y cor , 'z cor )
+
+ª x
+º
+max{D  0 : x  D'x  0} min «1,{ i , 'xi  0}»
+¬ 'xi
+¼
+º
+ª z
+max{D  0 : z  D'z  0} min «1,{ i , 'zi  0}»
+¬ 'zi
+¼
+
+Step 8. Compute next point xnew, ynew, znew (x,y,z for next iteration)
+
+xnew
+
+pri
+x  0.9D max
+'x
+
+ynew
+
+dual
+y  0.9D max
+'y
+
+znew
+
+dual
+z  0.9D max
+'z
+
+Fig. 2. Mehrotra’s predictor-corrector method
+
+4. Parallel Sparse Cholesky Factorization
+4.1. Sparse Cholesky factorization
+Solving the SSPD system is the most computationally expensive kernel and that’s why most attention has been
+given to have a parallel efficient version of this kernel. A SSPD system can be solved by either a direct method such
+as Cholesky Factorization, or an iterative method such as Conjugate Gradient, however, we chose to use Cholesky
+since it is the method being used in GLPK and because there has been a lot of research on parallel sparse Cholesky
+factorization.
+Cholesky factorization of a symmetric positive definite matrix M is the process of factoring it into the product of
+triangular matrices M = LLT. The four basic steps of this method are [12]:
+a. Ordering: reordering of rows and columns so that the Cholesky factor L has less fill (fill are the non-zeros in L
+that were zeros in M).
+b. Symbolic factorization: setting up, in advance, a data structure to accommodate the non-zero elements including
+the fill in.
+c. Numeric Factorization, computing the numeric entries of the Cholesky factor. This step is by far the most
+expensive one.
+d. Triangular solution: Computing the solution by forward and back substitution.
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+
+1059
+
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+The pseudo-code of the serial implementation of Cholesky factorization (Step c above) is shown in figure 3.
+1.
+2.
+3.
+4.
+5.
+6.
+
+for k = 1 to n do
+for i = k to n do
+
+Lik : Lik / Lkk
+for j = k+1 to n do
+for i = j to n do
+Lij := Lij - LikLjk
+
+Fig. 3. Serial Cholesky Factorization.
+
+Lines 2 and 3 in the above algorithm are usually expressed as cdiv(k), dividing column k by the square root of the
+k’th diagonal element, while lines 5 and 6 are expressed as cmod(j,k), modification of column j by column k. These
+expressions are the base for several formulations of parallel sparse column oriented Cholesky factorization which
+allocates different columns to different processors.
+4.2. Sparse Block Cholesky factorization
+The authors in [13] presented an alternative parallel formulation which divides the matrix into a group of twodimensional blocks in a way that leads to a more reduced communication volume and allows more parallelism. The
+key to decompose the matrix into blocks is based on the concept of a supernode, which is a set of contiguous
+columns of L whose non-zero structure form a dense triangular block on the diagonal and share the same non-zero
+structure below the diagonal. The matrix is divided vertically into a set of partitions such that columns belong to a
+partition belongs to one supernode. Rows are partitioned the same way as columns, i.e. if columns cn, cn+1…,cm
+belong to a partition, then rows rn, rn+1…,rm belong to the corresponding row partition. Blocks are the intersections
+between horizontal and vertical partitions. Rothberg and Gupta have referred to this method as global partitioning
+guided by supernodes [13]. Figure 5 (a) taken from [15] shows an example.
+After forming the blocks, Serial block factorization can be accomplished by applying several operations to the
+blocks as shown in figure 4 [13]. The algorithm is analogous to the one shown in figure 3 but it manipulates
+columns of blocks instead of columns of individual elements.
+1.
+2.
+3.
+4.
+5.
+6.
+7.
+
+for k = 1 to n do
+Lkk := Factor(Lkk)
+for i = k + 1 to N with Lik  0 do
+Lik := Lik(Lkk) -1
+for j = k + 1 to N with Ljk  0 do
+for i = j to n with Lik  0 do
+Lij := Lij – Lik(Ljk)T
+
+Fig. 4. Serial Block factorization
+
+Implementation of sparse block factorization requires implementing several matrix operations including block
+(matrix) factorization (BFAC), block division by the inverse of a diagonal block (BDIV), and block modification
+(BMOD) which are, respectively, the lines 2, 4, and 7 in figure 4. The resulted diagonal blocks are dense blocks,
+while the other blocks are composed of dense rows which facilitate their storage and allow better utilization of
+vector processors.
+
+1060
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+4.3. Parallel Sparse Block Cholesky Factorization
+Parallelism can be revealed by creating a data structure called “the supernodal elimination tree” where each node
+represents a supernode. A parent supernode is the one which has the diagonal element that has the same row index
+of the first non diagonal element of the most right column of a child supernode. Figure 5 (b) shows an example of a
+supernodal elimination tree. Despite that other structures may show more fine-grained level of parallelism, we focus
+on the supernodal tree as it reveals course-grain parallelism that is used in our implementation. For each parent
+supernode (column of blocks), the children represent the supernodes that are used to modify that parent supernode
+(step 7 of figure 4). On the other hand, more concurrency it obtained by the fact that some blocks have no zeros
+elements at all. In fact, the number of operations that should be applied to each block is calculated taking into
+consideration the existence of zero blocks.
+
+Fig. 5. (a) Supernodes and block formation. (b) Supernodal trees.
+
+We implemented block sparse Cholesky factorization on the Cell processor using the block fan-out algorithm
+that is suggested in [13]. Before factorization, each block is assumed to have a specific processor owner. A
+processor will be responsible for performing all block modifications to the blocks it owns. Assuming that processors
+are arranged in a 2D (pr x pc) grid where the bottom left processor labeled p0,0 and the top right processor labeled
+pr-1,c-1, blockI,J is mapped to (or owned by) pI%r,J%c , where % is the modulus operation. In other words, a row of
+blocks is mapped to a row of processors and a column of blocks is assigned to a column of processors. More details
+about mapping blocks to processors in a way that reduces communication can be found in [13].
+The main idea of the block fan-out algorithm is that when a block has received all block modifications and
+multiplied by the inverse of the diagonal block, it is sent to all processors that own blocks that could be modified by
+it. The receiver processor performs all related modifications to the blocks it owns. When all block modifications to
+certain block are done, the block is either factorized if it is a diagonal block or multiplied by the inverse of the
+diagonal block and then sent to other processors as specified before.
+Several data structures are needed to implement this algorithm [5]: First, a queue called task queue, is maintained
+by each processor so that it can receive blocks and react upon. Second, two data structures, BMODQ and BDIVQ
+are created for each column of the matrix. BDIVQ(k) indicates the blocks in column k that need to be divided by the
+inverse of the diagonal block, while BMODQ(k) has the blocks in column k that have received all block
+modifications and can participate in modifying other blocks.
+Each processor starts by searching its share of blocks for diagonal blocks that are ready to be factorized (have
+zero block modification operations), factorize them, and send them to the task queues of other processors that may
+use them. Then each processor starts a loop fetching blocks from its task queue, performs all possible operations that
+can be done to the blocks it has, and send blocks to other processors when they are ready as specified earlier. Figure
+6 summarizes the algorithm for one processor, readers can see [13] for a more detailed one.
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+
+1061
+
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+for each diagonal block bJ,J in my share of blocks
+if b requires zero modifications
+factorize bJ,J and send it to the task queues of processors that own blocks in row J or column J
+while factorization is not done
+Receive a block bi,k from my task queue
+if bi,k is diagonal (bk,k)
+for each block bi,k in BMODQ(k)
+bi,k = bi,k * inverse (bk,k )
+send bi,k to the task queues of all processors that own blocks in row i or column k
+else
+add bi,k to BMODQ(K)
+for each pair of blocks in BMODQ(K) bi,k and bj,k where I am the owner of bi,j
+bi,j = bi,j - bi,k * transpose (bj,k )
+update number of remaining BMOD operations of bi,j
+if no more BMOD operations on block bi,j is left
+if bi,j is diagonal ,
+factorize it and send it to the task queues of processors in column j
+else
+if bj,j is factorized
+multiply bi,j by inverse (bj,j ) and send it to the task queues of all processors in row i or column i
+else
+add bi,j to BDIVQ(j)
+Fig. 6. Parallel Sparse Block Cholesky Factorization
+
+4.4. Adapting Parallel Sparse Block Cholesky Factorization to the Cell BE Processor
+The Cell BE processor has its own specific features that should be taken into account to better utilize its
+processing power. Being a heterogeneous multi-core processor, it leads the programmer to think of tasks that best fit
+the PPE and tasks that are more efficient to be executed by the SPEs. In addition, SPEs don’t have caches but small
+size local stores (256 KB) that are completely managed by the programmer. Moreover, it is difficult to utilize the
+high processing power of the SPEs unless there are enough operations to be executed on each transferred value, for
+example 24 operations need to be performed on each single precision value in order to hide the communication [9].
+To adapt the algorithm in Figure 6 to the Cell BE processor, POSIX threads are launched on the PPE as
+representatives of a processors (SPEs) participating in the factorization. The algorithm in Figure 6 is not executed by
+SPEs, however, it is executed by PPE threads which in turn offload the block operations to the SPEs. Once a task is
+offloaded to an SPE, the PPE thread is blocked waiting a mailbox notification message from the SPE that it has
+finished the task. Data blocks' sizes are adjusted to best fit in and utilize the SPE local store by splitting large
+supernodes and amalgamating [19] small (thin) supernodes. This method frees the SPEs from exchanging data with
+each other and accessing task queues and other data structures that are stored in main memory. In addition, it opens
+the door for investigating other methods of task scheduling taking into consideration load balancing among SPEs.
+To overlap communication with computation, two PPU threads are launched for each SPE making it possible for
+an SPE to receive a new task request from one thread while it is still executing another task from the other thread.
+An SPE will then overlap the transfer of data of the new task with the execution of the current task. PPU-SPE
+communication is implemented using mailboxes where PPU threads send mailbox messages to the SPU indicating
+what kind of task is requested and wait for a notification from the SPE that the task is done. When the SPE receives
+the message it brings the required blocks from the main memory, performs the task, writes the result back to main
+memory and sends a notification to the PPU thread that the task is done. Figure 7 shows a pseudo code executed by
+the SPU.
+
+1062
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+Read message (m1) from the incoming mailbox
+Start reading m1 blocks
+While (more tasks to execute)
+Finish reading m1 blocks
+Read message (m2) from the incoming mailbox
+Start reading m2 blocks
+Process m1, write results back to memory and notify the PPU thread
+Finish reading m2 blocks
+Read message (m1) from the incoming mailbox
+Start reading m1 blocks
+Process m2, write results back to memory and notify the PPU thread
+Fig. 7. SPU task overlapping pseudo code
+
+5. Parallel GLPK Stability
+To maintain the same level of stability as in GLPK , we implemented all kernels using double precision
+arithmetic. Unfortunately, the Cell BE processor double precision operations are more than one order of magnitude
+slower than single precision. We are planning to study the possibility of overcoming this problem using the mixed
+precision technique, which is mainly based on performing the factorization in single precision and use iterative
+refinement to increase the precision of the result. We also notice that using LAPACK to compute the Cholesky
+factorization of a block decreases the stability of GLPK especially for degenerate data sets. To overcome this
+problem, we implemented the block factorization using the algorithm suggested by Meszaros [17].
+6. Related Work
+Multi-core processors and their programmability have recently gotten a lot of interest as increasing the efficiency
+of single-core processors has become very difficult. The Cell BE processor is one of these systems whose
+programmability and potential for scientific computing have been investigated by several authors [4, 5, 6]. Up to our
+knowledge, this is the first LP solver that is implemented on the Cell BE, however, LP solvers using both Simplex
+and interior point methods have recently been implemented on GPU [7, 8].
+Vishwas and others have implemented a single precision sparse Cholesky factorization running on a two-node 3.2
+GHz Cell BladeCenter (exercising a total of sixteen SPEs) [5]. Their implementation for the largest data set (28924
+x 28924 with 1036208 nonzero entries) that they use has delivered an average of 81.5 GFLOPS which is about 20%
+of the single precision peak. Our implementation of Cholesky factorization delivered a max of 2.9 GFLOPS when
+running on a PS3 (6 SPEs) which is about 25% of double precision peak. Both implementations are based on the
+block algorithm proposed in [13], however, ours uses double precision to achieve a practical numerical stability and
+the task queues are only accessed by associated PPE threads and not by the SPEs whose main work is to transfer
+blocks and perform operations on them based on the PPE instructions. Kurzak, Buttari, and Dongarra [18] have also
+developed Cholesky factorization on the Cell BE processor, but their implementation is intended for dense
+symmetric positive definite matrices and not for sparse ones. Moreover, they used well-conditioned input matrices
+while we use Netlib data sets where many of them results in degenerate matrices to be factorized.
+7. Results and Future Work
+Figures 8 and 9 show the speedup obtained by executing the new parallel implementation on the Sony’s
+PlayStation 3 (PPE + 6 SPEs) relative to executing the original serial GLPK on the PPE using different Netlib
+datasets [16]. We used the PPU GNU C compiler and the SPU GNU C compilers that come with IBM SDK 3.1. The
+optimization level was set to 3 and both SIMDMATH and BLAS libraries where used in the SPE implementation.
+The speedup varies with the dataset being solved, and reaches a maximum of 7.28 for the QAP12 data set.
+Moreover, the sparse Cholesky factorization delivers 2.9 GFLOPS which is only 25% of the double precision peak.
+
+1063
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+P1
+2
+SR
+D 7
+FL
+D 0 01
+2Q
+06
+C
+PI
+LO
+T
+BN
+L
+2
+C
+Y
+C
+LE
+TR
+U
+D SS
+EG
+EN
+3
+25
+FV
+PI
+LO 47
+T
+D -JA
+6C
+W UB
+E
+O
+O
+W DW
+O
+O
+D
+G
+1
+R
+EE P
+N
+B
+SH E B
+IP
+C 12L
+Z
+ST PR
+O OB
+C
+FO
+8 0 R3
+BA
+U
+3B
+
+8.00
+7.00
+6.00
+5.00
+4.00
+3.00
+2.00
+1.00
+0.00
+
+O
+
+R
+
+M
+A
+
+Q
+
+A
+
+Speedup
+
+Several factors affect the obtained speedup. Since only Cholesky factorization is parallelized, the time spent by
+serial GLPK executing Cholesky factorization relative to the total time it spends solving the data set determines the
+maximum possible speedup according to (Amdahl's law). This ratio is shown in column 4 of figure 9 for all used
+Netlib data sets. Another factor affecting the speedup is the size of the data set. The larger the data sets the higher
+the possibility to have wide supernodes and therefore better utilizing the local store of the SPE. A third related factor
+is that having many thin supernodes caused the formation of many small blocks which results in inefficient use of
+local store and large communication overhead.
+
+Data sets
+
+Fig. 8. Speedup of executing parallelized GLPK on PlayStation 3 (PPE + 6 SPEs) relative to executing the original serial GLPK on the PPE
+using different Netlib data sets
+
+Data Set
+
+Size ( rows x columns)
+
+# of non-zeros
+
+Cholesky time/total time
+
+Speedup
+
+QAP12
+
+3193 x 8856
+
+44244
+
+0.99
+
+7.28
+
+MAROS-R7
+
+3137 x 9408
+
+144848
+
+0.93
+
+7.02
+
+DFL001
+
+6072 x 12230
+
+41873
+
+0.98
+
+4.73
+
+D2Q06C
+
+2172 x 5167
+
+35674
+
+0.86
+
+2.23
+
+PILOT
+
+1442 x 3652
+
+43220
+
+0.79
+
+2.18
+
+BNL2
+
+2325 x 3489
+
+16124
+
+0.86
+
+1.62
+
+CYCLE
+
+1904 x 2857
+
+21322
+
+0.80
+
+1.61
+
+TRUSS
+
+1001 x 8806
+
+36642
+
+0.62
+
+1.50
+
+DEGEN3
+
+1504 x 1818
+
+26230
+
+0.61
+
+1.35
+
+25FV47
+
+822 x 1571
+
+11127
+
+0.66
+
+1.29
+
+PILOT-JA
+
+941 x 1988
+
+14706
+
+0.71
+
+1.28
+
+D6CUBE
+
+416 x 6184
+
+43888
+
+0.29
+
+1.24
+
+WOODW
+
+1099 x 8405
+
+37478
+
+0.23
+
+1.10
+
+WOOD1P
+
+245 x 2594
+
+70216
+
+0.04
+
+0.97
+
+GREENBEB
+
+2393 x 5405
+
+31499
+
+0.57
+
+0.65
+
+SHIP12L
+
+1152 x 5427
+
+21597
+
+0.13
+
+0.22
+
+CZPROB
+
+930 x 3523
+
+14173
+
+0.05
+
+0.22
+
+STOCFOR3
+
+16676 x 15695
+
+74004
+
+0.38
+
+0.11
+
+80BAU3B
+
+2263 x 9799
+
+29063
+
+0.48
+
+0.10
+
+Fig. 9. Information about used Netlib data sets. The 4th column is the ratio of Cholesky factorization time to the total execution time when using
+serial GLPK on the PPE.
+
+1064
+
+M. Eleyat, L. Natvig / Procedia Computer Science 1 (2012) 1055–1064
+Mujahed Eleyat and Lasse Natvig / Procedia Computer Science 00 (2010) 000–000
+
+We believe that the performance of the current implementation can be improved in different ways. Despite the
+use of SIMD, loop unrolling, and a few BLAS operations, a better optimization of the SPE code can result in
+obtaining higher speedup, while it is still a challenge to implement the MOD operation (line 7 in Fig. 4) in a way
+that better utilizes the SPE processing power due to different sparsity structure of the blocks. Our parallel SSPD is
+computationally bounded, which actually limits the benefit of using double buffering and demands more SPE code
+optimization. Moreover, double precision arithmetic, which is required to have a numerically stable LP solver, is
+much slower than single precision arithmetic; therefore, more speed up and almost the same stability can be
+obtained by implementing the mixed-precision technique which is based on using single precision arithmetic and
+iterative refinement [18]. We are also planning to analyze load balancing among SPEs and study the possibility of
+using dynamic scheduling of tasks to be executed by the SPEs. On the other hand, our parallel solver can be
+enhanced to efficiently solve a wider range of datasets by parallelizing other computational kernels of the
+Mehrotra’s predictor-corrector method and by processing very thin independent supernodes (like SN1 in figure 5)
+serially so that we avoid manipulating many very small blocks.
+
+References:
+1.
+
+David G. Luenberger, Linear and Nonlinear Programming, Springer Science, New York, 3rd edition, 2007.
+
+2.
+
+GLPK (GNU Linear Programming Kit), available at http://www.gnu.org/software/glpk/ (accessed: 12 Spetember 2009)
+
+3.
+
+S. Mehrotra. On The Implementation Of A Primal-Dual Interior Point Method. SIAM J. on Optim., 2(4), pp. 575-601, 1992.
+
+4.
+
+S. Williams, J. Shalf, L. Oliker, S. Kamil, P. Husbands, K. Yelick, The Potential Of The Cell Processor For Scientific Computing,
+
+5.
+
+G. Shi, V. Kindratenko, I. Ufimtsev, T. Martinez, J. Phillips, S. Gottlieb, Implementation of scientific computing applications on the
+
+6.
+
+M. Scarpino, Programming The Cell Processor: For Games, Graphics, And Computation, Prentice Hall Ptr, Upper Saddle River, 2009.
+
+7.
+
+D. G. Spampinato, A. C. Elster, Linear optimization on modern GPUs, IPDPS, pp.1-8, IEEE International Symposium on Parallel and
+
+8.
+
+J. H. Jung and D. P. O'Leary, Implementing An Interior Point Method For Linear Programs On A CPU-GPU System, In Applied
+
+9.
+
+A. Buttari, P. Luszczek, J. Kurzak, J. Dongarra, G. Bosilca, SCOP3: a rough guide to scientific computing on the PlayStation 3, Tech.
+
+Proceedings of the 3rd conference on Computing Frontiers, May 3-5, 2006, Ischia, Italy
+Cell Broadband Engine, Scientific Programming , V. 17, No. 1-2, p135-151 (2009).
+
+Distributed Processing, 2009.
+Mathematics Principal Investigators Meeting, Lawrence Livermore Laboratory, May 2007.
+rep., Innovative Computing Laboratory, University of Tennessee Knoxville, UT-CS-07-595, 2007.
+10. J. A. Kahle , M. N. Day , H. P. Hofstee , C. R. Johns , T. R. Maeurer , D. Shippy, Introduction To The Cell Multiprocessor, IBM Journal
+of Research and Development, V. 49, No. 4/5, pp. 589-604, July 2005
+11. P. S. Stanimirovic, N. V. Stojkovic, B. Momcilovic and Z. Jovanovic, Augmented And Normal Equations System In Mehrotra's PrimalDual Algorithm, Filomat 2001, pp. 285-292, 2001.
+12. M. T. Heath, Parallel Direct Methods For Sparse Linear Systems, Parallel Numerical Algorithms, pp. 55-90, 1997.
+13. E Rothberg and A Gupta. An effecient block-orientated approach to parallel sparse Cholesky factorization. SIAM Journal of Scientific
+Computing, 15:1413-1439, 1994.
+14. E. Rozin and S. Toledo, Locality Of Reference In Sparse Cholesky Factorization Methods, Electronic Transactions on Numerical
+Analysis. V. 21, pp. 81-106, 2005
+15. M. Smelyanskiy, V. W Lee, D. Kim, A. D Nguyen, P. Dubey, Scaling Performance of Interior-Point Method on Large-Scale Chip
+Multiprocessor System, Supercomputing, Reno, California, 2007.
+16. The NETLIB LP Test Problem Set, available at http://www.numerical.rl.ac.uk/cute/netlib.html (accessed: 3 September 2009)
+17. C. Mészáros, The cholesky factorization in interior point methods, Computers & Mathematics with Applications, V. 50, pp. 1157-1166,
+2005.
+18. J. Kurzak, A. Buttari, and J. Dongarra, Solving Systems of Linear Equations on the CELL Processor Using Cholesky Factorization,
+IEEE Transactions on Parallel and Distributed Systems, V. 19, No. 9, pp. 1175-1186, 2008
+19. C. Ashcraft and R. Grimes, The Influence of Relaxed Supernode Partitions on the Multifrontal Method, ACM Trans.Math.Soft.,
+15(4):291-309, December 1989
+
+

@@ -1,0 +1,541 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 1624–1634
+ICCS 2016. The International Conference on Computational
+Science
+
+Octree-Based Multiple-Material Parallel Unstructured
+Mesh Generation Method for Seismic Response Analysis of
+Soil-Structure Systems
+Kohei Fujita1 , Keisuke Katsushima2 , Tsuyoshi Ichimura2 , Muneo Hori2,1 , and
+Lalith Maddegedara2
+1
+
+2
+
+RIKEN Advanced Institute for Computational Science
+kohei.fujita@riken.jp
+Earthquake Research Institute & Department of Civil Engineering, The University of Tokyo
+{keisuke-k,ichimura,hori,lalith}@eri.u-tokyo.ac.jp
+
+Abstract
+We developed an unstructured ﬁnite element mesh generation method capable of modeling
+multiple-material complex geometry problems for large-scale seismic analysis of soil-structure
+systems. We used an octree structure to decompose the target domain into small subdomains
+and use the multiple material marching cubes method for robust and parallel tetrahedralization
+of each subdomain. By using the developed method on a 32 core shared memory machine, we
+could generate a 594,168,792 tetrahedral element soil-structure model of a power plant in 13 h
+01 min. The validity of the generated model was conﬁrmed by conducting a seismic response
+analysis on 2,304 compute nodes of the K computer at RIKEN. Although the model contains a
+small approximation in geometry (half of the minimum octree size) at present, we can expect
+fast and high quality meshing of large-scale models by making geometry correction in the future,
+which is expected to help improve the seismic safety of important structures and complex urban
+systems.
+Keywords: Parallel Mesh Generation, Seismic Response Analysis, Octree, Multiple Material
+
+1
+
+Introduction
+
+Large-scale analyses of soil-structure systems with complex shapes and multiple materials are
+expected to be useful for improving the seismic safety of urban systems. Although low-ordered
+unstructured ﬁnite element methods are standard for solving such complex shaped problems,
+the soil-structure system is a large-scale problem with billions of degrees-of-freedom. This is
+because target domains of size on the order of 100 m must be discretized using elements of size
+on the order of 0.1 m for resolving the structural components that change the response of the
+system. The computation of such a large-scale problem described above is becoming feasible
+1624
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.496
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+with advances in high-performance computing, but robust and high quality modeling of complex
+shape domains is still a diﬃcult task for such a problem size. For example, the seismic response
+of a soil-structure interaction model with a few million degrees-of-freedom can be computed in
+a short time using commercial computers; however, producing the ﬁnite element model itself
+typically takes weeks due to the use of trial-and-error to obtain the meshing parameters. Thus,
+the development of fast and robust modeling techniques is essential for practical use of billion
+degrees-of-freedom analyses of soil-structure systems.
+For large-scale analysis with more than one billion degrees-of-freedom, typically, a structured
+mesh (with either constant or varying resolution [7]) is used. In case when using an unstructured
+mesh, typically, a small initial unstructured mesh is reﬁned to make a large mesh, or highordered spectral elements are used directly on the small mesh [4]. Methods using a structured
+mesh cannot explicitly resolve the material boundaries and thus are not suitable for standard
+ﬁnite element analysis, whereas the methods using an unstructured mesh cannot circumvent the
+problem of generating the initial mesh. Rather than using general purpose meshing methods,
+another approach is to use meshing methods tailored for speciﬁc problems. One example is
+the modeling of crust and soils; in such a case, the generation of mesh is simpliﬁed using
+the property that the crust or soils have horizontally layered structures, which leads to fast
+and robust unstructured mesh generation [6]. Another example is the modeling used in ﬂuid
+simulations, which uses the property that the problem is built up of only two domains (ﬂuid and
+non-ﬂuid). This approach reduces the complexity of meshing multiple-material domains, leading
+to modeling of an unstructured mesh with boundary layers [2, 3]. Both of the abovementioned
+problem-speciﬁc methods use octrees to decompose the large unstructured mesh generation
+problem into small problems for parallel and robust processing.
+In this study, we develop an automated mesh generation method for soil-structure systems.
+We design a fast and robust method for generating an unstructured tetrahedral mesh with explicit material boundary interfaces based on the octree approach. The major diﬀerence from the
+previous octree-based unstructured mesh generation methods is the use of the multiple material
+marching cubes method. This method enables robust meshing of explicit material interfaces
+for multiple-material complex shaped domains that are essential for modeling soil-structure
+systems. In addition to its robustness, the proposed method is suitable for parallel processing
+because it does not require synchronization between the octree leaves during unstructured mesh
+generation. However, the generated mesh includes geometrical approximations of up to half of
+the octree leaf size. Thus, post-processing is required for exact geometry modeling. This requirement may be an apparent disadvantage, however, geometrical correction of the generated
+mesh by node movement and element merging/swapping is expected to be possible because a
+matching mesh with geometry very similar to the target geometry is already made. In turn,
+the post-processing can provide an additional function: microscopic features of input geometry
+that are unnecessary for analysis can be automatically removed by utilizing this property (e.g.,
+lightning rods, which are unnecessary for seismic response analysis of building structures, can
+be removed).
+The rest of the paper is organized as follows. We explain the developed modeling method
+in Section 2. Although the modeling method includes a small approximation in geometry (half
+of the minimum octree size), it is capable of modeling an unstructured mesh with billions of
+degrees-of-freedom. In section 3, we apply the developed method to a soil-structure analysis
+problem of a power plant that consists of more than 100 material parts to verify the robustness
+of the method and quality of the generated mesh. Here, we conﬁrm the validity of the model
+by running a seismic response analysis using the K computer at RIKEN. We summarize the
+paper in Section 4.
+1625
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+2
+
+K. Fujita et al.
+
+Methodology
+
+2.1
+
+Overview of the Mesh Generation Method
+
+In order to make a large-scale model with complex geometry and multiple materials, we ﬁrst
+decompose the target domain with an octree structure. Next, we tetrahedralize each octree leaf
+with elements explicitly modeling material interface with matching surface patches between
+neighboring octree leaves. Following past studies, we recursively partition octree leaves for the
+desired element size. The major points that must be considered for the design of the mesh
+generation method are as follows:
+1. Robust modeling of the material interfaces inside each octree leaf.
+2. Producing the matching mesh at the six faces of the octree leaves.
+3. Producing the matching mesh between the octree leaves with diﬀerent leaf resolutions.
+For solving problem 1, we use the multiple material marching cubes method. By using this
+method, we can generate intermaterial boundary patches by only using the color (i.e., material
+number of the domain in which the node lays in) of eight octree vertex nodes. For solving
+problem 2, we use the 2D Delaunay decomposition method to produce unique interoctree leaf
+patches. For solving problem 3, we produce transition elements between octree leaves with different resolutions. By using these methods, a huge mesh generation problem can be decomposed
+into small problems of meshing each octree leaf, and thus it is naturally parallelizable. This
+approach is also very robust because the meshing of each octree leaf becomes a simple problem. As compared with other parallel mesh generation methods, the initial meshing problem
+is designed such that parallelization of meshing is straightforward, instead of parallelizing an
+algorithm that does not lend itself to parallel computation, such as Delaunay tetrahedralization
+(see [1] for an example of the parallel Delaunay tetrahedralization method). In the following
+subsections, we explain the method to generate octrees and perform tetrahedralization of each
+octree leaf.
+
+2.2
+
+Octree Generation
+
+We generate an octree of the target domain that will be used as a background mesh for tetrahedralization. In order to make small elements near the material boundaries to represent the
+detailed geometry and make larger elements for regions with homogeneous properties, we generate an octree covering the domain with small octree leaves near the material boundaries and
+larger octree leaves away from the boundary. Using a closed triangle surface patch as an input,
+we recursively decompose octree leaves with material boundaries from the root (covering the
+whole target domain) to the smallest octree leaf size level (Figure 1a). Next, we color the vertices of the octree leaves with material numbers by using the inside/outside check of the closed
+surfaces and a ﬁlling algorithm (Figure 1b). We further recursively decompose the octree leaves
+such that the prescribed element size is attained for each material (Figure 1c). Last, we recursively decompose the octree leaves so that the size of neighboring octree leaves is within one
+level of diﬀerence (Figure 1d). This process is performed to avoid a rapid change in element
+size, which could lead to poor aspect ratio elements and degradation in accuracy/convergence
+when used for numerical analyses.
+1626
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+a)
+
+b)
+
+c)
+
+d)
+
+Figure 1: Octree construction procedure shown in 2D for two surface patches indicated in blue
+and red. The actual modeling is performed in 3D. a) Reﬁne the octree leaf containing the
+intermaterial boundary. b) Color the octree nodes according to the material number. c) Reﬁne
+the octree leaf to the prescribed size for each material domain. d) Reﬁne the octree so that the
+size of neighboring leaves is within one level of diﬀerence.
+
+2.3
+
+Tetrahedral Mesh Generation
+
+We decompose each octree leaf with tetrahedral elements. The information given for each octree
+leaf is a boolean indicating whether an intermaterial boundary exists inside the octree leaf and
+the colors of the eight octree vertices.
+Case when an intermaterial boundary exists inside an octree leaf We tetrahedralize
+the octree leaf considering material interfaces. First, we generate the intermaterial boundary
+patches by using the marching cubes method (Figures 2a-b). The marching cubes method is a
+method of generating boundary patches in a voxel using the color of its eight vertices as an input.
+The method is very fast and robust because it uses a precomputed index list for generating the
+boundary patches. Because the original marching cubes method is only applicable to two colors,
+we use the multiple material marching cubes method [9] for octree leaves with more than three
+colors. Edge nodes generated during the boundary patch generation process are placed on the
+center of each edge, and the face nodes are placed at the center of each octree face. Thus,
+1627
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+3
+
+K. Fujita et al.
+
+2
+
+3
+
+1
+
+3
+
+3
+
+3
+
+3
+
+a)
+
+b)
+
+c)
+
+d)
+
+Figure 2: Tetrahedral mesh generation procedure for an octree leaf with intermaterial boundaries. a) The colors at eight nodes of the octree leaf are given as an input. b) The intermaterial
+boundary patches are generated using the multiple material marching cubes method. c) The
+surface patches of the six outer faces of the octree leaf are generated using the 2D Delaunay
+decomposition method. d) The 3D constrained Delaunay tetrahedralization method is used to
+generate a matching mesh. For brevity, only meshing of color 1 (blue) and 2 (red) are shown.
+In actual meshing, color 3 (green) is also tetrahedralized using the same procedure.
+
+the maximum geometry approximation becomes half of the minimum octree size. Next, we use
+the 2D Delaunay decomposition method to produce the surface patches of the six outer faces
+of each octree leaf (Figure 2c). Because the 2D Delaunay decomposition method generates a
+unique triangle patch for a given point set, we can use this method to produce matching surface
+patches between neighboring octree leaves. Finally, we tetrahedralize the octree leaf inputting
+intermaterial boundary patches and surface patches of the six outer faces into a tetrahedral
+mesh generator (Figure 2d). Here, we use the constrained Delaunay tetrahedralization method
+[8]. Because the size of triangles in the surface patch is similar to the octree leaf size, only
+a small number of tetrahedral elements will be generated for each octree leaf. This approach
+leads to high robustness in the tetrahedralization procedure. Here, nodes are generated only
+inside the octree leaf when using this tetrahedralization method.
+As we can see, the surface patch does not need to be saved during the tetrahedralization
+process due to the uniqueness of the octree leaf face patches. Although this approach leads to
+duplicate computation for face patch generation, it leads to a smaller memory footprint and
+reduction of the dependence between octree leaves. As a result, the method is suitable for
+parallel processing because synchronization is only needed when inserting face and edge nodes
+during the tetrahedralization process.
+Case when an intermaterial boundary does not exist inside octree leaf We mesh
+the domain using elements with a single material with matching faces between the octree leaves.
+The background octree is generated such that the neighboring octree leaves are within one level
+diﬀerence in resolution. Using this property, we can reduce the number of candidates of node
+positions at the face of the octree that we must consider during tetrahedralization. Here, the
+candidates will be the center of each of the twelve edges and the center of each of the six faces
+(Figure 3a). Thus, we verify the existence of nodes at these 18 positions and produce surface
+patches for the six faces of the octree leaves accordingly using the 2D Delaunay decomposition
+method. Last, we tetrahedralize the octree leaf using the generated surface patches using the
+constrained Delaunay tetrahedralization method. As an example, we show a case with four edge
+nodes and one face node in Figure 3b. As most octree leaves are simple voxels without edge
+nodes or face nodes, we precompute the tetrahedralization for this case and reuse this pattern
+1628
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+a)
+
+b-1)
+
+b-2)
+
+K. Fujita et al.
+
+b-3)
+
+Figure 3: Tetrahedral mesh generation procedure for an octree leaf without intermaterial boundaries. a) Position of the nodes that could exist for tetrahedralization of the octree leaf without
+intermaterial boundaries. Here, we only need to verify the center of six faces (indicated with
+triangles) and the center of twelve edges (indicated with squares). b-1) to b-3) Example case
+of tetrahedralization when an octree leaf has four edge nodes and one center node.
+
+to reduce computation cost. Since the nodes on octree faces are precomputed in the octree
+generation stage and new nodes are only generated inside each octree leaf, the tetrahedralization
+process of each octree leaf can be processed independent of each other.
+Finally, nodes and elements corresponding to the void region are removed for making the
+ﬁnal mesh.
+
+3
+
+Application Example
+
+We veriﬁed the performance of the developed method by applying it to a power plant consisting
+of many materials, and conducting a seismic response analysis using the generated model. Here,
+we produced models using triangulated surface patches that deﬁne each of the material parts
+of the power plant structure (Figure 4). The model consisted of 142 colors for the structure
+and one color for the surrounding soil, with a total of 439,840 triangles and 220,133 nodes. We
+modeled a 600 m × 800 m × 200 m domain surrounding the structure to appropriately model
+the soil-structure interaction. In order to model parts with 0.2 m thickness, the model was
+decomposed with minimum octree leaf size of ds = 0.2 m. Once the input surface patch and
+ds were set, the models were generated automatically without trial-and-error for the following
+cases.
+The modeling process required 13 h 01 min (46,908 s) using 32 CPU cores (eight core Intel
+Xeon CPU E5-4650L 0 @ 2.60GHz × 4 sockets) of SGI UV20 with 768 GB RAM. Figure 5a
+shows the decomposition of the modeling cost. We can see that most of the time is spent for
+coloring of octree nodes and tetrahedralization. Figure 5b shows the scalability of the modeling
+program when used for modeling the problem with ds = 0.8 m. From the ﬁgure, we can see
+that octree node coloring scales linearly with the number of threads, whereas the scalability of
+tetrahedralization is saturated at four cores. The poor scalability of tetrahedralization could be
+due to the memory allocate/deallocate procedures called from each thread during the tetrahedralization process, which leads to frequent synchronization among compute threads. We can
+expect improvement in scalability and reduction in elapsed time by precomputing the tetrahedralization patterns for the coloring patterns of the eight voxel nodes, thereby eliminating the
+frequent memory allocation/deallocation as well reducing the computation.
+The generated model for ds = 0.2 m is shown in Figure 6. The model consisted of 594,168,792
+1629
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+600 m
+
+200 m
+
+800 m
+
+Figure 4: Input surface patch for the power plant model. The input patch consists of 142
+triangulated surface patches for expressing the structure, and one patch for expressing the
+surrounding ground. The colors indicate diﬀerent surface patches.
+
+Octree
+Others, 184 construction,
+1376
+
+Elapsed time (sec)
+
+Octree node
+coloring,
+21284
+
+Tetrahedraliz
+ation, 24064
+
+32768
+
+8192
+Total
+Octree node coloring
+
+2048
+
+Tetrahedralization
+512
+
+Linear scaling
+
+128
+1
+
+2
+
+4
+
+8
+
+16
+
+32
+
+Number of threads
+
+a)
+
+b)
+
+Figure 5: Cost of the modeling program. a) Decomposition of the elapsed time (in seconds) for
+the ds = 0.2 m case running the modeling program on 32 threads. Most of the time is spent
+on octree node coloring and tetrahedralization. b) Scalability of the modeling program for the
+ds = 0.8 m case.
+
+1630
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+Figure 6: Output model with colors indicating the material domains. Only the structural
+part of the matching soil-structure system mesh is shown. The detailed geometry consisting of
+multiple materials is modeled robustly. Larger elements are generated for parts of domain with
+homogeneous properties.
+
+second order tetrahedral elements, 877,545,317 nodes and 2,632,635,951 degrees-of-freedom.
+The ﬁgure shows that a matching mesh with explicit material boundaries was generated. In
+addition, the overall model size was reduced because larger elements were used in homogeneous
+parts of the model. In order to check the quality of mesh, we plot the aspect ratio
+a=
+
+2 lmax
+3 hmin
+
+(1)
+
+of the model in Figure 7. Here, lmax is the length of the longest edge of a tetrahedron, and
+hmin is the shortest length of the line perpendicular from the surface to face of a tetrahedron.
+A mesh with small a is considered good in quality (a = 1 for a regular tetrahedron). We also
+plot the aspect ratio of a mesh generated for the same problem using a general purpose mesh
+generator. Although the mesh generated by the proposed method contains a small approximation in geometry (up to ds/2 = 0.1 m), we can see that the quality of the elements is very
+good. Here, the mesh generated using the general purpose mesh generator is targeted for use
+with analyses methods that do not require a matching mesh across material boundaries; we can
+expect a further decrease in element quality when forming a matching mesh using the general
+purpose mesh generator.
+We used the program based on [5] for linear seismic response analysis of the soil-structure
+system. We used a design wave pulled back to the bedrock as a uniform input to the bottom of
+the ﬁnite element model. Solving the dt = 0.0025 s × 10,000 time step problem required 14 h
+15 min (51,349 s) using 2,304 compute nodes of the K computer at RIKEN. Here, each step of
+the time stepping implicit equation was solved up to 10−8 relative error tolerance. A snapshot
+of the response of the structure at t = 5.89 s is shown in Figure 8. The displacement response
+was found to be continuous among the connected parts; thus, a matching mesh was generated.
+Parts of the wall where the ceiling of the building was not included in the input surface patch
+were substantially deformed, and strain was accumulated at the bottom of the corresponding
+1631
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+1E+09
+
+10000000
+1000000
+100000
+10000
+1000
+100
+
+Number of elements
+
+100000000
+
+10
+1
+1
+
+6
+
+11
+
+16
+
+21 26 31
+Aspect ratio
+
+Proposed mesh generator
+
+36
+
+41
+
+46
+
+General purposed mesh generator
+
+Figure 7: Distribution of the aspect ratio of the generated mesh. The aspect ratio of the
+mesh using a general purpose mesh generator is also shown. The maximum aspect ratio of
+the generated mesh is 8.49, whereas the maximum aspect ratio of the mesh using the general
+purpose mesh generator is 133.8 (outside of the plot range).
+
+Figure 8: Snapshot of the seismic response of the soil-structure system at t = 5.89 s. The ﬁgure
+on the left indicates the magnitude of displacement, with displacement magniﬁed 300 times.
+The ﬁgure on the right indicates the maximum principal strain.
+
+1632
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+K. Fujita et al.
+
+column. Thus we can see a reasonable response distribution; that is, the parts where the ﬁnite
+element model was made weaker than the design were found to undergo substantial response.
+Because we modeled the structure without the steel components, some parts of the building
+where the support is removed exhibited substantial responses; we can expect realistic seismic
+response simulations by including all parts and producing a high resolution model in the future.
+
+4
+
+Closing Remarks
+
+We developed an octree-based multiple-material parallel unstructured ﬁnite element generation method for seismic response analysis of soil-structure systems. We decomposed the target
+problem into small problems with the octree structure and applied a robust tetrahedral mesh
+generation method for robust and parallel mesh generation of large problems. The developed
+method is capable of modeling a complex-shaped power plant with 2.6 billion degrees-of-freedom
+in 13 hours using a 32 core shared memory machine. This model generation is very fast compared with the several weeks needed for generating few million degree-of-freedom models.
+Because we focused on producing a prototype in this study, the generated mesh contains geometrical approximations of up to half the minimum octree size. We plan to perform geometrical
+corrections in the future for application to problems where the evaluation of stress-concentration
+is important. The development of such correction methods is expected to lead to the application of the method to seismic integrity tests of important structures or complex urban systems
+including underground structures that are diﬃcult to model using conventional mesh generation
+methods.
+
+Acknowledgments
+Part of the computation reported in this paper was conducted on the K computer at RIKEN Advanced Institute for Computational Science (project number: hp150175, hp150127, hp150217).
+This study is supported by JSPS KAKENHI Grant Number 15K18110, FOCUS Establishing
+Supercomputing Center of Excellence, and Council for Science, Technology and Innovation
+(CSTI) through the Cross-ministerial Strategic Innovation Promotion Program (SIP), titled
+“Enhancement of societal resiliency against natural disasters” (Funding agency: JST).
+
+References
+[1] E. G. Blelloch, L. G. Miller, C. J. Hardwick, and D. Talmor. Design and implementation of a
+practical parallel delaunay algorithm. Algorithmica, 24(3):243–269, 1999.
+[2] William Dawes, Simon Harvey, S. Fellows, C. Favaretto, and Aditya Velivelli. Viscous layer
+meshes from level sets on cartesian meshes. In 45th AIAA Aerospace Sciences Meeting and Exhibit, Aerospace Sciences Meetings, 2007.
+[3] William Dawes, W. Kellar, and Simon Harvey. Generation of conjugate meshes for complex geometries for coupled multi-physics simulations. In 48th AIAA Aerospace Sciences Meeting Including the
+New Horizons Forum and Aerospace Exposition, Aerospace Sciences Meetings. American Institute
+of Aeronautics and Astronautics, 2010.
+[4] Alexander Heinecke, Alexander Breuer, Sebastian Rettenberger, Michael Bader, Alice-Agnes
+Gabriel, Christian Pelties, Arndt Bode, William Barth, Xiang-Ke Liao, Karthikeyan Vaidyanathan,
+Mikhail Smelyanskiy, and Pradeep Dubey. Petascale high order dynamic rupture earthquake simulations on heterogeneous supercomputers. In Proceedings of the International Conference for High
+
+1633
+
+Parallel Mesh Generation Method for Seismic Response Analysis
+
+[5]
+
+[6]
+
+[7]
+
+[8]
+[9]
+
+K. Fujita et al.
+
+Performance Computing, Networking, Storage and Analysis, SC ’14, pages 3–14, Piscataway, NJ,
+USA, 2014. IEEE Press.
+Tsuyoshi Ichimura, Kohei Fujita, Pher Errol Balde Quinay, Lalith Maddegedara, Muneo Hori,
+Seizo Tanaka, Yoshihisa Shizawa, Hiroshi Kobayashi, and Kazuo Minami. Implicit nonlinear wave
+simulation with 1.08t dof and 0.270t unstructured ﬁnite elements to enhance comprehensive earthquake simulation. In Proceedings of the International Conference for High Performance Computing,
+Networking, Storage and Analysis, SC ’15, pages 4:1–4:12, New York, NY, USA, 2015. ACM.
+Tsuyoshi Ichimura, Muneo Hori, and Jacobo Bielak. A hybrid multiresolution meshing technique
+for ﬁnite element three-dimensional earthquake ground motion modelling in basins including topography. Geophysical Journal International, 177(3):1221–1232, 2009.
+Johann Rudi, A. Cristiano I. Malossi, Tobin Isaac, Georg Stadler, Michael Gurnis, Peter W. J.
+Staar, Yves Ineichen, Costas Bekas, Alessandro Curioni, and Omar Ghattas. An extreme-scale
+implicit solver for complex pdes: Highly heterogeneous ﬂow in earth’s mantle. In Proceedings of the
+International Conference for High Performance Computing, Networking, Storage and Analysis, SC
+’15, pages 5:1–5:12, New York, NY, USA, 2015. ACM.
+Hang Si. Tetgen, a delaunay-based quality tetrahedral mesh generator. ACM Trans. Math. Softw.,
+41(2):11:1–11:36, February 2015.
+Ziji Wu and John M. Sullivan. Multiple material marching cubes algorithm. International Journal
+for Numerical Methods in Engineering, 58(2):189–207, 2003.
+
+1634
+
+

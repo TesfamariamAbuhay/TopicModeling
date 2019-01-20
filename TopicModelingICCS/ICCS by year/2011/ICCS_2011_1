@@ -1,0 +1,618 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 479–488
+
+International Conference on Computational Science, ICCS 2011
+
+Computational Steering and Parallel Online Monitoring Using
+RMA through the HDF5 DSM Virtual File Driver
+Jerome Soumagnea,b,∗, John Biddiscombea
+a Swiss
+
+National Supercomputing Centre, 6928 Manno, Switzerland
+Bordeaux Sud-Ouest, 33405 Talence, France
+
+b INRIA
+
+Abstract
+As systems provide more resources and host an indeﬁnitely growing number of cores, the amount of data produced
+by simulation codes is steadily increasing, creating a bottleneck at the point where the data must be transferred to postprocessing software. One solution is to avoid the use of a ﬁle system altogether and couple post processing software
+directly to the simulation using an interface common to both sides of the transfer. HDF5, the widely known IO library,
+oﬀers a modular mapping of ﬁle contents to storage, allowing the user to use diﬀerent methods (drivers) for reading
+and writing data. These drivers are organized in a Virtual File Layer (VFL) so that the user can easily switch between
+– and if necessary – extend them. In order to be able to visualize and analyze data in-situ, we developed a parallel
+virtual ﬁle driver called the DSM driver, which allows the transfer of data in parallel between two diﬀerent codes
+using only the HDF5 API; this driver has now been extended to support remote memory access operations.
+Whilst the original implementation allows one to post-process data in-situ, we present in this paper extensions to
+the driver that provide the ability to couple parallel applications bidirectionally. We use this to perform computational
+steering of simulations. Commands and data are sent back to the simulation using either the driver layer itself (primarily commands) or the HDF5 layer via the DSM driver (datasets). The use of HDF5 datasets for transfer between
+codes makes true parallel coupling possible, even when the data models of the codes are not directly compatible.
+The steering interface presented here is shown implemented within ParaView, the parallel visualization application, but the API is generic and in fact any applications that make use of HDF5 may be connected using the driver.
+Keywords: parallel virtual ﬁle driver, computational steering, one-sided communications, HDF5
+
+1. Introduction
+Diﬀerent methods exist for online monitoring and the idea of using a Distributed Shared Memory (DSM) – seen as
+a virtual single address space shared among nodes – as an intermediate storage for computational steering of simulations has already been exploited. For instance, Lorenz in [1] uses this method for steering jobs, but the implementation
+is application speciﬁc and does not handle parallel coupled applications. HDF5 [2], the widely known IO library and
+a ﬁle format for storing and managing data, supports parallel data transfers. It provides users with several diﬀerent
+∗ Corresponding
+
+author
+Email addresses: soumagne@cscs.ch (Jerome Soumagne), biddisco@cscs.ch (John Biddiscombe)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.050
+
+480
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+ways of writing and reading data, making use of a virtual ﬁle layer consisting of diﬀerent drivers. Several drivers
+already exist such as the core driver, which allows ﬁles to be written in memory instead of disk, and the mpio driver,
+which uses MPI-IO to write ﬁles in parallel. In [3] we presented a new driver, called the DSM driver, which has the
+capabilities of both core and mpio drivers, as well as the ability to transparently send data across a network in parallel
+to a distributed shared memory (DSM) buﬀer on diﬀerent nodes of the same machine, or even a completely diﬀerent
+machine accessible by the network. This DSM driver eﬀectively allows two applications to be coupled together using a shared ﬁle in memory as a common resource to which both may read and write and thereby control/steer one
+application from the other.
+The DSM driver uses MPI for communication amongst the nodes of each individual process, but traﬃc between
+processes may use either a socket based protocol, or one based on the MPI layer. The MPI communication module in
+the DSM driver has now been extended to support RMA operations and details of this are presented in the paper.
+Communication between coupled applications can be thought of as taking place on two levels: synchronization/control and low-level put/get commands occur at the DSM communicator level and do not need to make use of the core
+HDF5 calls; actual data transfers on the other hand, for the writing and reading of structures that are to be exchanged
+between applications takes place using the original HDF5 layer. Control instructions allow (for example) the simulation to be paused and resumed relatively non-invasively, but data exchanges require the users to actively request or
+send new data via the API and modify their code to take appropriate action depending on the contents. The design of
+the original DSM driver interface required minimal code changes to existing HDF5 enabled applications to interface
+them to visualization/post processing software, the steering interface follows this design by only adding a minimal
+set of commands that the coupled codes use to inform each other when data has been read/written to the shared DSM
+ﬁle and is ready for use. Whilst it was (and still is) possible to visualize data from a simulation with almost no code
+changes to the application, steering is, by nature, a process that involves adding speciﬁc new instructions in the code
+to take action upon the receipt of new data or commands.
+2. Dynamic RMA Architecture
+Whilst the primary motivation in this work is to be able to provide both steering and in-situ visualization capabilities, new hardware platforms are targeting communication as an area where performance must be improved and we
+have therefore made a number of improvements to the core DSM communication module so that the driver can completely ﬁt to the Remote Memory Access (RMA) concept, where one process can put data directly into the memory
+of another process, without that process using an explicit receive call.
+2.1. DSM Driver Communicators
+The DSM driver initially supported two diﬀerent modules for communication between processes, one based
+on sockets and one based on the MPI layer. For communication within or between processes the terms of intercommunicator and intra-communicator are used:
+1. An intra-communicator represents the communicator used for internal communications by a given application
+or job, this communicator always uses the MPI interface;
+2. An inter-communicator links two diﬀerent applications or two diﬀerent sets of processes together and uses
+either an MPI or a socket interface to connect them.
+The DSM uses a client/server model where (generally) the simulation writing the data is the client and the set of (post
+processing) nodes receiving the data is the server. The inter-communicator connection is initialized automatically
+through a conﬁguration ﬁle when the code makes use of the HDF5 DSM conﬁguration call (e.g. in listing 1). No
+connection is created at all if it is speciﬁed in the conﬁguration ﬁle or if the DSM host cannot be reached.
+H 5 P s e t f a p l d s m ( d s m f a p l , MPI COMM WORLD, NULL) ;
+Listing 1: Typical call for setting the DSM driver in HDF5 (C interface)
+
+When using the MPI communicator, connection is attempted using the dynamic process management functions:
+MPI Connect and MPI Accept. An equivalent solution is used with sockets. Once the connection is established, data
+can be transferred in parallel to the DSM nodes. It is worth noting that the DSM nodes are usually located with the
+
+481
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+server, but can be co-located with the simulation nodes themselves, though for memory optimization reasons, it is
+usually preferable to place them on diﬀerent nodes than the ones used for the simulation. When a data transfer is
+initiated, a header command is sent to the requested remote DSM server which then switches to a receive data state –
+or send data state – depending on the operation type.
+Although the existing communication mechanism already provides excellent performance, we want to access the
+remote memory directly from the simulation and therefore avoid possible extra memory copies when buﬀering data
+transfers.
+2.2. RMA Interface
+Data
+
+MPI Put
+
+Metadata
+
+...
+
+Remote Client
+
+MPI Get
+MPI Mem alloc
+
+Remote Server
+
+Figure 1: Once connected, remote client can issue MPI put and get calls and therefore accesses the distributed remote memory directly – Synchronizations are necessary between a close and a new ﬁle modiﬁcation operation so that ﬁle metadata keeps coherent.
+
+The Remote Memory Access architecture implemented and adapted to the DSM driver is presented in ﬁgure 1. The
+DSM is here allocated using an MPI allocation function (as opposed to malloc). Data is then sent using an MPI put and
+retrieved using an MPI get. This allows us to directly put the data at the address requested by the HDF5 layer without
+having to send intermediate commands (reducing the handshaking that takes places between tasks). Whilst having
+an RMA architecture presents obvious advantages, the HDF5 ﬁle created and distributed among the diﬀerent DSM
+nodes does need to stay in a coherent state. The existing mechanism based on inter and intra communicators operates
+such that when the application hosting the DSM reads or writes data, a communication thread listens on a given
+communicator, either the inter-communicator or the intra-communicator. Because we need to tell this thread where
+the data comes from, the natural restriction of the receive operation creates a synchronization operation. Therefore,
+when using either sockets or MPI sends and receives, an additional thread is necessary on the server side to handle
+remote ﬁle access requests. In eﬀect the control of the ﬁle has been placed under a mutex lock between the applications
+so that either side may make edits to the contents prior to handing control back.
+When using RMA operations, explicit send and receive commands are no longer needed and an operation from
+one end can put or get data without having to wait for the other end to be ready. We therefore introduce a new
+synchronization point so that the consistency of the ﬁle is kept between diﬀerent read and write operations. The
+metadata section of the ﬁle contains the start and end addresses of the ﬁle, thus the following condition is deﬁned:
+every time an operation modiﬁes ﬁle metadata, after a close, processes must be synchronized before being able to reopen the ﬁle. That is, when the ﬁle is opened or created using HDF5, a synchronization on the memory window (using
+MPI Win Fence) is performed if the previous operation has modiﬁed the ﬁle metadata. Whereas it was necessary, using
+send and receive operations, to guarantee that every process had ﬁnished sending or receiving data before the eﬀective
+close of the ﬁle and the beginning of another operation, being able to synchronize on the entire window gives us a
+much more ﬂexible solution.
+When the ﬁle is opened read only, we must also prevent any other process from concurrently accessing the ﬁle
+in read/write mode to guarantee data coherency. In fact, the locking mechanism in place prevents both applications
+reading or writing synchronously, however, in principle this restriction could be relaxed to allow simultaneous readonly access.
+2.3. Performance
+In ﬁgure 2, matching the DSM size to the data written – 20GB here – we compare the performance between a
+small GPFS ﬁle system and our interface. Generally speaking, the more DSM nodes used (and hence network links),
+the higher the overall bandwidth. Using MVAPICH2 on a QDR InﬁniBand interface for the inter-communication
+
+482
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+gives a better performance of approximately 20× (for this conﬁguration). In this test, we use 4 nodes of 12 cores each,
+ie. a DSM distributed among 48 processes. The increasing performance mirrors existing results from HDF5 (using
+MPI-IO) studies[4], where bandwidth continues to increase until the network is saturated – which depends, in the case
+of DSM traﬃc, on the number of links to host nodes available. A parallel ﬁle system on the other hand will have a
+ﬁxed number of service nodes, which once saturated, cannot be exceeded.
+		$$$%$&
+'%&
+()%!""	"!*+,
+
+	
+	
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ !
+"#
+
+Figure 2: Write speed test from a regular cluster to DSM distributed among 4 post-processing nodes with a ﬁxed DSM buﬀer size of 20GB.
+
+Note that no performance comparison between one-sided and two-sided operations is represented on this chart.
+As shown in MVAPICH2 internode point-to-point benchmarks [5], performance between two-sided and one-sided is
+very similar and for this reason, on an architecture like the one used for the ﬁgure 2, making a strict comparison would
+not have been representative of the library.
+On specialized architectures, based on [6], with particular MPI implementations that support RMA operations
+and dynamic communicator creation, a better performance can be expected compared to two-sided communications.
+However, on architectures such as Blue Gene and Cray XT/XE series, dynamic process management functions are
+not available and the adaptation of our interface to support directly the RMA API of this architecture is still under
+progress. The latest Cray XE range of systems makes use of a new networking layer known as Gemini, which should
+support the features required by our driver, but initial tests have revealed problems with the implementation and we
+await updates from the vendors before making further tests. Final performance is therefore highly dependent on the
+MPI implementation and architecture used.
+3. Steering Extension
+The ability to share in parallel a common memory based ﬁle between applications presents a valuable opportunity
+to perform computational steering of HPC codes. Once the issue of locking the ﬁle so that the two applications do
+not corrupt metadata is solved, it becomes possible to safely write arbitrary datasets into the ﬁle from either side, add
+commands, and then all that is required is the ability to signal to the other side that the ﬁle is ready for access.
+3.1. Server Signal Processing
+The initial implementation, described in [3], only expected data to be written by the simulation and read by the host
+or server application. A ﬁle close operation from the simulation, would automatically send a signal to the DSM server
+which would in turn switch communicator from (remote) inter-communicator channel to local intra-communicator
+operation thereby locking the ﬁle from remote access so that the contents could be safely read. This process has now
+been simpliﬁed by making use of one-sided communications as presented in section 2.2. This mode of operation,
+where a ﬁle close from the host application automatically triggers the server to take ownership is convenient and
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+483
+
+simple, but presents a problem when a simulation attempts to re-open the ﬁle and write additional data prior to a
+server update. It was also diﬃcult for the (reversed direction) server to write data to the DSM and tell the host
+application that it could read. New logic in place extends the ﬁle access capabilities so that either side may obtain the
+ﬁle access write and signal that the ﬁle is available for reading using a manual call. A simple driver extension shown
+in listing 2 illustrates the procedure from the host.
+( 1 ) h e r r t H5FD dsm set mode ( u n s i g n e d l o n g f l a g s , v o i d ∗ d s m B u f f e r ) ;
+( 2 ) h e r r t H5FD dsm server update ( void ∗ dsmBuffer ) ;
+Listing 2: H5FDdsm signal extension (C interface)
+
+Setting (1) with a manual update ﬂag disables the automatic signal and (2) must be called when the DSM server switch
+signal is required. This signaling is an important step for the steering API extension since we wish to retrieve steering
+commands and information updates from the remote server. When opening the DSM ﬁle and subsequently closing
+it, we deﬁne a state modiﬁed ﬂag to indicate whether any data has been written, since a simple server update call
+for getting steering commands may not need to refresh all the pipeline of the post-processing application if no data
+has been modiﬁed. Based on this signal exchange between DSM server and simulation, the following steering API is
+deﬁned.
+3.2. API Extension and Architecture
+Having an API built on top of HDF5 means that we can easily store and write additional parameters and arrays
+that are understood by the simulation into the DSM. Referring to ﬁgure 1, these interactions are stored as datasets
+within the section of the DSM that represents the output ﬁle. By default all the new parameters and arrays sent back
+for steering are stored at a given time step in an Interaction group, which is a subgroup of the ﬁle. This group can
+be customized if necessary in case of conﬂict with the simulation data (in the event that it uses the same group name
+for data storage). One advantage of writing the interaction group directly into the HDF5 data is that a given user can
+simply dump out the parameters stored in order to check their presence or their correctness. We can also then take
+advantage of the HDF5 layer and read in parallel from the simulation data stored in the DSM.
+(1)
+(2)
+(3)
+(4)
+(5)
+
+herr t
+herr t
+herr t
+herr t
+herr t
+number
+(6)
+herr t
+
+H5FD dsm
+H5FD dsm
+H5FD dsm
+H5FD dsm
+H5FD dsm
+of elements
+H5FD dsm
+
+s t e e r i n g i n i t ( MPI Comm comm , v o i d ∗ b u f f e r ) ;
+steering update ( ) ;
+s t e e r i n g i s e n a b l e d ( c o n s t char ∗ name ) ;
+s t e e r i n g s c a l a r g e t ( c o n s t char ∗ name , h i d t mem type , v o i d ∗ d a t a ) ;
+s t e e r i n g v e c t o r g e t ( c o n s t char ∗ name , h i d t mem type , h s i z e t
+, void ∗ data ) ;
+s t e e r i n g i s s e t ( c o n s t char ∗ name , i n t ∗ s e t ) ;
+Listing 3: H5FDdsm steering API (C interface)
+
+As shown in listing 3, whereas live visualization does not require any modiﬁcations of the simulation code except
+setting HDF5 to use the DSM driver, simulation steering requires a higher degree of intrusion in the code. Our
+objective is to keep the API as simple as possible. We deﬁne both C and Fortran interfaces though only the C versions
+are included here. When using the DSM for post-processing only, the connection is initialized during the HDF5 ﬁle
+creation alone, in the steering case it is necessary to add another initialization command so that the ﬁrst steering
+command exchange can be processed as soon as the simulation starts. This is the role of (1).
+Once the DSM steering environment is initialized, (2) allows the user to get and synchronize steering commands
+with the GUI (assuming the DSM server is within a GUI based application such as ParaView) at any point of the
+simulation, although generally these commands will be at the immediate start and end of the main simulation loop.
+Currently, three ’built in’ commands are deﬁned, which are pause, play and switch to disk. Pause simply makes the
+simulation wait for a play command to be sent and switch to disk tells the driver to stop sending data over the network
+and instead writes to disk as if a standard IO driver was being used. Simple commands such as these do not need to
+be written as datasets within the ﬁle and are transmitted using the metadata section of the DSM, this in turn means
+that they can be checked at any time by simply reading ﬂags from the metadata content of the DSM without recourse
+to HDF5 dataset manipulations.
+It is assumed that the simulation will write grids, meshes, images and arrays etc to the DSM in the form of datasets,
+which can be referred to by some unique name. When used within ParaView the name can be speciﬁed in an XML
+template (see section 3.3) so that both applications can refer to the same dataset by the same unique name. The user
+
+484
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+can add conditional calls such as (3) to test if a grid or a dataset is enabled or not. If it is not enabled, the simulation
+can skip the unselected ﬁelds and blocks so that nothing is written by or sent to the DSM. This feature can be very
+useful when a simulation writes a large amount of data, the host application can select only the interesting datasets
+(those required for the current analysis operation) to be sent. Internally, the library checks the list of arrays that are
+disabled, this list is stored in the metadata section of the DSM and is updated every time (2) is called. This is directly
+managed by the DSM layer and not by HDF5 itself.
+Commands (4) and (5) can be used to pass or get back scalar parameters and (smaller) vector arrays named after an
+interaction command is deﬁned by the simulation. The simulation declares a parameter (using an XML description for
+example) and the steering application can write values to the parameter, which are then read back by the simulation.
+Once a parameter is read and no modiﬁcations are made by either side, it is dropped from the interaction group in the
+ﬁle until the next modiﬁcation is made.
+It is evident that modifying parameters and scalar arrays implies an adaptation of the original code. As an example,
+modifying pressure values on nodes of a grid may imply the diﬀusion of all pressure changes to diﬀerent components
+of the simulation and additional computation steps may be necessary to ensure that conservation laws are not violated
+and the simulation does not fail. The API does not specify anything in that regard and it is the responsibility of the
+user to adapt his code accordingly. Note also that when reading a simple scalar or a small array the driver is opened
+in a mode which is not optimized for parallel operations, therefore accessing the same scalar from all the simulation
+processes could create a bottleneck, it is therefore recommended to use these two functions ((4) and (5)) with only
+one process that can then broadcast the retrieved value to the other processes. (6) can be used to check the presence
+of the parameter before trying to access it.
+Additionally we deﬁne a set of functions that we call advanced steering functions. These functions as shown in
+listing 4 allow users to get stored steering data in a way better optimized for parallel IO and is intended to handle
+larger datasets or complete grids.
+(7)
+(8)
+(9)
+(10)
+(11)
+
+herr
+herr
+herr
+herr
+herr
+
+t
+t
+t
+t
+t
+
+H5FD
+H5FD
+H5FD
+H5FD
+H5FD
+
+dsm
+dsm
+dsm
+dsm
+dsm
+
+steering
+steering
+steering
+steering
+steering
+
+begin query () ;
+end query ( ) ;
+g e t h a n d l e ( c o n s t char ∗ name , h i d t ∗ h a n d l e ) ;
+free handle ( h i d t handle ) ;
+wait ( ) ;
+Listing 4: H5FDdsm advanced steering API (C interface)
+
+By making use of (7) and (8) one can cache the HDF5 handles so that when reading back multiple parameters,
+the DSM is not constantly opened and closed (which would result in message traﬃc on the inter-communicator). In
+addition to this ﬁrst optimization we allow users to directly access the HDF5 handles of the stored datasets in the
+DSM ((9) and (10)) corresponding to the parameter name passed to these functions. If the size of a stored dataset is
+large, reading it in parallel (using hyperslabs) with the HDF5 API from the simulation code may be necessary and
+can dramatically improve performance. This can be for example used if one code needs to pass restart data or a full
+re-meshed grid. Using ((9) and (10)) either the client or server may write large data in parallel just as if using a
+standard HDF5 ﬁle, but the location of the data is managed by the DSM so that either side may treat it as a shared
+named dataset.
+The work-ﬂow deﬁned here is relatively straightforward, the simulation code initiates the steering library, reads
+parameters, writes output. On the monitoring application side, one reads the output and starts the analysis, generating
+new parameters as necessary. However the simulation is not stopped and can continue injecting new data into the
+DSM once the lock is released by the steering side. (11) gives the simulation the ability to explicitly wait until the
+analysis has written data back before it continues. This allows a work-ﬂow where the simulation generates data on
+each iteration, passes it to the analysis, waits for new data, parameters and/or commands and then continues with
+the next iteration using the new data which it has just read from the DSM. Additional commands understood by the
+simulation may be speciﬁed as simple int parameters used as boolean variables which when set by the steering side,
+instruct the simulation to call some function or perform some action (such as reload a dataset, or reinitialize the
+simulation using new parameter x).
+3.3. Usage Example in Simulations
+As shown in ﬁgure 3, an arbitrary code can easily make use of the previously deﬁned API. Once linked to the
+H5FDdsm library, the application doing an update of the steering orders automatically gets the new parameters or
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+485
+
+Simulation Code
+...
+H5FD_dsm_steering_init;
+...
+main loop:
+H5FD_dsm_steering_update;
+H5FD_dsm_steering_
+scalar_get("param1");
+...
+compute_step;
+...
+if H5FD_dsm_steering_
+is_enabled("d_name"):
+write_hdf5_dataset("d_name");
+end if;
+...
+end loop;
+...
+
+Description Template
+interpret
+template info
+
+H5FDdsm library
+automatic re-routing of
+HDF5 commands
+
+<Interaction>
+...
+<Property name="param1"
+type=int
+default_value=150
+</Property>
+...
+</Interaction>
+<Domain>
+...
+</Domain>
+
+Figure 3: Steering usage example – Necessary steering information is given to the library (in that particular example) using an XML ﬁle, commands
+and parameters are then retrieved from the DSM using the previously deﬁned API.
+
+arrays passed to the ﬁle. The user interface however is not implemented within this library, an additional layer or
+plugin dependent on the application used for steering and monitoring must be implemented. We describe on this
+ﬁgure a simpliﬁed method that we use within our ParaView extension (more details are presented in section 3.4).
+Parameter names (chosen by the domain scientist) are speciﬁed in an XML ﬁle, these parameters are written into the
+DSM using the same dataset name as the one given in the XML ﬁle. The simulation code uses this chosen name to get
+the parameter. Our ParaView plugin is able to parse the XML ﬁle and generate a GUI automatically to represent all
+the parameters/commands listed in the ﬁle as well as datasets and grid blocks/ﬁeld arrays for visualization/analysis.
+3.4. Application to ParaView
+Having previously developed a plugin for in-situ visualization within ParaView [7][8] in [9], we now extend this
+plugin (called ICARUS –Initialize Compute Analyze Render Update Steer) to support the steering interface inserted in
+the H5FDdsm library. This extension is presented in ﬁgure 4. On the right side, the steering interface of the ICARUS
+panel is shown. It is composed of three sections: one called standard controls with basic pause, play commands;
+one describing the data loaded in the DSM and built from a data description template; one describing the diﬀerent
+customized user interactions described in the interaction template.
+These two last sections of the user interface are dynamically created when parsing a description template. Data
+description templates (for grids to be visualized) originally follow the XDMF syntax – the eXtensible Data Model
+and Format [10] – and are used in combination with a customized HDF5 dump program (internal to the plugin) so
+that information about the grids is automatically retrieved from the HDF5 ﬁle in the DSM. The user speciﬁes in the
+template that N blocks of data with deﬁned names and ﬁeld arrays will be exported, the XDMF generation uses the
+h5dump utility to determine the size and array types of the datasets so that a very simple template may be used for
+quite complex data transfers. For the steering of simulations, to avoid the problem of having to laboriously customize
+the GUI for each application that is to be steered, we make use of the same XML template, but now add descriptions
+of outputs from the simulation, inputs back to it, and what user interactions are permitted on the controlled elements.
+This XML ﬁle is then used to generate GUI and 3D controls for manipulation of parameters without requiring explicit
+knowledge of the underlying model. We therefore deﬁne two diﬀerent sections: one called Domain that follows the
+XDMF syntax but is less detailed and one called Interaction that follows the XML syntax of the ParaView server
+manager. With the ﬂexibility of XML parsers, we use the same XML template and combine both models, allowing us
+to deﬁne a framework suitable for any type of simulation and simple to use for a scientist who does not have a speciﬁc
+knowledge of the internal mechanism of the visualization application he is using.
+
+486
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+Figure 4: GADGET-2 online visualization and steering in the ICARUS plugin interface for ParaView - Disk particles are selected to be sent to the
+DSM and to the visualization nodes, whilst gravity values are modiﬁed on-the-ﬂy decreasing/increasing the attraction force between particles and
+therefore the acceleration.
+
+3.5. Performance
+In ﬁgure 5, we show the impact of the steering work-ﬂow overhead on the simulation compared to a simple
+monitoring. We use the same scheme as the one deﬁned above in the example with GADGET-2 [11]. To emphasize
+the impact of the steering calls alone on the simulation, we have used a quite small test case. The time measured is
+the time of one simulation time step, which is always the same in each test. We use here a small DSM composed of
+2 processes sharing the same node (and thus only one communication link). The simulation is located on another set
+of nodes and is sending data to the DSM or to the disk. As already discussed in section 2.3, the bottleneck created
+by the disk is clearly reduced when using the DSM as everything is sent across a network (in parallel when multiple
+links are active). When adding steering orders the simulation needs to switch the DSM communication every time
+step – depending on the use one wants to make – in order to check the presence of new commands and parameters.
+Here because we only try to read small size parameters, the overhead created by this interface is minimal. However
+when the simulation explicitly requests a wait for results of analysis before it resumes computations, or sends massive
+data, the dashed line represents an arbitrary amount of time which may be consumed by the steering end performing
+analysis on potentially large data and then returning control and new data back to the simulation.
+In the test used to generate ﬁgure 5 a small amount of data is being transferred and it can be seen that the overhead
+introduced by the steering calls is very small. For larger simulations where computation time will dominate, the
+overhead created by the steering update calls alone will have a negligible impact compared to the simulation time
+steps.
+4. Related Work
+As mentioned in the introduction Lorenz deﬁnes in [1] a steering interface based on a DSM architecture for grid
+computing and does not depend like our model on the underlying communication protocol and can only be applied to
+sequential jobs.
+Another steering framework called EPSN [12] deﬁnes a parallel high level steering model by manipulating and
+transferring objects such as parameters, grids, meshes and points. The distribution layer allows an automatic and
+eﬃcient redistribution of the data between the simulation and the monitoring application, which depends on the type
+of object that is to be sent. This library also makes use of XML ﬁles to describe the data and also provides task
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+
+
+487
+
+
+
+	
+	
+
+
+	
+
+
+
+	
+	
+
+
+
+
+
+
+
+
+
+
+
+Figure 5: Comparison of one GADGET-2 time step using the three diﬀerent schemes: disk, in-situ visualization and steering – in red the dash line
+represents the overhead that can be expected when a wait operation has been requested and the time depends on the complexity of the analysis
+desired.
+
+descriptions, which can be used to deﬁne synchronization points at which codes can wait for each other. We have
+borrowed heavily from the ideas in EPSN for the deﬁnition of interaction commands and exchangeable parameters,
+but found that synchronization points are not needed (so far) in our experiments since the work-ﬂow being used relies
+only on a single lock point where control of the ﬁle is passed back and forth. Should the steering develop to include
+additional pre-processing steps, automated re-meshing operations involving additional tools and more sophisticated
+analysis loops with intermediate (or converging) results, additional automatic synchronization may become necessary.
+The underlying communication protocol used within EPSN relies upon CORBA for manipulating and transferring
+objects, and is not well supported on non-standard Linux kernel environments. Whereas EPSN includes a mesh
+redistribution layer, which maps grids on N processes in one task to the M processes in the other, our system uses HDF5
+as the parallel redistribution layer, leaving decision on how to partition data to the developer’s original implementation.
+ParaView and VisIt [13], the two main parallel visualization applications both deﬁne in-situ visualization and
+limited steering capabilities. However the model that they use is more adapted to codes that require an analysis and
+a post-processing on the same nodes as the ones used for the computation (the analysis engines are linked at compile
+time to the simulation codes and so the same cores are used for both unlike our DSM or EPSN which are linked by
+communication and use diﬀerent nodes). The direct linking solution is particularly useful when the amount of data
+produced by the simulation is too big to be transmitted. In that case, the simulation must wait for the analysis and
+post-processing to be ﬁnished whereas in our case the simulation may carry on the computation while post-processing
+occurs independently. These libraries also require users to have a good knowledge of the visualization libraries and
+tools, which is rarely the case of scientists whose main working ﬁeld is not visualization. In ParaView, the interface
+is named co-processing as deﬁned in [14], one must make use of python scripts and trigger VTK calls to post-process
+data in the pipeline. In VisIt, using the libsim library, one must re-adapt his code so that pointers to function loops can
+be passed to the interface. Whilst this mechanism is basically the same for every code, it does require a re-modeling
+of the simulation code. The interface that we propose brings steering and in-situ visualization without breaking the
+existing IO layer. This layer requires, in most cases, a non-negligible amount of work but can be used with any
+applications that use HDF5 and not just visualization tools such as ParaView/VisIt.
+5. Conclusion and Future Work
+Our distributed shared memory driver allows users to remove the disk IO bottleneck by sending data across a
+network. Adding remote memory access capability better suits the original DSM concept and prepares the library
+for use on new hardware platforms which will take advantage of this feature. Based on this work, we are currently
+developing another extension dedicated to the Cray XE6 which will make use of a speciﬁc communication system
+called Gemini supporting RMA and thus ensuring strong scalability. This work on scalability, up to many thousands
+of cores, is now our main objective.
+
+488
+
+Jerome Soumagne et al. / Procedia Computer Science 4 (2011) 479–488
+
+In addition, the steering extension that has been implemented gives users an easy way of controlling their code
+if they already have a working knowledge of HDF5. The functions deﬁned in the API give both high level and ﬁne
+grained control of the steering work-ﬂow with visualization or analysis applications. Whilst this framework has been
+adapted for use with ParaView, any other parallel post-processing and steering oriented applications can make use
+of the library providing they use HDF5 for IO. Other simulation codes such as SPH-ﬂow [15] (an SPH simulation
+code) have recently been enhanced with steering commands and can be controlled from the ParaView interface –
+with ongoing developments allowing the direct manipulation/deformation of meshed bodies under user control whilst
+calculations continue around them. The use of ParaView as the front-end allows the construction of arbitrary postprocessing work-ﬂows for the manipulation of objects and calculation of parameters. When used with other postprocessing tools, users may make use of their own preexisting analysis software simply by connecting them to the
+simulation via the driver library. One immediate example application of this environment is the generation of restart
+data inside the DSM from the controlling application, so that simulations may be stopped, modiﬁed and restarted
+simply by reading from the DSM instead of disk.
+Acknowledgments
+This work is supported by the NextMuSE project receiving funding from the European Community’s Seventh
+Framework Programme (FP7/2007-2013) under grant agreement 225967.
+References
+[1] D. Lorenz, P. Buchholz, C. Uebing, W. Walkowiak, R. Wism¨uller, Steering of sequential jobs with a distributed shared memory based model
+for online steering, Future Gener. Comput. Syst. 26 (2010) 155–161. doi:10.1016/j.future.2009.05.016.
+[2] The HDF group, Hierarchical Data Format Version 5 (2000–2011).
+URL http://www.hdfgroup.org/HDF5
+[3] J. Soumagne, J. Biddiscombe, J. Clarke, An HDF5 MPI Virtual File Driver for Parallel In-situ Post-processing, in: R. Keller, E. Gabriel,
+M. Resch, J. Dongarra (Eds.), Recent Advances in the Message Passing Interface, Vol. 6305 of Lecture Notes in Computer Science, Springer
+Berlin / Heidelberg, 2010, pp. 62–71. doi:10.1007/978-3-642-15646-5 7.
+[4] M. Howison, Q. Koziol, D. Knaak, J. Mainzer, J. Shalf, Tuning HDF5 for Lustre File Systems, in: Workshop on Interfaces and Abstractions
+for Scientiﬁc Data Storage, 2010.
+[5] J. Liu, J. Wu, D. Panda, High Performance RDMA-Based MPI Implementation over InﬁniBand, International Journal of Parallel Programming
+32 (2004) 167–198. doi:10.1023/B:IJPP.0000029272.69895.c1.
+[6] W. Gropp, R. Thakur, Revealing the Performance of MPI RMA Implementations, in: F. Cappello, T. Herault, J. Dongarra (Eds.), Recent
+Advances in Parallel Virtual Machine and Message Passing Interface, Vol. 4757 of Lecture Notes in Computer Science, Springer Berlin /
+Heidelberg, 2007, pp. 272–280. doi:10.1007/978-3-540-75416-9 38.
+[7] A. Henderson, ParaView Guide, A Parallel Visualization Application, Kitware Inc., 2005.
+URL http://www.paraview.org
+[8] A. Cedilnik, B. Geveci, K. M. J. Ahrens, J. Favre, Remote Large Data Visualization in the Paraview Framework, in: B. Raﬃn, A. Heirich,
+L. P. Santos (Eds.), Eurographics Symposium on Parallel Graphics and Visualization, Eurographics Association, Braga, Portugal, 2006, pp.
+163–170. doi:10.2312/EGPGV/EGPGV06/163-170.
+[9] J. Soumagne, J. Biddiscombe, J. Clarke, In-situ Visualization and Analysis of SPH Data using a ParaView Plugin and a Distributed Shared
+Memory Interface, in: B. Rogers (Ed.), 5th International SPHERIC Workshop, 2010, pp. 186–193.
+[10] J. A. Clarke, E. R. Mark, Enhancements to the eXtensible Data Model and Format (XDMF), in: HPCMP-UGC ’07: Proceedings of the
+2007 DoD High Performance Computing Modernization Program Users Group Conference, IEEE Computer Society, Washington, DC, USA,
+2007, pp. 322–327. doi:10.1109/HPCMP-UGC.2007.30.
+[11] V. Springel, The cosmological simulation code GADGET-2, Monthly Notices of the Royal Astronomical Society 364 (2005) 1105–1134.
+doi:10.1111/j.1365-2966.2005.09655.x.
+[12] N. Richart, A. Esnard, O. Coulaud, Toward a Computational Steering Environment for Legacy Coupled Simulations, in: Parallel and Distributed Computing, 2007. ISPDC ’07. Sixth International Symposium on, 2007, p. 43. doi:10.1109/ISPDC.2007.55.
+[13] H. Childs, E. S. Brugger, K. S. Bonnell, J. S. Meredith, M. Miller, B. J. Whitlock, N. Max, A Contract-Based System for Large Data
+Visualization, in: Proceedings of IEEE Visualization 2005, 2005, pp. 190–198.
+[14] K. Moreland, N. Fabian, P. Marion, B. Geveci, Visualization on Supercomputing Platform Level II ASC Milestone (3537-1B) Results from
+Sandia, Tech. rep., Sandia National Laboratories, SAND 2010-6118 (September 2010).
+[15] P. Maruzewski, G. Oger, D. L. Touze, J. Biddiscombe, High performance computing 3D SPH model: Sphere impacting the water free surface,
+in: Proceedings of the 3rd SPHERIC, 2008.
+
+

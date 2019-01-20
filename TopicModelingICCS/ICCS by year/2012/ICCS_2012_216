@@ -1,0 +1,515 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 67 – 75
+
+International Conference on Computational Science, ICCS 2012
+
+Parallel LU Factorization on GPU cluster
+E. D’Azevedo1 , J. C. Hill2,∗
+Computer Science and Mathematics Division, Oak Ridge National Laboratory, Oak Ridge, TN 37831.
+
+Abstract
+This paper describes our progress in developing software for performing parallel LU factorization of a large dense
+matrix on a GPU cluster. Three approaches, with increasing software complexity, are considered: (i) a naive “thunking” approach that links the existing parallel ScaLAPACK software library with cuBLAS through a software emulation layer; (ii) a more intrusive magmaBLAS implementation integrated into the LU solver in the High-Performance
+Linpack software; and (iii) a left-looking out-of-core algorithm for solving problems that are larger than the available memory on GPU devices. Comparison of the performance gains versus the current ScaLAPACK PZGETRF are
+provided.
+Keywords: parallel dense solver, GPU
+
+1. Introduction
+General-purpose computation on Graphics Processing Units (GPGPUs), the use of many-core programmable
+graphics processors to accelerate computations, is a relatively new programming paradigm for high-performance
+computing applications. The attraction of using GPGPUs in large supercomputers are threefold: (i) Graphics Processing Units (GPUs) are a readily available commodity, even in consumer grade video cards, and relatively inexpensive;
+(ii) the GPU’s massively parallel architecture results in many more ﬂoating point operations per second (ﬂops) per
+dollar; and (iii) GPUs are signiﬁcantly more energy eﬃcient than their CPU counterparts. Only recently, however,
+have GPUs been integrated into the architecture of large supercomputers. For example, the world’s second fastest
+supercomputer at the National Supercomputing Center in Tianjin China3 uses Nvidia GPUs. The forthcoming Cray
+XK64 Titan Supercomputer 5 at the Oak Ridge Leadership Computing Facility (OLCF) at the Oak Ridge National
+Laboratory will use Nvidia Fermi GPUs and, when fully installed, is expected to achieve a peak performance in the
+10 to 20 petaﬂops range.
+∗ email:
+
+hilljc@ornl.gov
+Email addresses: dazevedoef@ornl.gov (E. D’Azevedo), hilljc@ornl.gov (J. C. Hill)
+URL: http://www.csm.ornl.gov/~hilljc (J. C. Hill)
+1 Computer Science and Mathematics Division, Oak Ridge National Laboratory
+2 National Center for Computational Science, Oak Ridge National Laboratory
+3 Top 10 supercomputers ranked in November 2011 at http://www.top500.org.
+4 Information on the Cray XK6 is available at http://www.cray.com/Products/XK6/XK6.aspx.
+5 Information on the Titan Supercomputer is available at http://www.olcf.ornl.gov/titan/.
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.008
+
+68
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+As a result of these emerging hybrid CPU/GPU architectures, many of the underlying numerical algorithms employed by HPC applications must be re-engineered to fully exploit all the available processing power. This paper
+describes our progress in developing a parallel LU factorization solver for dense matrices that takes advantage of
+GPU acceleration and is compatible with the PZGETRF LU factorization method in the ScaLAPACK library [1]. Parallel LU factorization is a key computational kernel in the fusion application AORSA2D [2, 3, 4] (All Orders Spectral
+Algorithm) developed within the Scientiﬁc Discovery through Advanced Computing (SciDAC) Numerical Computation of Wave Plasma-Interactions in Multi-dimensional Systems project6 . AORSA2D models the response of a high
+temperature plasma to radio-frequency (RF) waves in a tokamak fusion device. The RF, or electromagnetic, waves
+can be used to drive the current ﬂow, heat the plasma, and control the resulting instabilities in the plasma. AORSA2D
+requires the solution of a large N × N system of complex-valued linear equations. For problems of practical interest, the resolution of the mode conversion layer may require N > 100, 000. Thus the solution of these large, dense,
+complex-valued linear systems presents a major computational challenge in AORSA2D simulations.
+The solution of large, dense, complex-valued linear systems is not unique to fusion applications. Other applications, such as the solution of elliptic partial diﬀerential equations by the Boundary Element Method (BEM) and
+modeling of electromagnetic scattering oﬀ aircraft by the Boundary Integral Method (BIM), also require the solution
+of similar large dense matrices.
+The high cost of moving data across the PCI bus between the CPU and the GPU is the primary performance
+bottleneck on a hybrid CPU/GPU system. For small matrices that ﬁt entirely within the GPU memory footprint, this
+high cost of data movement may be mitigated by the increased ﬂop rate available on the GPU compared to the CPU.
+For problems of real practical interest, however, the memory storage required for the system generally exceeds the
+available GPU memory. An “out-of-core” approach, in which smaller submatrices are transferred to the GPU for
+computation and then the resulting factors are transferred back, must be explored. Prior serial out-of-core approaches
+have generally been studied for problems where the matrix size exceeds the available CPU memory and data must
+be transferred between the CPU and the disk. [5, 6] Similarly, parallel out-of-core linear algebra packages have been
+shown to achieve high performance in solving large problems [7, 8].
+In this work, we will present similar out-of-core algorithms for LU factorizations between the CPU and the GPU.
+In Section 2, we will describe several approaches for accelerating LU factorizations with GPUs for both in-core and
+out-of-core methods. The performance of these GPU-accelerated algorithms are compared to existing methods in in
+Section 3. Finally, we conclude with suggestions of approaches to adapting existing linear algebra algorithms to these
+emerging hybrid CPU/GPU architectures in Section 4.
+2. Approach
+We will base our GPU-acceleration approaches on two widely available software libraries that solve dense linear
+systems, ScaLAPACK [1] and High-Performance Linpack (HPL).7 We focus our eﬀorts on these libraries because
+(i) ScaLAPACK is widely used by many scientiﬁc application codes, and (ii) HPL is the comparison benchmark by
+which the world’s top 500 computers are ranked. We note that, as distributed, HPL solves a system of linear equations,
+but the LU factorization is not directly recovered. However, with a small modiﬁcation to keep the global pivot vector,
+the factorization can easily be recovered [9].
+In the following, we discuss three approaches for accelerating the LU factorizations in ScaLAPACK and HPL, in
+order of increasing software development complexity. First, we use the original Scalapack software library and replace
+the Basic Linear Algebra Subroutines (BLAS) library calls with Fortran-callable cuBLAS. Second, we use the Matrix
+Algebra on GPU and Multi-core Architecture (MAGMA) library [10] to accelerate the BLAS calls in HPL. Finally,
+we describe a fully out-of-core algorithm that minimizes data movement between the CPU and the GPU during the
+factorization.
+2.1. ScaLAPACK with Fortran-callable cuBLAS
+The CUDA Basic Linear Algebra Subroutines (cuBLAS) library8 is a GPU-accelerated version of the standard
+BLAS library distributed by NVIDIA. It supports linear algebra operations, such as matrix-matrix and matrix-vector
+6 Web
+
+site for Center for Simulation of Wave-Plasma Interactions (CSWPI) is http://www.scidac.gov/fusion/CSWPI.html.
+is available at www.netlib.org/benchmark/hpl/.
+8 cuBLAS is available at http://developer.nvidia.com/cublas/.
+7 HPL
+
+69
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+multiplication, for matrix data already present in the GPU device memory. The application developer is generally
+responsible for the data movement between the CPU and GPU.
+A software wrapper layer (also called “thunking”) emulates the standard Fortran BLAS library and, hidden from
+the application developer, allocates memory on the GPU, copies the data from the CPU to the GPU, performs the
+BLAS operations using cuBLAS, then copies the results back from the GPU to the CPU, and ﬁnally deallocates the
+GPU memory. The advantage of this approach is that no changes are required in the original application software and
+only minor changes are required in the linking step of compilation. The software emulation incurs a high overhead in
+data transfer between the CPU and the GPU, however performance improvements may be achieved for operations on
+large matrices where the computation time is signiﬁcantly greater than the time needed for data movement. Ultimately,
+though, the problem size is constrained by the amount of memory available on the GPU.
+2.2. HPL with MagmaBLAS
+The MAGMA library includes routines for LU factorization on a GPU, but the library is designed for GPU accelerators attached to a single machine. For practical systems of interest that cannot be stored in the memory of a
+single GPU, MAGMA is insuﬃcient.9 Similarly, the Parallel Linear Algebra for Scalable Multi-core Architectures
+(PLASMA) library10 is currently focused on a multi-threaded parallel linear solver running on a single homogeneous
+multicore shared-memory machine and is not available for a distributed memory environment.
+However, MAGMA provides a limited-functionality BLAS library that is optimized for NVIDIA GPUs. The
+advantage of the MAGMA library versus Fortran-callable cuBLAS is that an application developer can selectively
+implement the kernels that are most appropriate for the GPU. For example, matrix-matrix multiplies of suﬃcient
+size to mitigate the cost of the data movement would be most appropriate for the GPU, whereas small matrix-vector
+multiplies may not demonstrate any performance improvement.
+In this work, we modiﬁed the HPL to use MAGMA for all matrix-matrix multiplies. Note that in this case, no
+attempt was made to determine whether the size of the matrix was suﬃcient to mitigate the cost of the data movement.
+Further, there are memory limitations to this approach because MAGMA overallocates memory to achieve signiﬁcant
+performance gains.
+2.3. An Out-of-Core Factorization Based on ScaLAPACK
+Out-of-core factorization methods have been studied in the past in the context of inadequate CPU memory [7, 8]
+relative to the storage required for the large dense matrix. The ideas developed in these contexts can be applied to
+this case. In this work, we adapt the “left-looking” out-of-core algorithm for LU factorization described in [7] with a
+minor change that seeks to minimize the data transfer between the CPU host and the GPU device memory. Central to
+this algorithm is the necessity for an in-core parallel LU factorization method that operates primarily on the GPU with
+minimal communication between GPUs. We will describe this in-core method with minimal communication between
+the GPUs, and then describe the out-of-core method.
+2.3.1. In-core Factorization
+ScaLAPACK PZGETRF uses a “right-looking” algorithm for LU factorization; we use a similar approach for factorization of a distributed matrix residing in device memory. Since the CPU host does not have direct access to data
+on the GPU, data on the GPU device must be transferred to temporary buﬀers on the CPU to be available for remote
+communication by the Message Passing Interface (MPI) library. This transfer is the primary bottleneck and must be
+minimized to achieve any performance gain using the GPU.
+Consider a block partitioning of a matrix A
+A=
+
+A11
+A21
+
+A12
+A22
+
+,
+
+where A11 is a k × k square matrix. There are several steps for the factorization of matrix A.
+9 Some
+10 The
+
+multi-GPU functionality is already available with apparent plans for further support in the future.
+PLASMA software is available at http://www.icl.cs.utk.edu/plasma/index.html.
+
+(1)
+
+70
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+1. Assuming the ﬁrst k columns have already been factored, apply
+P1
+
+A11
+A21
+
+=
+
+A˜ 11
+A˜ 21
+
+=
+
+L11
+L21
+
+(U11 )
+
+,
+
+(2)
+
+where A˜ 11 = L11 U11 , A˜ 21 = L21 U11 , and P1 is the permutation matrix. In our case, k = MB was chosen to be the
+matrix block size and the factorization of this narrow panel is performed on the CPU host using ScaLAPACK
+PZGETRF .
+2. Apply the permutation matrix to the unmodiﬁed submatrix
+A˜ 12
+A˜ 22
+
+= P1
+
+A12
+A22
+
+.
+
+(3)
+
+This permutation operation was accomplished by copying individual rows from the GPU device to the CPU
+host and using PBLAS PZSWAP to exchange the rows, and then again copying from the CPU host back to the
+GPU device.
+3. Compute U12 by solving the triangular system
+L11 U12 = A˜ 12 ,
+
+or
+
+−1 ˜
+U12 ← L11
+A12 .
+
+(4)
+
+This operation can either be computed by copying data for A12 to the CPU host and using PZTRSM in PBLAS,
+or by broadcasting L11 to all processors holding part of A12 and computing using cublasZtrsm on the GPU.
+4. Perform the rank-k update to A˜ 22 on the GPU
+A˜ 22 ← A˜ 22 − L21 U12 .
+
+(5)
+
+The majority of the work in the factorization is in the rank-k updating of A˜ 22 . The operation requires broadcasting L21 across the processor columns and U12 down the processor rows. This rank-k update can then be
+performed using cublasZgemm on the GPU without further communication.
+5. Recursively factor the remaining submatrix
+P2 A˜ 22 = L22 U22 .
+
+(6)
+
+6. Finally, apply the P2 permutation to L21 .
+Note that a “left-looking” algorithm results if k = N − MB (A12 is size MB × MB ) and the ﬁrst wide column panel is
+factored in the same recursive manner. A right-looking variant gives good load balancing and higher opportunities for
+parallelism [11]. Other works [12, 13, 14] have shown that a left-looking variant generates less data transfer compared
+to the right-looking variant.
+2.3.2. Out-of-core Factorization
+The out-of-core factorization method is similar to that of the in-core algorithm described in Section 2.3.1. The
+primary variant is that we assume that the portion of the matrix A belonging to a CPU processor is too large to be fully
+held in-core to the GPU. Thus, some data movement of the matrix between the CPU and the GPU will be necessary,
+but must be minimized to achieve good performance.
+The out-of-core computation proceeds using two column panels. A wide panel Y (in GPU device memory)
+accumulates the updates from previously computed factors and a narrow panel X holds the previously computed
+factors (see Figure 1). The computation steps are essentially similar to the in-core factorization and are described
+below.
+1. Similar to the in-core factorization, application of the permutation matrix P is performed by the CPU host using
+PZSWAP in PBLAS. The permuted submatrix (A˜ 12 and A˜ 22 ) are copied into panel Y on the GPU device. Parts of
+the previously computed factors in L11 and L21 are moved from the CPU into panel X on the GPU.
+2. The triangular solve will exceed the memory limitations of the GPU and thus requires copying block rows from
+panel Y back to the CPU host. The solve is performed using PZTRSM in PBLAS.
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+Figure 1: Out-of-core computation requires 2 column panels.
+3. The rank-k update to the lower part of panel Y is performed as a matrix-matrix multiplication. Similar to the
+in-core factorization, this requires broadcasting panel X across processor columns and broadcasting part of U12
+in panel Y down processor rows. Then the rank-k update can be performed using cublasZgemm on the GPU
+without further communication.
+4. After all previous updates are performed, the LU factorization of the lower rectangular part of panel Y (A˜ 22 ) is
+computed using the all in-core algorithm described in Section 2.3.1.
+5. The LU factors in panel Y are then copied from the GPU device back to CPU host.
+6. The ﬁnal application of pivoting to the previously computed factors in L21 is performed by the CPU host.
+The choice of the width of panel Y will aﬀect the performance of the algorithm, but is also governed by the amount
+of GPU device memory available. If we choose the width of panel Y to be (N/K) columns such that the total size of
+panel Y is N × (N/K), or where the entire matrix is K times the width of panel Y, the factorization of the ﬁrst Y-panel
+requires no previous factors. However, subsequent factorization of the k-th panel requires the transfer of the previous
+k − 1 Y-panels. The volume of data transferred is thus (1 + 2 + . . . + (K − 1)) ∗ (N ∗ (N/K)) = (K − 1)/2 ∗ N 2 . Thus, the
+choice of K should be as small as possible to make the width of panel Y as large as possible. This will minimize the
+amount of data transferred between the GPU and the CPU. However, the width (N/K) will be limited by the amount
+of device memory available on the GPU.
+3. Numerical Results
+Numerical experiments were performed on a small CPU/GPU cluster at the OLCF. Fifteen compute nodes were
+available, each consisting of a dual socket, 6 core AMD 2.6 GHz CPU with 32 GBytes of memory, and two NVidia
+M2050 GPUs. Each M2050 has 4.3 GBytes of device memory and the transfer rate between the device memory and
+pinned memory on the CPU is about 5 GBytes/s. Despite having two GPUs per node available, we focused on using
+only a single GPU per node.
+3.1. ScaLAPACK with Fortran-callable cuBLAS
+Figure 2 shows the performance of ScaLAPACK PZGETRF for factoring a complex*16 matrix with N = 40, 000
+on 180 MPI tasks spawned over ﬁfteen nodes (twelve tasks per node, or one task associated with each CPU core). The
+results suggest that matrix block sizes of MB = 64 or MB = 128 may be reasonable choices. Choosing a block size that
+is too small will hamper performance in serial dense matrix operations; however, choosing too large of a block size
+will reduce the parallelism inherent in the algorithm. For these block sizes, each core attains a performance of over
+6 GFlops (or about 72 GFlops per node).
+Figure 2 also shows the performance of ScaLAPACK PZGETRF using the Fortran “thunking” wrapper to CUBLAS
+on a complex*16 matrix with N = 40, 000. This problem is suﬃciently small to meet the memory limitations of
+
+71
+
+72
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+the GPU (1.7 GBytes required versus 4.3 GBytes available); however, the performance gains attained by using the
+GPU do not mitigate the cost of the data movement. The best performance is approximately 22 GFlops per node,
+signiﬁcantly less than that attained with a purely CPU implementation.
+Figure 2: Comparison of the performance of ScaLAPACK PZGETRF with ScaLAPACK PZGETRF accelerated with
+Fortran-callable cuBLAS for diﬀerent block sizes MB for N = 40, 000 on a 12 × 15 processor grid.
+1000
+
+ScaLAPACK-cpu
+ScaLAPACK-cublas
+
+Gflops
+
+800
+600
+400
+200
+0
+32
+
+64
+
+128
+
+256
+
+512
+
+Block Size
+
+3.2. HPL with MagmaBLAS
+Figure 3 compares the performance of the modiﬁed LU factorization in HPL with an accelerated version based
+on magmaBLAS for a complex*16 matrix with N = 40, 000 on a 12 × 15 processor grid. As demonstrated for
+ScaLAPACK-cuBLAS, the cost of the data movement exceeds the performance improvement attained from the GPU,
+so the overall performance of the LU factorization is slowed by moving the data to the GPU. However, as shown in
+Figure 4, in the case of a smaller matrix with N = 25, 000 on a 3 × 5 processor grid in which every cluster node
+executes 1 CPU task and 1 GPU task, the GPU-accelerated version outperforms the CPU-only version by a factor of
+6.
+Figure 3: Comparison of the performance of HPL LU factorization without and with GPU-acceleration from
+MagmaBLAS for diﬀerent block sizes MB for N = 40, 000 on a 12 × 15 processor grid.
+HPL-cpu
+
+1000
+
+HPL-Magma
+
+Gflops
+
+800
+600
+400
+200
+0
+32
+
+64
+
+128
+
+256
+
+512
+
+Block Size
+
+3.3. Out-of-core Factorization
+Table 1 shows the performance data for our complex*16 out-of-core solver for N = 90, 000 on 15 nodes. To
+simplify the alignment and data transfer between the CPU host and the GPU device, the MB block size for the in-core
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+Gflops
+
+Figure 4: Comparison of the performance of HPL LU factorization without and with GPU-acceleration from
+MagmaBLAS for diﬀerent block sizes MB for N = 25, 000 on a 3 × 5 processor grid.
+600
+
+HPL-cpu
+
+500
+
+HPL-Magma
+
+400
+300
+200
+100
+0
+32
+
+64
+
+128
+
+256
+
+512
+
+Block Size
+
+Table 1: Comparison of the performance of ScaLAPACK PZGETRF with an out-of-core factorization method implemented on both the CPU and GPU for N = 90, 000 on 180 MPI processes.
+ScaLAPACK Out-of-Core
+MB processor grid
+GFLOPs
+GFLOPs
+64
+12 × 15
+1103
+1813
+12 × 15
+1104
+1633
+128
+15 × 12
+1043
+1714
+64
+15 × 12
+885
+1554
+128
+
+ScaLAPACK matrix is set to be the same block size as the matrix on the GPU. Each MPI task was set to allocate about
+256 MBytes of the GPU device memory for panel Y (or each node using about 3 GBytes of the GPU device memory).
+For simplicity, we have not initially considered explicitly using multiple streams or asynchronous data transfers. The
+out-of-core factorization achieves approximately 120 GFlops per node with MB = 64 on a 12 × 15 processor grid for
+N = 90, 000 versus 72 GFlops per node for the non-accelerated implementation. While the performance speed-up
+of approximately 50% is not dramatic, the real utility of this algorithm is that it is capable of solving problems that
+exceed the total GPU device memory.
+In comparison, Table 2 shows the performance of LU factorization by the routine magma zgetrf gpu of the
+MAGMA library, as displayed by the MAGMA tester testing zgetrf gpu on a single GPU device. The 258 GFlops
+performance of the MAGMA LU factorization is the upper bound of the performance for the parallel out-of-core
+solver, since the out-of-core parallel solver must also perform data movement and MPI communication. Moreover,
+some of the operations such as the factorization of narrow panels are performed using PBLAS and ScaLAPACK on
+the slower CPUs.
+We believe there is still room for performance optimization and tuning, such as individual tuning of matrix block
+sizes for ScaLAPACK on CPU and GPU devices, exploiting asynchronous data transfer operations, and using lookahead computation of the next panel to reduce the time spent on the critical path for LU factorization. From another
+perspective, the GPU’s 120 GFlops per node performance is roughly 20 times the performance of a single CPU core.
+This suggests that pursuing eﬃcient new algorithms implemented on GPUs oﬀers a potential advantage in both cost
+and power eﬃciency.
+4. Future Work
+In summary, we have described an initial development of three approaches for the parallel factorization of dense
+matrices on a GPU cluster in preparation for hybrid CPU/GPU architectures.
+
+73
+
+74
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+
+Table 2: Performance of magma zgetrf gpu LU factorization on square complex*16 matrices residing in GPU
+device memory.
+N
+CPU GFlops/s MAGMA GFlops/s
+960
+5.3
+63.0
+6.7
+141.6
+1920
+6.9
+194.3
+3072
+7.6
+203.8
+4032
+4992
+7.7
+228.9
+7.7
+245.4
+5952
+7.8
+258.6
+7104
+
+1. The naive “thunking” approach of linking with a software emulation layer for BLAS operations requires very
+little software development eﬀort. However, depending on the problem being solved, little-to-no performance
+gains may be achieved.
+2. Carefully choosing the BLAS operations that will be moved to the GPU and utilizing an optimized GPU BLAS
+library such as magmaBLAS may yield some performance improvements with a small investment in software
+development time. However, the cost of the data movement between the CPU and the GPU may exceed any
+gain if care is not taken.
+3. Matrices larger than available GPU device memory can be solved by using a left-looking out-of-core algorithm.
+This algorithm requires the most investment in software re-engineering, but ultimately may provide the most
+utility as it is able to solve problems where the system exceeds the available GPU memory.
+Future optimizations that may be considered include further separate tuning of matrix block size for ScaLAPACK
+on CPU and GPU devices, exploiting asynchronous operations in data transfer, and implementing look-ahead computation of the next panel in the out-of-core algorithm to reduce time on the critical path for LU factorization.
+5. Acknowledgments
+This Research was sponsored by the Applied Mathematical Sciences subprogram of the Oﬃce of Energy Research,
+U. S. Department of Energy. This research used resources of the Center for Computational Sciences at the Oak Ridge
+National Laboratory, which is supported by the Oﬃce of Science of the U. S. Department of Energy under Contract
+No. DE-AC05-00OR22725.
+References
+[1] L. S. Blackford, J. Choi, A. Cleary, E. D’Azevedo, J. Demmel, I. Dhillon, J. Dongarra, S. Hammarling, G. Henry, A. Petitet, K. Stanley,
+D. Walker, R. C. Whaley, ScaLAPACK Users’ Guide, Society for Industrial and Applied Mathematics, Philadelphia, 1997, the software and
+users’ guide are available at http://www.netlib.org/scalapack.
+[2] E. F. Jaeger, L. A. Berry, E. F. D’Azevedo, D. B. Batchelor, M. D. Carter, K. F. White, H. Weitzner, Advances in full-wave modeling of radio
+frequency heated multidimensional plasma, Physics of Plasmas 9 (5) (2002) 1873–1881.
+[3] E. F. Jaeger, L. A. Berry, J. R. Myra, D. B. Batchelor, E. F. D’Azevedo, P. T. Bonoli, C. K. Philips, D. N. Smithe, D. A. D’Ippolito, M. D.
+Carter, R. J. Dumont, J. C. Wright, R. W. Harvey, Sheared poloidal ﬂow driven by mode conversion in tokamak plasmas, Phys. Rev. Lett.
+90 (19).
+[4] E. F. Jaeger, R. W. Harvey, L. A. Berry, J. R. Myra, R. J. Dumont, C. K. Philips, D. N. Smithe, R. F. Barrett, D. B. Batchelor, P. T. Bonoli,
+M. D. Carter, E. F. D’Azevedo, D. A. D’Ippolito, R. D. Moore, J. C. Wright, Global-wave solutions with self-consistent velocity distributions
+in ion cyclotron heated plasmas, Nuclear Fusion 46 (7) (2006) S397–S408.
+[5] S. Toledo, F. Gustavson, The design and implementation of SOLAR, a portable library for scalable out-of-core linear algebra computations,
+in: IOPADS Fourth Annual Workshop on Parallel and Distributed I/O, ACM Press, 1996, pp. 28–40.
+[6] S. Toledo, A Survey of Out-of-Core Algorithms in Numerical Linear Algebra, Vol. 50 of DIMACS Series in Discrete Mathematics and
+Theoretical Computer Science, American Mathematical Society, 1999.
+[7] E. D’Azevedo, J. Dongarra, The design and implementation of the parallel out-of-core ScaLAPACK LU, QR, and Cholesky factorization
+routines, Concurrency: Practice and Experience 12 (2000) 1481–1493.
+
+E. DíAzevedo and J. C. Hill / Procedia Computer Science 9 (2012) 67 – 75
+[8] B. C. Gunter, W. Reiley, R. A. van de Geijn, Implementation of out-of-core Cholesky and QR factorizations with POOCLAPACK, Tech. Rep.
+CS-TR-00-21, University of Texas at Austin, Austin, TX, USA (2000).
+[9] R. F. Barrett, T. H. F. Chan, E. F. D’Azevedo, E. F. Jaeger, K. Wong, R. Y. Wong, Complex version of high performance computing LINPACK
+benchmark (HPL), Concurrency and Computation: Practice and Experience 22 (5) (2010) 537–587.
+[10] S. Tomov, R. Nath, H. Ltaief, J. Dongarra, Dense linear algebra solvers for multicore with GPU accelerators, in: Proc of IPDPS’10, Atlanta,
+GA, 2010, the MAGMA software is available at http://icl.cs.utk.edu/magma/index.html.
+[11] J. Choi, J. J. Dongarra, L. S. Ostrouchov, A. P. Petitet, D. W. Walker, R. C. Whaley, The design and implementation of the ScaLAPACK LU,
+QR, and Cholesky factorization routines, Scientiﬁc Programming 5 (1996) 173–184.
+[12] J. Dongarra, S. Hammarling, D. Walker, Key concepts for parallel out-of-core LU factorization, Computers and Mathematics with Applications 35 (7) (1998) 13–31.
+[13] K. Klimkowski, R. A. van de Geijn, Anatomy of a parallel out-of-core dense linear solver, in: Proceedings of the International Conference
+on Parallel Processing, 1995.
+[14] S. Toledo, Locality of reference in LU decomposition with partial pivoting, Tech. Rep. RC20344, IBM T.J. Watson Research Center, Yorktown
+Heights, NY (1996).
+
+75
+
+

@@ -1,0 +1,778 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 270 – 279
+
+International Conference on Computational Science, ICCS 2013
+
+EcoTM: Conﬂict-Aware Economical
+Unbounded Hardware Transactional Memory
+Saˇsa Tomi´ca , Ege Akpinara , Adrian Crist´ala , Osman Unsala , Mateo Valeroa
+a BSC-Microsoft
+
+Research Center
+
+Abstract
+Transactional Memory (TM) is a promising paradigm for parallel programming. TM allows a thread to make a series of memory
+accesses as a single, atomic, transaction, while avoiding deadlocks, livelocks, and other problems commonly associated with
+lock-based programming. In this paper we explore Hardware support for TM (HTM). In particular, we explore how HTM can
+eﬃciently support transactions of nearly unlimited size.
+For this purpose we propose EcoTM, an economical unbounded HTM that improves the eﬃciency of conﬂict detection
+between very large transactions by activating conﬂict-detection logic only for potentially-conﬂicting locations: shared and
+speculatively modiﬁed. EcoTM detects the potentially-conﬂicting locations automatically, without any program annotations.
+We evaluate EcoTM performance by comparing it with ideal-lazy HTM, unbounded eager HTM with perfect signatures,
+and LogTM-SE. Our evaluations show that EcoTM has similar performance as the ideal-lazy HTM, 8.8% better than the eagerperfect HTM, and over 35.7% better than LogTM-SE, on the average.
+Keywords: Hardware; Transactional Memory; HTM; TM; Parallel; Concurrent; High-Performance
+
+1. Introduction
+Writing thread-safe, eﬃcient, deadlock-, livelock-, and data-race-free libraries and programs is still diﬃcult,
+in spite of having multi-core processors on almost every desktop today. Hardware Transactional Memory (HTM)
+is often seen as a solution for writing eﬃcient multi-threaded applications, since HTM does not have many of the
+the problems typically faced while writing lock-based libraries and programs. In this paper, we propose an HTM
+mechanism that can eﬃciently detect conﬂicts between large or small transactions.
+Whereas commonly proposed HTMs are eﬃcient, they typically work with transactions up to a few cache lines
+large (i.e. best-eﬀort HTMs). To support larger transactions, some HTM proposals tend to either use per-cache-line
+metadata for tracking read-sets and write-sets, or they use Bloom-ﬁlter signatures to approximate a transaction’s
+read-set and write-set in a ﬁnite-size data structure. Neither of these approaches is ideal. Per-cache-line metadata
+introduces substantial overheads in the caches, and storing this metadata for the lines evicted from private caches can
+be diﬃcult. On the other hand, Bloom-ﬁlter signatures can introduce false-conﬂicts between unrelated transactions,
+by giving a false-positive hit in the signature, i.e., by indicating that a signature has the address even though the
+address has not been inserted. Furthermore, studies have shown that the false-conﬂict rates seen in practice are
+substantially higher than those anticipated by theoretical studies.
+∗ Saˇsa Tomi´c. Tel.: +34-9340-11841
+E-mail address: sasa.tomic@bsc.es.
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.190
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+The biggest problem with the current HTMs is that they treat all cache lines in almost the same way – a cache
+line may create a conﬂict at any time. The consequence of such approach is that an HTM needs to track an
+impressively large number of cache lines. However, the truth is that most of the cache lines never create a conﬂict.
+Many of the lines are either shared between transactions but read-only, or thread-local, meaning that only one
+transactions uses the line at a time.
+A location creates a conﬂict (is conﬂicting) if a location is written by a transaction, while the same location is
+read or written by other transactions. Other types of locations are considered non-conﬂicting, for example: (1) a
+locations read by multiple transactions, (2) a location that is exclusive to (or owned by) a single transaction (may be
+read and written), or (3) a location that changes the owner transaction over time. The mechanism classiﬁes memory
+locations dynamically, and automatically, and transparently to the programmer, based on the run-time accesses. In
+addition, even if a conﬂict occurs on a previously non-conﬂicting location, the conﬂicting transactions are handled
+correctly.
+This paper presents a novel and economical method to identify the non-conﬂicting cache lines, in order to
+improve the eﬃciency of conﬂict detection in HTMs. The key idea is to dynamically (during run-time) identify
+and separate the uncommon locations that create genuine conﬂicts between transactions, and to manage them by a
+small hardware table that detects conﬂicts precisely. Conversely, the most common (non-conﬂicting) locations are
+managed in a distributed manner, with only 2 bits of associated metadata.
+This paper makes the following contributions:
+• Presents EcoTM (EconomicalTM), and a novel generic protocol for conﬂict detection that can be applied
+to HTMs with eager, lazy, and eager-lazy conﬂict management. The protocol adds only 2 bits metadata per
+cache line, whereas a naive unbounded lazy HTM adds 64 bits per line in a 32-core system, and a state-ofthe-art unbounded HTM, TokenTM, adds 16 bits per line.
+• EcoTM conﬂict-detection protocol avoids the false conﬂicts introduced by many other unbounded HTMs
+that employ Bloom-ﬁlter signatures. False conﬂicts in these signatures are much more likely with larger
+transactions, which we anticipate in future TM workloads.
+• An evaluation indicates that EcoTM performs signiﬁcantly better than the state-of-the-art HTMs. It performs
+∼ 35.7% faster on average than LogTM-SE, a Bloom-ﬁlter state-of-the-art unbounded HTM, and ∼ 8.8%
+faster than TokenTM over all benchmark conﬁgurations. The performance advantage is more signiﬁcant over
+conﬁgurations with larger transactions.
+The paper is organized as follows. In Section 2, we present the mechanism that automatically and dynamically
+identiﬁes and separates the conﬂicting from non-conﬂicting lines. In Section 3, we present the basic EcoTM
+architecture, which leverages the separation of conﬂicting and non-conﬂicting lines to provide a well-performing
+unbounded eager-lazy HTM. In Section 4, we describe how EcoTM handles the overﬂowed transactions and how
+the mechanism can be extended to the commodity CMP systems with limited directories (e.g., a directory only in
+L2 caches). In Section 5, we evaluate the performance of EcoTM and analyze its performance sensitivity. Finally,
+we discuss the related work in Section 6 and conclude in Section 7.
+2. Detecting Conﬂicting Cache Lines
+In this Section, we will ﬁrst describe a naive implementation of an unbounded lazy HTM, that has good performance but high overheads. We will then present our work on eliminating these overheads.
+In this paper, we consider a Chip-MultiProcessor (CMP) system with coherent caches and a memory directory.
+On such system, a naive implementation of unbounded lazy HTM can be straightforward and easy to understand.
+Each transactional (speculative) read and write is marked in the directory, in the special conﬂict-detection metadata.
+In the metadata, a (transactional) read of a processor core is marked by 1 bit, and a write by 1 other bit. This means
+that in a 32-core system, the transactional metadata of 64-bit is associated with each cache line.
+In such system, a conﬂict is detected when a write bit of a core is set while other cores also have a write or read
+bit set for the same line. For example, a transaction (Tx) 1 has a write bit set, and after Tx 2 gets the read bit set; in
+this case, a conﬂict is detected between Tx 1 and Tx 2.
+Although not complex and therefore being relatively easy to verify and implement in real hardware, such system
+would require a prohibitively large amount of additional metadata. In addition, that amount of metadata grows
+
+271
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+Maximum number of
+conflicting lines
+
+272
+500
+400
+300
+
+200
+100
+0
+2
+
+4
+
+8 16 32 2
+
+genome: max 800
+txnal
+
+4
+
+8 16 32 2
+
+4
+
+8 16 32 2
+
+4
+
+8 16 32
+
+intruder: max 600 labyrinth: max 1,000- yada: max 1,000txnal
+15,000 txnal
+5,000 txnal
+
+Maximum number of transactional lines in STAMP applications
+
+Fig. 1: Conﬂicting cache lines are very few (vertical axis), typically only 10s of lines, whereas there are many lines touched by transactions
+at some points of execution (horizontal axis), often more than 1000s of lines. Both the number of transactional and conﬂicting lines grow
+with more parallel threads, but the conﬂicting lines are always signiﬁcantly fewer than transactional lines. The results do not show the total
+(cumulative), but the maximum number of lines at any point of execution. 51 other conﬁgurations have almost no conﬂicting lines and we do
+not show them here.
+
+linearly with the number of processor cores, making the approach unsuitable for future processor generations that
+may have 100s or 1000s of cores.
+To reduce the amount of metadata, we observed and characterized the behavior of the transactional applications
+in a common TM benchmark suite – STAMP [1]. The result of our ﬁndings is shown in Figure 1. We measured
+the number of conﬂicting and non-conﬂicting cache lines at every transaction commit and abort, and in the ﬁgure
+we plot the maximum number found in each workload. On horizontal axis we plot the number of all transactional
+(conﬂicting plus non-conﬂicting) lines, and on the vertical axis only the conﬂicting lines. In 51 out of 60 workloads,
+there are less than 30 conﬂicting lines at any instance of time, and we completely exclude them from the ﬁgure.
+From this ﬁgure, we can conclude that an HTM only needs to handle a modest number of conﬂicting lines, although
+many existing HTM proposals treat equally as many as 15,000 transactional lines.
+To detect when a cache line becomes conﬂicting, each line tracks the history of transactional accesses, and
+encodes the state of the history it in the small metadata. A line may be in one of the following states: (1) nontransactional, or a transactional and one of the following (2) read-only, (3) read-write but exclusive, or (4) readwrite and shared (i.e. conﬂicting). The four history states can be encoded with metadata of only two bits, named
+Quick Conﬂict Filter (QCF). This metadata is associated with each cache line (block) in the memory hierarchy. It is
+physically stored and updated similarly to the way that parity (ECC) bits, i.e. distributed, with regular cache blocks
+(lines).
+Each cache line starts as non-transactional. On a transactional access, a line becomes (1) shared and read-only
+or (2) exclusive. The line will change to the read-only state if it is shared and read by several transactions. If no
+other transaction uses the line, i.e. if the line is accessed and used only by (this) one transaction, a line will become
+exclusive. On further transactional accesses, a line in the read-only or exclusive state may transition to the
+conflicting state – which indicates that a line is shared between transactions and read-write. A line returns to
+the initial non-transactional state, i.e. the history of transactional accesses (the metadata) is cleared, only after a
+regular (non-transactional) write to the line. A regular write also aborts all transactions that may have accessed the
+line, so it is completely safe to clear the metadata at this point.
+A line in conﬂicting state needs to be treated diﬀerently from regular lines – we need to analyze the common
+line metadata (a list/bit-vector of line sharers) and to construct the extended conﬂict-detection metadata, that can be
+used to precisely detect conﬂicts between transactions. This construction of extended conﬂict-detection metadata,
+and the conﬂict-detection itself are explained later in this paper, in Section 3.1.
+3. EcoTM Architecture
+In this Section, we outline the baseline CMP architecture for EcoTM, the extensions to the processor cores,
+caches, and the directory.
+Figure 2 presents an overview of the EcoTM architecture. EcoTM includes the common HTM hardware: (1)
+register ﬁle snapshot, (2) speculative R/W ﬂags in L1 cache lines, and (3) TX state. A snapshot of register ﬁle is
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+Fig. 2: Generic Chip Multi-Processor (CMP) architecture used as the baseline for EcoTM. The processor cores locally manage non-conﬂicting
+lines. The directory banks, using the QCF metadata, separate the common non-conﬂicting from the uncommon conﬂicting lines. Conﬂicting
+lines are managed by a dedicated hardware logic, reducing the conﬂict detection traﬃc on the interconnects.
+
+Fig. 3: Conﬂict-management hardware in EcoTM. CC precisely detects conﬂicts, and marks them in Conﬂict map.
+
+made when a transaction begins, and restored on abort. The SR (Speculative-Read) and SW (Speculative-Write)
+ﬂags mark speculative accesses, and avoid repeating conﬂict detection for the same line in the same transaction.
+Finally, the TX state marks whether a transactions is active or not, and whether it is overﬂowed (does not ﬁt into
+L1 caches) or not.
+EcoTM-speciﬁc extensions are: (1) the Quick Conﬂict Filter (QCF) metadata, (2) the optional QCF log, and (3)
+the conﬂict-management hardware logic in the directory. As explained in the previous section, QCF metadata and its
+associated hardware logic are handled in directory banks. The QCF logic detects when a line becomes conﬂicting,
+completely avoiding conﬂict detection for the majority of lines, which are non-conﬂicting. When a line used by a
+transaction is evicted from a private cache, a transaction becomes overﬂowed and future conﬂict detection much be
+done conservatively, assuming that a transaction accessed the line, which may create false conﬂicts. To prevent this,
+we can add QCF log to EcoTM. Using this structure, we can revert the QCF changes when transaction terminates,
+achieving precise conﬂict detection once again. The mechanism is explained in more details in Section 4.2.
+For better eﬃciency and scalability, EcoTM performs the most common operations on-core, without communicating with the directory or with other cores. For example, the following operations are core-local: (1) L1 cache
+reads, and (2) L1 cache writes, if a line is in exclusive mode. In other cases, EcoTM informs the directory of the
+access. When the access message reaches the directory, the QCF checks for the common case, when the access is
+non-conﬂicting, and in that case immediately responds to the core. If QCF detects the uncommon case when the
+access creates a conﬂict, the request is forwarded to the conﬂict-management logic, named Conﬂict Check (CC).
+While previous eager-lazy HTMs detect conﬂicts in a distributed manner [2, 3], this implies sending multi-cast
+messages for conﬂict detection. Instead, by using a dedicated conﬂict-management hardware logic at a directory
+level, we replace multi-cast with more eﬃcient core-to-directory point-to-point messages. In our evaluations, we
+have not observed contention on the CC logic, since it handles only the uncommon conﬂicting lines.
+The hardware logic for conﬂict-management is illustrated in Figure 3. CC is a ﬁxed- and limited-size table that
+handles only conﬂicting lines. A CC entry for each core stores: 1 bit to mark a Speculative Read (SR) and 1 to mark
+a Speculative Write (SW). On a 32-core processor, each CC entry has 64 bits. Since a CC entry has a complete list
+of speculative accesses, EcoTM detects conﬂicts the same way a naive lazy HTM would, as we explained earlier,
+in Section 2. A speculative write bit marks a conﬂict with all other line accessors with SR or SW bit set. After CC
+detects a conﬂict, it is marked in the conﬂict map.
+Conﬂict map is a (N − 1)2 bit-matrix (N is the number of processor cores) of conﬂicts between transactions on
+these cores. Each transaction has one bit-vector that represents the conﬂicts with other transactions. For example,
+
+273
+
+274
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+Fig. 4: Execution of conﬂicting bounded transactions. The conﬂicts are precisely detected in CC, and marked in the conﬂict map. On commit,
+the CC entry clears the conﬂicting state of the QCF entry.
+
+if Tx 1 entry has set bit 2, this means that if Tx 1 wants to commit, it needs to abort the Tx 2.
+3.1. Managing conﬂicting transactions
+When a line does not have an entry in the CC table, an entry is initialized from (1) the directory information and
+(2) by querying line sharers. A CC entry may be invalidated at any time, for example, because of limited capacity of
+the CC table, or when a line stops being conﬂicting. A CC entry for the same line can be reconstructed (initialized)
+later, if necessary.
+To initialize an entry, CC queries the line sharers (processor cores). If a sharer has overﬂowed transaction, it
+is assumed to have the line in both read and write set. Although this might create false conﬂicts, our evaluations
+indicate that it rarely happens, even with small L1 caches. If the common case, when a transaction is not overﬂowed,
+the entry value is initialized with the values SR and SW bits in the L1 cache of each sharer.
+A transaction with conﬂicts needs to request a commit permission from the conﬂict map, i.e., such transaction
+cannot commit core-locally. The conﬂict map has simple functionality and responds fast and in constant time. On
+a commit request, the conﬂict map checks if the transaction is valid. If it is valid, the map requests aborts from all
+conﬂicting transactions of the committing transaction. The abort request is a “ﬁre-and-forget”, since it cannot be
+rejected. The map therefore immediately sends an acknowledgement to the committing core, and ﬂash-clears all
+bits related to the committing transaction.
+After commit, L1 cache write backs the committed data lazily, when it: (1) evicts the line (due to the capacity
+constraint), (2) reduces the access mode to shared or invalid (for example, other core requests line access), or
+(3) speculatively modiﬁes the line in a new transaction. Functionally, commit behaves similarly to the memory
+fence [4, 5, 6]. That is, memory operations may be reordered before the commit, but not across the commit
+operation. The processor core stalls writing-back (retiring) instructions [7] that follow the commit, until it gets a
+response from the directory.
+If a transaction with conﬂicts aborts, has to inform the conﬂict-management hardware. The conﬂict map clears
+all bits related to the aborted transaction, which prevents false (unnecessary) aborts of transactions that might
+execute later on the same core.
+Example of conﬂict management. Figure 4 illustrates an example of execution of conﬂicting transactions
+Tx1 and Tx2. In step 4, the QCF marks the line as conﬂicting when Tx1 speculatively writes to the line. A CC
+entry is initialized for the line, and a conﬂict from Tx1 to Tx2 is marked in the conﬂict map. A second conﬂict is
+in step 5, when Tx2 also speculatively writes to the line. The CC entry is updated, and a conﬂict from Tx2 to Tx1
+is marked. When Tx1 commits in step 6, the conﬂict map aborts Tx2, and ﬂash-clears the Tx1 and Tx2 columns in
+CC. Since the CC detects that the line is no longer conﬂicting, it updates the QCF state of the line to NonTX. From
+step 7 to step 10, the Tx2 executes a non-conﬂicting transaction.
+4. Precise Conﬂict Detection with Limited Hardware Resources
+In this Section, we describe the execution of overﬂowed transactions, i.e. the transactions that do not ﬁt private
+caches, and the EcoTM support for the commodity Chip-MultiProcessor (CMP) systems, which typically have
+limited directory size – i.e. with a directory only at the level of shared L2 caches.
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+4.1. Conﬂict management for overﬂowed transactions
+To ensure that conﬂicts are detected even after a transactional line is evicted the L1 cache, the directory should
+keep the L1 cache in the list of line sharers. We apply the technique known as “silent evictions” to the transactional
+lines [8]. Silent evictions are currently employed by common MESI protocols to reduce the bandwidth overhead,
+where shared and exclusive lines do not trigger directory messages and updates.
+After silent eviction, future queries on whether the line is in the L1 cache are conservatively answered positively,
+possibly introducing some false conﬂicts. For the TShared QCF state we assume that all sharers read the line, and
+for the TExclusive or TConﬂicting, we assume that the sharers both read and modiﬁed the line. However, if the
+line has an entry in the CC table, the correct information is preserved even upon the eviction from the L1 cache. In
+Section 5 we sensitivity of EcoTM performance to the number of entries in CC.
+4.2. Logging QCF changes
+QCF state converges to the correct state over time, as future execution re-checks sharers and updates the list of
+speculative accesses. However, when a line is evicted from a sharer, stale QCF states TExclusive or TConﬂicting
+may indicate a conﬂict of the overﬂowed sharer with other active transactions. A line entry in CC has the precise
+sharing information (even for overﬂowed lines), but CC entries may be evicted.
+As a solution, we may use an undo-log of QCF, that will store only overﬂowed lines in a TExclusive and
+TConﬂicting state. The hardware appends to the log, and a software handler clears the log when overﬂowed
+transaction terminates, and resizes the log if necessary. The logs are eﬃcient, they store only the line addresses (not
+the data) of overﬂowed lines, they are organized as stacks and are stored in a cacheable thread-private memory.
+Note that the QCF undo-logs are more eﬃcient than common LogTM [8] logs, since: (1) EcoTM logs only
+the overﬂowed lines, and (2) EcoTM does not log any data. By not logging data, EcoTM adds only 8 bytes per
+entry, instead of 64+8 bytes in LogTM log. EcoTM does not have to log data because it stores speculative values
+in another structure, overﬂow buﬀer, explained in Section 4.3.
+4.3. Data management for overﬂowed transactions
+Although EcoTM supports any commonly used mechanism for handling overﬂowed data, we here assume the
+use of a software-supported Overﬂow Buﬀer (OB), as proposed by Shriraman et al. [3]. The OB is organized as
+a simple per-thread hash table in virtual memory, and accessed by the OB controller that sits on the private cache
+miss path. On private cache misses, the request is redirected to the OB and handled in hardware. The commit-time
+write-backs are performed by the OB controller, and occur in parallel with other useful work by the processor. In
+Section 5 we show that the OB latency does not signiﬁcantly aﬀect the execution time.
+4.4. Support for context switching and interrupts
+Whereas an abort may be a costly operation in eager HTMs, EcoTM has fast aborts. While future workloads
+might call for a diﬀerent approach, enabling migration of long-running transactions is likely to be extremely complex, particularly in systems combining the use of operating systems and virtual machine monitors. The execution
+of an aborted transaction from scratch is likely to be faster from many proposed transaction migration mechanisms,
+particularly for current workloads where transactions execute less than 10 microseconds, and the interrupts are
+typically generated every 10 milliseconds.
+Despite the current design decision, EcoTM can easily be extended to fully support context switches and transaction migration. One approach could be to save the full speculative state before context switch in software, and to
+re-applying it after the transaction migrates to a diﬀerent processor core.
+4.5. EcoTM on Systems with Limited Directory Size
+Modern Chip-MultiProcessors (CMPs) have limited directory size, e.g. a directory only in L2 or L3 caches.
+Because of this, the history of speculative accesses could be lost once a line is evicted from the top-level cache.
+This could cause future speculative accesses to the line to miss real conﬂicts. To prevent this, the QCF metadata (2
+bits per line) can be saved to physical memory together with an evicted cache block, and simply restored when the
+block is requested again by the directory.
+The conﬂict-detection metadata can be preserved either in the ECC area, as has been proposed by TokenTM [9],
+or by increasing the row size in DRAM chips – something already done between diﬀerent DRAM generations.
+
+275
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+276
+
+Fig. 5: A breakdown of the total execution time in STAMP applications, for 1-32 processor cores
+
+5. Evaluation
+We evaluated EcoTM using a full-system simulator M5, that we use to simulate a system with Alpha architecture [10]. We replaced the default bus-based cache coherency with a MESI directory-based cache coherency.
+We simulate in-order cores with a ﬁxed 1 CPI for non-memory related instructions. The memory operations take
+1 cycle plus a variable latency returned by the simulator of the memory subsystem. An overview of the simulated
+hardware is given in Table 1. For the workload, we use STAMP, the most commonly used TM benchmark suite for
+this type of evaluation.
+For fair comparison, we on the same simulator infrastructure we also implemented (i) an eager HTM with
+Bloom-ﬁlter signatures, LogTM-SE [11], (ii) an unbounded eager HTM with perfect signatures, and (iii) an ideallazy HTM. We ported the LogTM-SE code to M5, from its original publicly available source code (implemented
+with Simics and GEMS), and veriﬁed that the performance is comparable with the original.
+Processor
+L1 Cache
+L2 Cache
+Directory
+Memory
+Interconnect
+CC table
+Conﬂict map
+Log latency
+
+1-32 cores, single-issue, single-threaded, 1 CPI
+32KB private, 2-way, 64-byte blocks, 2 cycles, write-back
+8MB banked, 8-way, 64-byte blocks, 32 cycles, write-back
+Bit-vector of sharers, 8-cycle access latency
+4GB, 500 cycles latency
+2D Mesh, 4-cycle latency
+256 directly mapped entries (unless otherwise noted)
+40-cycle access latency
+8-cycle latency for removing one entry
+Table 1: The hardware conﬁguration
+
+Execution time breakdown. In Figure 5, we show the breakdown of the total execution time for EcoTM
+executing all STAMP applications over 1–32 processor cores. The total execution time is split into four categories:
+(1) Thread start/end – the time spent in thread synchronization during entering and leaving parallel sections, (2)
+Quiescent – the time spent in quiescent state, which usually occurs after being unable to enter a barrier after several
+successive retries, (3) Useful – the time spent outside of transactions, and in transactional code that successfully
+commits, and (4) Wasted – the time spent in transactional code that is rolled back due to abort.
+The breakdown clearly indicates several parallelization problems with some STAMP applications. First, Bayes
+has unbalanced work between threads, since it uses a non-deterministic work queues. Because of that, we cannot
+make conclusions based on its execution time. Kmeans and Vacation also spend some time in thread synchronization, but not as much as Bayes. Second, Genome and SSCA2 rely on barriers for synchronizing thread progress,
+and the barrier synchronization takes more than 50% of the time with 32-core execution. We denote this time as
+quiescent. Barriers limit the scalability of these two applications. Since these applications have small transactions,
+and as can be seen in Figure 5, that the amount of wasted work (transaction aborts) is minimal in these applications,
+the reason for bad scalability is not in HTMs. Finally, wasted work becomes a signiﬁcant factor for applications
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+25
+
+20
+18
+16
+14
+12
+10
+8
+6
+4
+2
+0
+
+Vacation_hi
+Ideal Lazy HTM
+
+20
+
+EcoTM
+15
+
+LogTM-SE
+Eager-perfect HTM
+
+10
+5
+0
+1
+
+2
+
+6
+
+4
+
+8
+
+16
+
+4
+3
+2
+1
+0
+1
+
+2
+
+25
+
+4
+
+8
+
+16
+
+4
+3
+2
+1
+0
+1
+
+2
+
+1
+
+2
+
+6
+
+Kmeans-low
+
+4
+
+8
+
+16
+
+4
+
+8
+
+16
+
+0
+
+0
+1
+
+2
+
+4
+
+8
+
+16
+
+32
+
+16
+
+32
+
+2
+
+8
+
+16
+
+32
+
+4
+
+Yada
+
+10
+8
+6
+
+2
+1
+
+8
+
+12
+
+3
+
+5
+
+1
+
+14
+
+SSCA2
+
+4
+
+Kmeans-hi
+
+32
+
+4
+
+10
+
+2
+
+18
+16
+14
+12
+10
+8
+6
+4
+2
+0
+
+5
+
+15
+
+1
+
+32
+
+Intruder
+
+32
+
+20
+
+Bayes
+
+5
+
+10
+9
+8
+7
+6
+5
+4
+3
+2
+1
+0
+
+Genome
+
+6
+
+Vacation_low
+
+32
+
+5
+
+277
+
+4
+2
+0
+1
+
+2
+
+4
+
+8
+
+16
+
+32
+
+1
+
+2
+
+4
+
+8
+
+16
+
+32
+
+Fig. 6: The speedup of the STAMP TM benchmark suite applications normalized to the sequential execution (no threads or locks). The horizontal
+axis represents the number of processor cores. The overﬂow buﬀer latency is ﬁxed to 100 cycles for EcoTM, and 0 cycles for the ideal-lazy
+HTM.
+
+with medium and high contention – Bayes, Intruder, Labyrinth, and Yada, especially in highly-concurrent executions. Labyrinth particularly depends on early release to get any scalability over one [1], so we exclude it from the
+rest of evaluation since LogTM-SE does not support early release.
+Performance and Scalability. Figure 6 presents an evaluation of speedup over the sequential execution of
+the same application (that does not use threads or locks). Our evaluation includes four HTMs. Ideal-lazy HTM
+has no latencies, i.e. all transactional operations are instant and without overheads. Speculative reads and writes
+are simple cache reads, and no transactional messages are sent during execution. When transaction commits, it
+magically detects and resolve conﬂicts with other transactions and then publishes the speculative changes. LogTMSE is conﬁgured with exponential backoﬀ and 2-Kbit Bloom ﬁlters with two parallel hash functions, as the authors
+proposed. Although more advanced signatures were proposed, they have an increased cost of veriﬁcation and
+area/energy consumption. Instead of comparing with each of them, we evaluate perfect or ideal signatures in
+LogTM-SE, denoted as Eager-perfect HTM (and comparable with TokenTM performance).
+In our evaluation, eager and lazy HTMs have comparable performance with small transactions. However, lazy
+HTMs perform better if: (1) the contention is high, or (2) the transactions are large, since they are better able to
+extract the small amount of parallelism available in such executions. As a consequence, EcoTM performs better
+than LogTM-SE and eager-perfect HTM. The geometric mean of the performance improvement of EcoTM for all
+STAMP applications is 35.7% over LogTM-SE with realistic Bloom ﬁlter signatures, and 8.8% over eager-perfect
+HTM. Over all STAMP conﬁgurations, EcoTM is within 7.1% of the ideal-lazy HTM execution time.
+Yada has very large transactions and moderate contention, which makes it a good application for evaluating
+the deﬁciencies of unbounded HTMs. With 32 threads, EcoTM is only 11.4% slower than ideal-lazy HTM, and
+has 10.66x speedup over sequential execution. With the same conﬁguration, eager-perfect HTMs is 2x slower than
+the ideal-lazy HTM. Similar performance diﬀerence between eager and lazy HTMs for this application was also
+reported by the STAMP authors.
+EcoTM overheads. EcoTM overheads come from: (1) logging overﬂowed cache lines, and (2) conﬂict management. We evaluate these overheads by comparing the performance with a no-overhead, ideal implementation. EcoTM overall stands very close to the ideal-lazy HTM. The biggest diﬀerence is observed for the highlyconﬂicting Intruder, where the 32-core ideal-lazy HTM is approximately 40% faster than EcoTM, clearly indicating
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+2
+1.8
+1.6
+1.4
+1.2
+1
+0.8
+0.6
+0.4
+0.2
+0
+
+2.64
+256x1
+
+128x1
+
+1-32 core
+
+2 core
+
+all STAMP
+except yada
+
+64x1
+
+4 core
+
+16x1
+
+8 core
+
+8x1
+
+16 core
+
+32 core
+
+Normalized Execution Time
+
+Normalized execution time
+
+278
+
+1.2
+1
+0.8
+0.6
+0.4
+
+10 cycles/access
+100 cycles/access
+1000 cycles/access
+
+0.2
+0
+
+yada
+Application and the number of processor cores
+
+(a) Even small CC table works well in almost all conﬁgurations. The execution time is normalized to the unbounded fullyassociative CC table. Even a directly mapped 16-entry (1-way)
+CC table provides good results for current workloads.
+
+(b) The latency of the Overﬂow Buﬀer (OB) barely aﬀects the
+execution time. The execution time is normalized to the conﬁguration with a 0 cycles per overﬂow buﬀer access. We evaluated
+32-core EcoTM-Wr-Rd.
+
+Fig. 7: Performance sensitivity of the EcoTM to the CC table conﬁguration and the OB latency.
+
+the conﬂict management overheads. For other applications, EcoTM is within 5.2% from the ideal-lazy HTM, indicating that the logging overhead is not signiﬁcant.
+Larger CC table (1) reduces the number of false conﬂicts introduced by overﬂowed transactions, and (2)
+reduces the traﬃc on the interconnects. This improves the execution time and reduces the power consumption.
+However, larger CC table has higher static power dissipation. Figure 7a shows the sensitivity of the EcoTM performance to the CC conﬁguration. Except Yada, all STAMP applications have the same performance even with only 8
+directly mapped CC entries. Although Yada needs 256 directly mapped CC entries, such hardware structure is still
+very simple and power-eﬃcient.
+Overﬂow buﬀer (OB) latency has very little impact on EcoTM performance, as can be seen in Figure 7b. We
+vary the latency of the OB from 0 to 10, 100, and 1000 cycles per OB access. The execution time is normalized
+to the 0-cycle OB. Although Bayes apparently beneﬁts from a slightly slower OB, its non-deterministic execution
+prevents us from drawing conclusions from this particular application. The rest of the workloads have almost the
+same performance for all evaluated OB latencies.
+6. Related Work
+A common approach to support large transaction is to reduce the amount required metadata – however, some
+proposals achieve this by restricting the conﬂict-management policies. For example, TokenTM [9] and LiteTM [12]
+reduce the amount of metadata to 16 bits (TokenTM) and slightly over 2 bits per cache line (LiteTM), but they
+support only less performing eager conﬂict management, and LiteTM even invokes software routines to reconstruct
+some metadata. EcoTM demonstrates that it is possible to have only 2 bits of metadata per cache line, while
+supporting better performing lazy and eager-lazy conﬂict-management policies.
+Another common approach for supporting large transactions is to detect conﬂicts using Bloom-ﬁlter signatures,
+e.g. as in LogTM-SE [11]. FlexTM [3] also uses Bloom ﬁlters to accelerate STM in hardware, and supports
+eager-lazy conﬂict management. DynTM [13] uses the Bloom ﬁlters only the evicted lines, and supports eagerlazy management for regular and eager-only for overﬂowed transactions. However, the use of Bloom ﬁlters hurts
+the performance with large transactions, while the eager conﬂict resolution does not perform well under medium
+and high contention workloads. However, we consider Bloom ﬁlters to be inappropriate for the tentative future
+transactional workloads, since the Bloom-ﬁlters need to have an appropriate size for a given number of entries,
+approximately 10 bits per entry. If the size of the Bloom ﬁlter is not appropriate, signature is more likely to falsely
+detect conﬂicts, which result in the aborts of actually non-conﬂicting transactions. With future potentially very
+large transactions, Bloom-ﬁlters are much more likely to falsely detect conﬂicts, and in this case the unnecessary
+aborts signiﬁcantly reduce performance.
+Some recent proposals focus on optimizing Bloom-ﬁlter signatures. For example, Quislant et al. [14] propose
+mapping nearby memory locations to the same bits of a signature, whereas Yen et al. [15] improve hash functions,
+and allow a programmer to deﬁne potentially conﬂicting locations, and insert only these locations into the signature.
+
+Saša Tomicʹ et al. / Procedia Computer Science 18 (2013) 270 – 279
+
+In contrast with these proposals, EcoTM provides an automatic mechanism that does not need any eﬀort from a
+programmer, and that will perform well with any future TM workload, even for extremely large transactions, for as
+long as the transactions have few real conﬂicts, which is a fairly realistic expectation.
+7. Conclusions
+In this paper we presented EcoTM, an unbounded-HTM system that provides precise conﬂict detection, while
+it uses a minimal amount of conﬂict-detection metadata. EcoTM achieves this by distinguishing the uncommon
+conﬂicting from the common non-conﬂicting cache lines automatically, without requiring any annotations from the
+programmer, and dynamically, during program execution. EcoTM’s base hardware mechanisms support all current
+conﬂict management strategies: eager, lazy, and eager-lazy. This gives EcoTM both a performance advantage and
+better cost eﬀectiveness over the alternative unbounded-HTM proposals. We compared the performance of EcoTM
+with LogTM-SE, a state-of-the-art unbounded HTM proposal, eager-perfect and ideal-lazy HTMs. EcoTM needs
+less metadata, and provides better performance than eager unbounded HTMs.
+A conﬂict-detection mechanism other than using the Bloom-ﬁlter signatures will have an important advantage
+for future TM workloads, which are likely to have much larger transactions from the existing synthetic TM benchmarks.
+References
+[1] C. Cao Minh, J. Chung, C. Kozyrakis, K. Olukotun, STAMP: Stanford transactional applications for multi-processing, in: IISWC ’08:
+Proceedings of The IEEE International Symposium on Workload Characterization, 2008. doi:10.1109/IISWC.2008.4636089.
+[2] S. Tomi´c, C. Perfumo, C. Kulkarni, A. Armejach, A. Cristal, O. Unsal, T. Harris, M. Valero, EazyHTM: Eager-lazy hardware transactional
+memory, in: MICRO 42: Proceedings of the 42nd Annual IEEE/ACM International Symposium on Microarchitecture, ACM, New York,
+NY, USA, 2009, pp. 145–155. doi:10.1145/1669112.1669132.
+[3] A. Shriraman, S. Dwarkadas, M. L. Scott, Flexible decoupled transactional memory support, in: Proceedings of the 35th Annual International Symposium on Computer Architecture, 2008.
+[4] C. Intel, Intel IA-64 Architecture Software Developer’s Manual, Itanium Processor Microarchitecture Reference for Software Optimization.
+[5] C. May, E. Silha, R. Simpson, H. Warren, The PowerPC Architecture: A speciﬁcation for a new family of RISC processors, Morgan
+Kaufmann Publishers Inc. San Francisco, CA, USA, 1994.
+[6] D. Weaver, T. Germond, The SPARC architecture manual, Citeseer, 1994.
+[7] J. E. Smith, A. R. Pleszkun, Implementation of precise interrupts in pipelined processors, in: Proceedings of the 12th annual international symposium on Computer architecture, ISCA ’85, IEEE Computer Society Press, Los Alamitos, CA, USA, 1985, pp. 36–44.
+doi:10.1145/327010.327125.
+[8] K. E. Moore, J. Bobba, M. J. Moravan, M. D. Hill, D. A. Wood, LogTM: Log-based transactional memory, in: In proceedings of the
+HPCA-12, 2006, pp. 254–265.
+[9] J. Bobba, N. Goyal, M. D. Hill, M. M. Swift, D. A. Wood, TokenTM: Eﬃcient execution of large transactions with hardware transactional
+memory, in: Proceedings of the 35th Annual International Symposium on Computer Architecture, 2008. doi:10.1109/ISCA.2008.24.
+[10] N. Binkert, R. Dreslinski, L. Hsu, K. Lim, A. Saidi, S. Reinhardt, The M5 simulator: Modeling networked systems, IEEE Micro 26 (4)
+(2006) 52–60. doi:10.1109/MM.2006.82.
+[11] L. Yen, J. Bobba, M. M. Marty, K. E. Moore, H. Volos, M. D. Hill, M. M. Swift, D. A. Wood, LogTM-SE: Decoupling hardware
+transactional memory from caches, in: HPCA ’07: Proc. 13th International Symposium on High-Performance Computer Architecture,
+2007. doi:10.1109/HPCA.2007.346204.
+[12] S. Ali Raza Jafri, M. Thottethodi, T. N. Vijaykumar, LiteTM: Reducing transactional state overhead, in: Proceedings of the 17th IEEE
+International Symposium on High-Performance Computer Architecture (HPCA-17), 2010.
+[13] M. Lupon, G. Magklis, A. Gonz´alez, A dynamically adaptable hardware transactional memory, in: MICRO 43: Proceedings of the 43nd
+Annual IEEE/ACM International Symposium on Microarchitecture, 2010.
+[14] R. Quislant, E. Gutierrez, O. Plata, E. L. Zapata, Improving signatures by locality exploitation for transactional memory, in: Proceedings
+of the 2009 18th International Conference on Parallel Architectures and Compilation Techniques, IEEE Computer Society, Washington,
+DC, USA, 2009, pp. 303–312. doi:10.1109/PACT.2009.25.
+URL http://portal.acm.org/citation.cfm?id=1636712.1637769
+[15] L. Yen, S. C. Draper, M. D. Hill, Notary: Hardware techniques to enhance signatures, in: MICRO ’08: Proceedings
+of the 2008 41st IEEE/ACM International Symposium on Microarchitecture, IEEE Computer Society, 2008, pp. 234–245.
+doi:10.1109/MICRO.2008.4771794.
+
+279
+
+

@@ -1,0 +1,565 @@
+Computational Modeling of Human Head Conductivity
+Adnan Salman1 , Sergei Turovets1 , Allen Malony1 , Jeff Eriksen2 , and Don Tucker2
+1
+
+NeuroInformatics Center, 5219 University of Oregon, Eugene, OR 97403, USA
+malony@cs.uoregon.edu
+2
+Electrical Geodesic, Inc., 1600 Millrace Dr, Eugene, OR 97403, USA
+dtucker@egi.com
+
+Abstract. The computational environment for estimation of unknown regional
+electrical conductivities of the human head, based on realistic geometry from segmented MRI up to 2563 resolution, is described. A finite difference alternating direction implicit (ADI) algorithm, parallelized using OpenMP, is used to solve the
+forward problem describing the electrical field distribution throughout the head
+given known electrical sources. A simplex search in the multi-dimensional parameter space of tissue conductivities is conducted in parallel using a distributed
+system of heterogeneous computational resources. The theoretical and computational formulation of the problem is presented. Results from test studies are provided, comparing retrieved conductivities to known solutions from simulation.
+Performance statistics are also given showing both the scaling of the forward
+problem and the performance dynamics of the distributed search.
+
+1
+
+Introduction
+
+Tomographic techniques determine unknown complex coefficients in PDEs governing the physics of the particular experimental modality. Such problems are typically
+non-linear and ill-poised. The first step in solving such an inverse problem is to find a
+numerical method to solve the direct (forward) problem. When the physical model is
+three-dimensional and geometrically complex, the forward solution can be difficult to
+construct and compute. The second stage involves a search across a multi-dimensional
+parameter space of unknown model properties. The search employs the forward problem with chosen parameter estimates and a function that determines the error of the
+forward calculation with an empirically measured result. As the error residuals of local inverse searches are minimized, the global search determines convergence to final
+property estimates based on the robustness of parameter space sampling.
+Fundamental problems in neuroscience involving experimental modalities like electroencephalography (EEG) and magnetoencephalograpy (MEG) are naturally expressed
+as tomographic imaging problems. The difficult problems of source localization and
+impedance imaging require modeling and simulating the associated bioelectric fields.
+Forward calculations are necessary in the computational formulation of these problems.
+Until recently, most practical research in this field has opted for analytical or semianalytical models of a human head in the forward calculations [1, 2]. This is in contrast
+V.S. Sunderam et al. (Eds.): ICCS 2005, LNCS 3514, pp. 631–638, 2005.
+c Springer-Verlag Berlin Heidelberg 2005
+
+632
+
+A. Salman et al.
+
+to approaches that use realistic 3D head geometry for purposes of significantly improving the accuracy of the forward and inverse solutions. To do so, however, requires that
+the geometric information be available from MRI or CT scans. With such image data,
+the tissues of the head can be better segmented and more accurately represented in the
+computational model. Unfortunately, these realistic modeling techniques have intrinsic
+computational complexities that grow as the image resolution increases.
+In source localization we are interested in finding the electrical source generators for
+the potentials that might be measured by EEG electrodes on the scalp surface. Here, the
+inverse search is looking for those sources (their position and amplitude) on the cortex
+surface whose forward solution most accurately describes the electrical potentials observed. The computational formulation of the source localization problem assumes the
+forward calculation is without error. However, this assumption in turn assumes the conductivity values of the modeled head tissues are known. In general, for any individual,
+they are not known. Thus, the impedance imaging problem is actually a predecessor
+problem to source localization. In impedance imaging, the inverse search finds those
+tissue impedance values whose forward solution best matches measured scalp potentials when experimental stimuli are applied. In either problem, source localization or
+impedance imaging, solving the inverse search usually involves the large number of
+runs of the forward problem. Therefore, computational methods for the forward problem, which are stable, fast and eligible for parallelization, as well as intelligent strategies
+and techniques for multi-parameter search, are of paramount importance.
+To deal with complex geometries, PDE solvers use finite element (FE) or finite difference (FD) methods [3, 4]. Usually, for the geometry with the given complexity level,
+the FE methods are more economical in terms of the number of unknowns (the size of
+the stiffness matrix A, is smaller, as homogeneous segments do not need a dense mesh)
+and resulting computational cost. However, the FE mesh generation for a 3D, highly
+heterogeneous subject with irregular boundaries (e.g., the human brain) is a difficult
+task. At the same time, the FD method with a regular cubed grid is generally the easiest method to code and implement. It is often chosen over FE methods for simplicity
+and the fact that MRI/CT segmentation map is also based on a cubed lattice of nodes.
+Many anatomical details (e.g., olfactory perforations and internal auditory meatus) or
+structural defects in case of trauma (e.g., skull cracks and punctures) can be included
+as the computational load is based on the number of elements and not on the specifics
+of tissues differentiation. Thus, the model geometry accuracy can be the same as the
+resolution of MRI scans (e.g., 1 × 1 × 1mm).
+In the present study we adopt a model based on FD methods and construct a distributed and parallel simulation environment for conductivity optimization through inverse simplex search. FE simulation is used to solve for relatively simple phantom geometries that we then apply as "gold standards" for validation.
+
+2
+
+Mathematical Description of the Problem
+
+The relevant frequency spectrum in EEG and MEG is typically below 1kHz, and
+most studies deal with frequencies between 0.1 and 100Hz. Therefore, the physics
+of EEG/MEG can be well described by the quasi-static approximation of Maxwell’s
+
+Computational Modeling of Human Head Conductivity
+
+633
+
+equations, the Poisson equation. The electrical forward problem can be stated as follows: given the positions and magnitudes of current sources, as well as geometry and
+electrical conductivity of the head volume Ω calculate the distribution of the electrical
+potential on the surface of the head (scalp) ΓΩ . Mathematically, it means solving the
+linear Poisson equation [1]:
+∇ · σ(x, y, z)∇φ(x, y, z) = S,
+
+(1)
+
+in Ω with no-flux Neumann boundary conditions on the scalp:
+σ(∇φ) · n = 0,
+
+(2)
+
+on ΓΩ . Here σ = σij (x, y, z) is an inhomogeneous tensor of the head tissues conductivity and S is the source current. Having computed potentials φ(x, y, z) and current
+densities J = −σ(∇φ), the magnetic field B can be found through the Biot-Savart law.
+We do not consider anisotropy or capacitance effects (the latter because the frequencies
+of interest are too small), but they can be included in a straightforward manner. (Eq.(1)
+becomes complex-valued, and complex admittivity should be used.)
+We have built a finite difference forward problem solver for Eq. (1) and (2) based
+on the multi-component alternating directions implicit (ADI) algorithm [7, 8]. It is a
+generalization of the classic ADI algorithm as described by Hielscher et al [6], but
+with improved stability in 3D (the multi-component FD ADI scheme is unconditionally stable in 3D for any value of the time step [8]). The algorithm has been extended to
+accommodate anisotropic tissues parameters and sources. To describe the electrical conductivity in the heterogeneous biological media within arbitrary geometry, the method
+of the embedded boundaries has been used. Here an object of interest is embedded into
+a cubic computational domain with extremely low conductivity values in the external
+complimentary regions. This effectively guarantees there are no current flows out of the
+physical area (the Neuman boundary conditions, Eq.(2), is naturally satisfied). The idea
+of the iterative ADI method is to find the solution of Eq. (1) and (2) as a steady state
+of the appropriate evolution problem. At every iteration step the spatial operator is split
+into the sum of three 1D operators, which are evaluated alternatively at each sub-step.
+For example, the difference equations in x direction is given as [8]
+− 13 (φni + φnj + φnk )
+φn+1
+i
++ δx (φn+1
+) + δy (φni ) + δz (φni ) = S,
+i
+τ
+
+(3)
+
+where τ is a time step and δx,y,z is a notation for the appropriate 1D spatial difference
+operator (for the problems with variable coefficients it is approximated on a “staggered”
+mesh). Such a scheme is accurate to O(τ 2 ) + O(∆x2 ). In contrast with the classic ADI
+method, the multi-component ADI uses the regularization (averaging) for evaluation of
+the variable at the previous instant of time.
+Parallelization of the ADI algorithm is straightforward, as it consists of nests of
+independent loops over “bars” of voxels for solving the effective 1D problem (Eq. (3))
+at each iteration. These loops can be easily unrolled in a shared memory multiprocessor
+environment. It is worth noting, that the ADI algorithm can be also easily adapted for
+solving PDEs describing other tomographic modalities. In particular, we have used it in
+
+634
+
+A. Salman et al.
+
+other related studies, for example , in simulation of photon migration (diffusion ) in a
+human head in near-infrared spectroscopy of brain injuries and hematomas.
+The inverse problem for the electrical imaging modality has the general tomographic
+structure. From the assumed distribution of the head tissue conductivities, σij , and the
+given injection current configuration, S, it is possible to predict the set of potential
+measurement values, φp , given a forward model F (Eq. (1), (2)), as the nonlinear
+functional [5, 6]:
+φp = F (σij (x, y, z)).
+
+(4)
+
+Then an appropriate objective function is defined, which describes the difference
+between the measured, V , and predicted data, φp , and a search for the global minimum
+is undertaken using advanced nonlinear optimization algorithms. In this paper, we used
+the simple least square error norm:
+1/2
+
+N
+
+(φpi
+
+E=
+
+2
+
+− Vi )
+
+,
+
+(5)
+
+i=1
+
+where N is a total number of the measuring electrodes. To solve the nonlinear optimization problem in Eq.(5) , we employed the downhill simplex method of Nelder and
+Mead as implemented by Press et al[3]. In the strictest sense, this means finding the
+conductivity at each node of the discrete mesh. In simplified models with the constrains
+imposed by the segmented MRI data, one needs to know only the average regional
+conductivities of a few tissues, for example, scalp, skull, cerebrospinal fluid (CSF) and
+brain, which significantly reduces the demensionality of the parameter space in the inverse search, as well as the number of iterations in converging to a local minimum. To
+avoid the local minima, we used a statistical approach. The inverse procedure was repeated for hundreds sets of conductivity guesses from appropriate fisiological intervals,
+and then the solutions closest to the global minimum solutions were selected using the
+simple critirea E < Ethreshold .
+
+3
+
+Computational Design
+
+The solution approach maps to a hierarchical computational design that can benefit
+both from parallel parametric search and parallel forward calculations. Fig. 1 gives
+a schematic view of the approach we applied in a distributed environment of parallel computing clusters. The master controller is responsible for launching new inverse
+problems with guesses of conductivity values. Upon completion, the inverse solvers
+return conductivity solutions and error results to the master. Each inverse solver runs
+on a compute server. Given N compute servers, N inverse solves can be simultaneously active, each generating forward problems that can run in parallel, depending on
+the number of processors available. The system design allows the number of compute
+servers and the number of processors per server to be decided prior to execution, thus
+trading off inverse search parallelism versus forward problem speedup.
+At the University of Oregon, we have access to a computational systems environment consisting of four multiprocessor clusters. Clusters Clust1, Clust2, and Clust3 are
+
+Computational Modeling of Human Head Conductivity
+
+635
+
+Fig. 1. Schematic view of the parallel computational system
+
+8-processor IBM p655 machines and cluster Clust4 is a 16-processor IBM p690 machine. All machines are shared-memory multiprocessors running the Linux operating
+system. The clusters are connected by a high-speed gigabit Ethernet network. In our
+experiments below, we treated each machine as a separate compute server running one
+inverse solver. The forward problem was parallelized using OpenMP and run on eight
+(Clust1-3) and sixteen (Clust4) processors. The master controller can run on any networked machine in the environment. In our study, the master controller ran on Clust2.
+
+4
+
+Computational Results
+
+The forward solver was tested and validated against a 4-shell spherical phantom, and
+low (64×64×44) and high (256×256×176) resolution human MRI data. For comparison purposes, the MRI data where segmented into only four tissue types and their values
+were set to those in the spherical model (cl. Table 1). When we computed potentials at
+standard locations for the 129 electrodes configuration montage on the spherical phantom and compared the results with the analytical solution [2] available for a 4-shell
+spherical phantom we observed good agreement, save for some minor discrepancies
+(average error is no more than a few percents) caused by the mesh orientation effects
+(the cubic versa spherical symmetry).
+Similarly, we found the good agreement for spherical phantoms between our results
+and the solution of the Poisson equation using the standard FEM packages such as
+FEMLAB. Also, we have performed a series of computations for electric potentials
+and currents inside a human head with surgical or traumatic openings in the skull. We
+Table 1. Tissues parameters in 4-shell models[2]
+Tissue type
+Brain
+Csf
+Skull
+Scalp
+
+σ(Ω −1 m−1 )
+0.25
+1.79
+0.018
+0.44
+
+Radius(cm)
+8
+8.2
+8.7
+9.2
+
+Reference
+Geddes(1967)
+Daumann(1997)
+Law(1993)
+Burger(1943)
+
+636
+
+A. Salman et al.
+9
+
+8
+
+7
+
+ideal
+64x64x44
+128x128x88
+256x256x176
+
+Ideal
+64x64x44
+128x128x88
+256x256x176
+
+16
+
+IBM−8P
+
+14
+
+IBM−16P
+
+Speedup
+
+Speedup
+
+12
+6
+
+5
+
+4
+
+10
+8
+6
+
+3
+
+4
+2
+
+2
+1
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+Number of processors
+
+7
+
+8
+
+9
+
+2
+
+4
+
+6
+
+8
+
+10
+
+12
+
+14
+
+16
+
+Number of processors
+
+Fig. 2. Speed-up of the forward solver for different problem sizes at an 8-processor (left) and a
+16-processor (right) IBM machines
+
+found that generally low resolution (64 × 64 × 44 voxels) is not enough for accurate
+description of the current and potentials distribution through the head, as the coarse
+discretization creates artificial shunts for currents (mainly in the skull). With increased
+resolution (128 × 128 × 88 or 256 × 256 × 176 voxels) our model has been shown
+to be capable to capture the fine details of current/potential redistribution caused by
+the structural perturbation. However, the computational requirements of the forward
+calculation increase significantly.
+The forward solver was parallelized using OpenMP. The performance speedups for
+64 × 64 × 44, 128 × 128 × 88 and 256 × 256 × 176 sized problems on the IBM p655 (8
+processors) and p690 (16 processors) machines are shown in Fig. 2. The performance is
+reasonable at present, but we believe there are still optimizations that can be made. The
+importance of understanding the speedup performance on the cluster compute servers
+is to allow flexible allocation of resources between inverse and forward processing.
+In the inverse search the initial simplex was constructed randomly based upon the
+mean conductivity values (cl. Table 1) and their standard deviations as it is reported
+in the related biomedical literature. In the present test study we did not use the real
+experimental human data, instead , we simulated the experimental set of the reference
+potentials V in Eq. 5 using our forward solver with the mean conductivity values from
+Table 1 , which had been assumed to be true, but not known a priory for a user running the inverse procedure. The search was stopped when one or two criteria were met.
+The first is when the decrease in the error function is fractionally smaller than some
+tolerance parameter. The second is when the number of steps of the simplex exceeds
+some maximum value. During the search, the conductivities were constrained to stay
+within their pre-defined plausible ranges. If the simplex algorithm attempted to step
+outside of the acceptable range, then the offending conductivity was reset to the nearest
+allowed value. Our procedure had the desired effect of guiding the search based on prior
+knowledge. Some number of solution sets included conductivities that were separated
+from the bulk of the distribution. These were rejected as outliers, based on the significant larger square error norm in Eq. (5) (i.e., the solution sets were filtered according
+to the criteria E < Ethreshold ). We have found empirically that setting Ethreshold =
+1µV in most of our runs produced a fair percentage of solutions close to the global
+minimum.
+
+Computational Modeling of Human Head Conductivity
+2
+
+Scalp
+
+CSF
+
+Brain
+
+60
+
+1.5
+
+Frequency
+
+Tissue Conductivity, 1/(Ω*m)
+
+Skull
+70
+
+CSF: 1.7903
+
+1
+
+0.5
+
+40
+
+30
+
+20
+
+Brain: 0.2500
+
+10
+
+300
+
+200
+
+100
+
+50
+
+Scalp: 0.4400
+
+Skull: 0.01800
+0
+0
+
+637
+
+80
+
+Number of Iteration in Simplex Search
+
+400
+
+0
+0
+
+0.5
+
+1
+
+1.5
+
+2
+
+Retrieved Conductivity, Ohm−1m−1
+
+Fig. 3. Results of the inverse search. Dynamics of the individual search (left) and statistics of the
+retrieved conductivities for about 200 initial random guesses. The actual number of the solutions
+shown is 71, their error function is less than 1 microvolt
+
+The distribution of the retrieved conductivities is shown in Fig. 3 (right). The fact
+that the retrieved conductivities for the intracranial tissues (CSF and brain) have wider
+distributions is consistent with the intuitive physical explanation that the skull, as having
+the lowest conductivity, shields the currents injected by the scalp electrodes from the
+deep penetration into the head. Thus, the deep intracranial tissues are interrogated less
+in comparison with the skull and scalp. The dynamics of an individual inverse search
+convergence for a random initial guesses is shown in Fig. 3 (left). One can see the
+conductivities for the extra cranial tissue and skull converging faster than the brain
+tissues, due to the better interrogation by the injected current.
+After filtering data according to the error norm magnitude, we fitted the individual
+conductivities to the normal distribution. The mean retrieved conductivities σ(Ω −1
+m−1 ) and their standard deviations ∆σ(Ω −1 m−1 ) are: Brain (0.24 / .01), CSF (1.79 /
+.03), Skull (0.0180 / .0002), and Scalp (0.4400 / .0002) It is interesting to compare these
+values to the "true" conductivities from Table 1. We can see excellent estimates for the
+scalp and skull conductivities and a little bit less accurate estimates for the intracranial
+tissues. Although we have not yet done runs with the realistic noise included, the similar
+investigation in Ref. 2 for a spherical phantom suggests that noise will lead to some
+deterioration of the distributions and more uncertainty in the results. In general, it still
+will allow the retrieval of the unknown tissue parameters.
+
+Error Function, microvolts
+
+80
+
+Clust4−16P
+
+40
+0
+80
+
+Clust3−8P
+
+40
+0
+80
+
+Clust2−8P
+
+40
+0
+80
+
+Clust1−8P
+
+40
+0
+0
+
+2
+
+4
+
+6
+
+8
+
+10
+
+Inverse solution arrival time, seconds
+
+12
+
+14
+4
+
+x 10
+
+Fig. 4. Solution flow at the master controller. Inverse solution arrival to the controller are marked
+
+638
+
+A. Salman et al.
+
+Finally, in Fig. 4 we present the dynamics of the performance of the inverse search
+in our distributed multi-cluster computational environment. Four curves with different
+markers show the dynamics of the inverse solution flux at the master controller. One can
+see that Clust4 on average returns the inverse solution twice as fast as the other clusters,
+as would be expected. Note, however, the time to inverse solution also depends on both
+forward speed and convergence rate. The markers seated at the "zero" error function
+line represent solutions that contribute to the final solution distribution, with the rest of
+the solutions rejected as outliers. In average, the throughput was 12 minutes per one
+inverse solution for 128 × 128 × 88 MRI resolution. More intelligent schemes of the
+search with intermediate learning from the guiding process with smaller resolution to
+control (narrow) the range of the initial guesses in simulation with the higher resolution
+are under investigation.
+
+5
+
+Conclusion
+
+We have built an accurate and robust 3D Poisson solver based on a FDM ADI algorithm
+for modeling electrical and optical problems in heterogeneous biological tissues. We focus in particular on modeling the conductivity properties of the human head. The computational formulation utilizes realistic head geometry obtained from segmented MRI
+datasets. The results presented here validate our FDM approach for impedance imaging
+and provide a performance assessment of the parallel and distributed computation.
+In the future, we will enhance the computational framework with additional cluster
+resources that the naturally scalable inverse search can use. Our intent is to evolve
+the present interprocess communication (IPC) socket-based code to one that uses grid
+middleware support, allowing the impedance imaging program to more easily access
+available resources and integrate with neuroimaging workflows.
+The authors wish to thank Dr. V.M. Volkov, of Institute of Mathematics, Belarus
+Academy of Sciences, for providing many ideas and fruitful discussions on the multicomponent ADI algorithm.
+
+References
+1. Gulrajani, R.M.: Bioelectricity and Biomagnetism. John Wiley & Sons, New York (1998)
+2. Ferree, T. C., Eriksen, K. J., Tucker, D. M.: Regional head tissue conductivity estimation for
+improved EEG analysis. IEEE Transactions on Biomedical Engineering 47(2000) 1584-1592
+3. Press, W.H., Teukolsky, S.A., Vetterling, W.T., Flannery, B.P.: The Numerical Recipes in C:
+The art of Scientific Computing. 2nd edition. Cambridge University Press, New York (1992)
+4. Jin, J.: The Finite Element Method in Electromagnetics. John Wiley & Sons, New York(1993)
+5. Arridge, S.R.: Optical tomography in medical imaging. Inverse Problems, 15 (1999) R41-R93
+6. Hielscher, A.H., Klose, A.D., Hanson, K.M.: Gradient Based Iterative Image Reconstruction
+Scheme for Time-Resolved Optical Tomography. IEEE Transactions on Medical Imaging. 18
+(1999) 262-271
+7. Abrashin, V.N., Dzuba, I.A.:Economical Iterative Methods for solving multi- dimensional
+problems in Mathematical Physics. Differential Equations 30 (1994) 281-291
+8. Abrashin, V.N., Egorov, A.A., Zhadaeva, N.G. On the Convergence Rate of Additive Iterative
+Methods. Differential Equations. 37 (2001) 867-879
+
+

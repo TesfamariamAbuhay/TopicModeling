@@ -1,0 +1,571 @@
+Checking for Deadlock, Double-Free and Other
+Abuses in the Linux Kernel Source Code
+Peter T. Breuer and Simon Pickin
+Universidad Carlos III de Madrid, Leganes, Madrid, 28911 Spain
+ptb@inv.it.uc3m.es, spickin@it.uc3m.es
+
+Abstract. The analysis described in this article detects about two real
+and uncorrected deadlock situations per thousand C source ﬁles or million lines of code in the Linux kernel source, and three accesses to freed
+memory, at a few seconds per ﬁle. In distinction to model-checking techniques, the analysis applies a conﬁgurable “3-phase” Hoare-style logic to
+an abstract interpretation of C code to obtain its results.
+
+1
+
+Introduction
+
+The pairing of formal methods practitioners and the Linux kernel has sometimes seemed more than unlikely. On the one hand kernel contributors have
+preferred to write elegant code rather than elegant speciﬁcations; “the code is
+the commentary” has been one of the mantras of the Linux kernel development,
+meaning that the code should be so clear in its own right that it serves as its
+own speciﬁcation. That puts what is usually the ﬁrst question of formal methods practitioners, “what should the code do” out of bounds. And on the other
+hand, formal methods practitioners have not been able to ﬁnd a way into the six
+million lines of ever-changing C code that comprises the Linux kernel source.
+This article describes the application of post-hoc formal logical analysis to the
+Linux kernel. The technology detects real coding errors that have been missed by
+thousands of eyes over the years. The analyser itself is written in C (thus making
+it easy to compile and distribute in an open source environment) and is itself
+licensed under an open source license. The analysis is conﬁgurable, which means
+that it is possible to re-program and extend it without rewriting its source.
+By way of orientation, note that static analysis is in general diﬃcult to apply
+to C code, because of pointer arithmetic and aliasing, but some notable eﬀorts
+to that end have been made. David Wagner and collaborators in particular have
+been active in the area (see for example [7], where Linux user space and kernel
+space memory pointers are given diﬀerent types, so that their use can be distinguished, and [8], where C strings are abstracted to a minimal and maximal
+length pair and operations on them abstracted to produce linear constraints on
+these numbers). That research group often uses model-checking to look for violations in possible program traces of an assertion such as “chroot is always
+followed by chdir before any other ﬁle operations”. In contrast, the approach
+in this article assigns a (customisable) approximation semantics to C programs,
+via a (customisable) program logic for C. A more lightweight technique still is
+V.N. Alexandrov et al. (Eds.): ICCS 2006, Part IV, LNCS 3994, pp. 765–772, 2006.
+c Springer-Verlag Berlin Heidelberg 2006
+
+766
+
+P.T. Breuer and S. Pickin
+
+that exempliﬁed by Jeﬀrey Foster’s work with CQual [5, 6], which extends the
+type system of C in a customisable manner. In particular, CQual has been used
+to detect “spinlock under spinlock”, a variant of the analysis described here.
+The technology described in this article was ﬁrst described in prototype in [3],
+being an application of the generic “three-phase” program logic ﬁrst described
+in [1] and developed in [2]. The tool itself now works at industrial scales, treating
+millions of lines of code in a few hours when run on a very modest PC.
+In the analysis here, abstract interpretation [4] forms a fundamental part,
+causing a simpliﬁcation in the symbolic logic description of state that is propagated by the analysis; for example, “don’t know” is a valid abstract literal,
+thus a program variable which may take any of the values 1, 2, or 3 may be
+described as having the value “don’t know” in the abstraction, leading to a state
+s described by one atomic proposition, not a disjunct of three.
+To be exact, the analysis constructs two abstract approximations, a state s
+and a predicate p describing the real state x such that
+x∈ s∩p
+
+(1)
+
+The approximated state s assigns a range of integer values to each variable.
+Predicates are restricted to the class of disjunctions of conjuncts of simple
+ordering relations x ≤ k, and there is a simple decision procedure for implication.
+In [3] we focussed on checking for a particular problem in SMP systems –
+“sleep under spinlock”. A function that can sleep (i.e., that can be scheduled
+out of the CPU) ought never to be called from a thread that holds a “spinlock”,
+the SMP locking mechanism of choice in the Linux kernel. Trying to take a
+locked spinlock on one CPU provokes a busy wait (“spin”) that occupies the
+CPU completely until the spinlock is released on another CPU. If the thread
+that has locked the spinlock is scheduled out while the lock is held, then the
+only thread that likely has code to release the spinlock is not running. If by
+chance that thread is rescheduled in to the CPU before any other thread tries
+for the spinlock then all is well. But if another thread tries for the spinlock ﬁrst, it
+will spin uselessly, keeping out of that CPU the thread that would have released
+the spinlock. If yet another thread tries for the spinlock, then on a 2-CPU SMP
+system, the machine is dead, with both CPUs spinning waiting for a lock that
+will never be released. Such vulnerabilities are denial of service vulnerabilities
+that any user can exploit to take down a system. 2-CPU machines are also
+common – any Pentium 4 of 3.2GHz or above has a dual “hyper-threading”
+core. So, calling a function that may sleep while holding the lock on a spinlock
+is a serious matter. Detecting it is one application of the abstract logic that may
+be applied by the analyser.
+
+2
+
+Example Run
+
+About 1000 (1055) of the 6294 C source ﬁles in the Linux 2.6.3 kernel were
+checked for spinlock problems in a 24-hour period by the analyser running on
+a 550MHz (dual) SMP PC with 128MB ram. About forty more ﬁles failed to
+
+Checking for Deadlock, Double-Free and Other Abuses
+
+ﬁles checked:
+alarms raised:
+false positives:
+real errors:
+time taken:
+LOC:
+
+1055
+18
+(5/1055 ﬁles)
+16/18
+2/18 (2/1055 ﬁles)
+˜24h
+˜
+700K (unexpanded)
+
+1 instances
+in
+1 instances
+in
+6 instances
+in
+7 instances
+in
+3 instances
+in
+
+767
+
+of sleep under spinlock
+sound/isa/sb/sb16 csp.c
+of sleep under spinlock
+sound/oss/sequencer.c
+of sleep under spinlock
+net/bluetooth/rfcomm/tty.c
+of sleep under spinlock
+net/irda/irlmp.c
+of sleep under spinlock
+net/irda/irttp.c
+
+Fig. 1. Testing for sleep under spinlock in the 2.6.3 Linux kernel
+
+File & function
+Code fragment
+sb/sb16 csp.c:
+619 spin lock irqsave(&p->chip->reg lock, flags);
+snd sb csp load . . .
+...
+632
+unsigned char *kbuf, * kbuf;
+kbuf = kbuf = kmalloc (size, GFP KERNEL);
+633
+oss/sequencer.c: 1219 spin lock irqsave(&lock,flags);
+midi outc 1220 while (n && !midi devs[dev]->outputc(dev, data)) {
+1221 interruptible sleep on timeout(&seq sleeper,HZ/25);
+1222 n--;
+1223 }
+1224 spin unlock irqrestore(&lock,flags);
+
+Fig. 2. Sleep under spinlock instances in kernel 2.6.3
+
+parse at that time for various reasons (in one case, because of a real code error,
+in others because of the presence of gnu C extensions that the analyser could
+not cope with at that time, such as attribute declarations in unexpected
+positions, case statement patterns matching a range instead of just a single
+number, array initialisations using “{ [1,3,4] = x }” notation, enumeration
+and typedef declarations inside code blocks, and so on). Five ﬁles out of that
+selection showed up as suspicious under the analysis, as listed in Fig. 1.
+Although the ﬂagged constructs are indeed calls of the kernel memory allocation function kmalloc (which may sleep) under spinlock, the arguments to
+the call sometimes render it harmless, i.e. cause it not to sleep after all. The
+kmalloc function will not sleep with GFP ATOMIC as second argument, and such
+is the case in several instances, but not in the two instances shown in Fig. 2.
+
+3
+
+Analytic Program Logic
+
+The C code analyser is based on a compositional program logic called NRBG (for
+“normal”, “return”, “break”, “goto”, reﬂecting its four principal components).
+The four components, N, R, B, G, represent diﬀerent kinds of control ﬂows: a
+“normal” ﬂow and several “exceptional” ﬂows.
+
+768
+
+P.T. Breuer and S. Pickin
+
+Program fragments are thought of as having three phases of execution: initial,
+during, and ﬁnal. The initial phase is represented by a condition p that holds
+as the program fragment is entered. The only access to the internals of the
+during phase is via an exceptional exit (R, B, G; return, break, goto) from the
+fragment. The ﬁnal phase is represented by a condition q that holds as the
+program fragment terminates normally (N).
+The N part of the logic represents the way control ﬂow “falls oﬀ the end”
+of one fragment and into another. I.e., if p is the condition that holds before
+program a; b runs, and q is the condition that holds after, then
+p N (a; b) q
+
+=
+
+p N (a) r ∧ r N (b) q
+
+(2)
+
+To exit normally with q, the program must ﬂow normally through a, hitting an
+intermediate condition r, then enter fragment b and exit it normally.
+The R part of the logic represents the way code ﬂows out of the parts of a
+routine through a “return” path. Thus, if r is the intermediate condition that is
+attained after normal termination of a, then:
+p R(a; b) q
+
+=
+
+p R(a) q ∨ r R(b) q
+
+(3)
+
+That is, one may either return from program fragment a, or else terminate a
+normally, enter fragment b and return from b.
+The logic of break is (in the case of sequence) equal to that of return:
+p B(a; b) q
+
+=
+
+p B(a) q ∨ r B(b) q
+
+(4)
+
+where again r is the condition attained after normal termination of a.
+Where break and return logic diﬀer is in the treatment of loops. First of all,
+one may only return from a forever while loop by returning from its body:
+p R(while(1) a) q
+
+=
+
+p R(a) q
+
+(5)
+
+On the other hand, (counter-intuitively at ﬁrst reading) there is no way of leaving
+a forever while loop via a break exit, because a break in the body of the loop
+causes a normal exit from the loop itself, not a break exit:
+p B(while(1) a) F
+
+(6)
+
+The normal exit from a forever loop is by break from its body:
+p N (while(1) a) q
+
+=
+
+p B(a) q
+
+(7)
+
+To represent the loop as cycling possibly more than once, one would write for
+the R component, for example:
+p R(while(1) a) q
+
+=
+
+p R(a) q ∨ r R(while(1)a) q
+
+(8)
+
+where r is the intermediate condition that is attained after normal termination
+of a. However, in practice it suﬃces to check that r → p holds, because then (8)
+reduces to (5). If r → p does not hold, p is relaxed to p ≥ p for which it does.
+
+Checking for Deadlock, Double-Free and Other Abuses
+
+769
+
+Typically the precondition p is the claim that the spinlock count ρ is below
+or equal to n, for some n: ρ ≤ n. In that case the logical components i = N, R, B
+have for each precondition p a strongest postcondition p SPN (a), p SPR (a),
+p SPB (a), compatible with the program fragment a in question. For example, in
+the case of the logic component N:
+p N (a) q
+
+↔
+
+p SPN (a) ≤ q
+
+(9)
+
+Each logic component X can be written as a function rather than a relation by
+identifying it with a postcondition generator no stronger than SPX . For example:
+(ρ ≤ n) N
+
+spin lock(&x)
+spin unlock(&x)
+
+ρ≤n+1
+ρ≤n−1
+
+=
+
+(10)
+
+Or in the general case, the action on precondition p is to substitute ρ by ρ ± 1 in
+p, giving p[ρ−1/ρ] (for spin lock) and p[ρ+1/ρ] (for spin unlock) respectively:
+pN
+
+spin lock(&x)
+spin unlock(&x)
+
+=
+
+p[ρ − 1/ρ]
+p[ρ + 1/ρ]
+
+(11)
+
+The functional action on sequences of statements is then described as follows:
+p N (a; b) = (p N (a)) N (b)
+
+(12)
+
+p R(a; b) = p R(a) ∨ (p N (a)) R(b)
+
+(13)
+
+p B(a; b) = p B(a) ∨ (p N (a)) B(b)
+
+(14)
+
+The G component of the logic is responsible for the proper treatment of goto
+statements. To allow this, the logic – each of the components N, R, B and G –
+works within an additional context, e. A context e is a set of labelled conditions,
+each of which are generated at a goto x and are discharged/will take eﬀect
+at a corresponding labelled statement x: .... The G component manages this
+context, ﬁrst storing the current pre-condition p as the pair (x, p) (written x:p)
+in the context e at the point where the goto x is encountered:
+∪e
+p Ge (goto x) = {x:p} +
+
+(15)
+
+The {x:p} in the equation is the singleton set {(x, p)}, where x is some label
+(e.g. the “foo” in “foo: a = 1;”) and p is a logical condition like “ρ ≤ 1”.
+In the simplest case, the operator +
+∪ is set theoretic disjunction. But if an
+element x:q is already present in the context e, signifying that there has already
+been one goto x statement encountered, then there are now two possible ways
+to reach the targeted label, so the union of the two conditions p and q is taken
+and x:q is replaced by x:(p ∪ q) in e.
+Augmenting the logic of sequence (12-14) to take account of context gives:
+p Ne (a; b) = (p Ne (a)) NpGe (a) (b)
+
+(16)
+
+p Re (a; b) = p Re (a) ∨ (p Ne (a)) RpGe (a) (b)
+
+(17)
+
+p Be (a; b) = p Be (a) ∨ (p Ne (a)) BpGe (a) (b)
+
+(18)
+
+770
+
+P.T. Breuer and S. Pickin
+
+The N, R, B semantics of a goto statement are vacuous, signifying one cannot
+exit from a goto in a normal way, nor on a break path, nor on a return path.
+p Ne (goto x) = p Re (goto x) = p Be (goto x) = F
+
+(19)
+
+The only signiﬁcant eﬀect of a goto is to load the context for the logic with
+an extra exit condition. The extra condition will be discharged into the normal
+component of the logic only when the label corresponding to the goto is found
+(ex is the condition labeled with x in environment e, if any):
+p N{x:q}∪e (x:) = p ∨ q
+p Be (x:)
+=F
+
+p Re (x:) = F
+p Ge (x:) = e − {x:ex }
+
+(20)
+
+This mechanism allows the program analysis to pretend that there is a “shortcut” from the site of the goto to the label, and one can get there either via
+the short-cut or by traversing the rest of the program. If label foo has already
+been encountered, then we have to check at goto foo that the current program
+condition is an invariant for the loop back to foo:, or raise an alarm.
+The equations given can be reﬁned by introducing temporal logic (CTL).
+Consider the return logic of sequence, for example. If EFp is the statement that
+there is at least one trace leading to condition p at the current ﬂow point, then:
+pN (a)EFq
+qR(b)EFr2
+pR(a)EFr1
+pR(a; b)(EFr1 ∧ EFr2 )
+
+(21)
+
+The deduction that EFr1 ∧ EFr2 holds is stronger than r1 ∨ r2 , which is what
+would be deduced in the absence of CTL.
+The above is a may semantics, because it expresses the possible existence
+of a trace. A must semantics can be phrased via the the operator AFp, which
+expresses that all traces leading to the current point give rise to condition p here:
+pN (a)AFq
+qR(b)AFr2
+pR(a)AFr1
+pR(a; b)(AF(r1 ∨ r2 ))
+
+(22)
+
+In general, the deduction systems prove pXAFq1 , pXq2 , pXEFq3 with q1 ≤ q2
+and q2 ≤ q3 , which brackets the analysis results between forced and possible.
+
+4
+
+Conﬁguring the Analysis
+
+The static analyser allows the program logic set out in the last section to be
+speciﬁed in detail by the user. The motive was originally to make sure that the
+logic was implemented in a bug-free way – writing the logic directly in C made
+for too low-level an implementation for what is a very high-level set of concepts.
+Instead, a compiler into C for speciﬁcations of the program logic was written
+and incorporated into the analysis tool.
+The logic compiler understands speciﬁcations of the format
+ctx precontext, precondition :: name(arguments) =
+postconditions with ctx postcontext ;
+
+Checking for Deadlock, Double-Free and Other Abuses
+
+771
+
+Table 1. Deﬁning the single precondition/triple postcondition NRB logic of C
+= (n∨b, r, F) with ctx f
+where ctx e, p::stmt = (n,r,b) with ctx f;
+ctx e, p::empty()
+= (p, F, F) with ctx e;
+ctx e, p::unlock(label l) = (p[n+1/n], F, F) with ctx e;
+ctx e, p::lock(label l)
+= (p[n-1/n], F, F) with ctx e;
+ctx e, p::assembler()
+= (p, F, F) with ctx e;
+ctx e, p::function()
+= (p, F, F) with ctx e;
+ctx e, p::sleep(label l) = (p, F, F) with ctx e;
+ctx e, p::sequence(s1 , s2 ) = (n2 , r1 ∨r2 , b1 ∨b2 ) with ctx g
+where ctx f, n1 ::s2 = (n2 ,r2 ,b2 ) with ctx g
+and
+ctx e, p::s1 = (n1 ,r1 ,b1 ) with ctx f;
+ctx e, p::switch(stmt)
+= (n∨b, r, F) with ctx f
+where ctx e, p::stmt = (n,r,b) with ctx f
+ctx e, p::if(s1 , s2 )
+= (n1 ∨n2 , r1 ∨r2 , b1 ∨b2 ) with ctx f1 ∨f2
+where ctx e, p::s1 = (n1 ,r1 ,b1 ) with ctx f1
+and
+ctx e, p::s2 = (n2 ,r2 ,b2 ) with ctx f2 ;
+ctx e, p::while(stmt)
+= (n∨b, r, F) with ctx f
+where ctx e, p::stmt = (n,r,b) with ctx f;
+ctx e, p::do(stmt)
+= (n∨b, r, F) with ctx f
+where ctx e, p::stmt = (n,r,b) with ctx f;
+ctx e, p::goto(label l)
+= (F, F, F) with ctx e∨{l::p};
+ctx e, p::continue()
+= (F, F, p) with ctx e;
+ctx e, p::break()
+= (F, F, p) with ctx e;
+ctx e, p::return()
+= (F, p, F) with ctx e;
+ctx e, p::labeled(label l) = (p∨e.l, F, F) with ctx e\\l;
+ctx e, p::for(stmt)
+
+Legend
+assembler
+sleep
+function
+sequence
+
+–
+–
+–
+–
+
+if
+gcc inline assembly code;
+switch
+calls to C functions which can sleep; while
+calls to other C functions;
+do
+two statements in sequence;
+labeled
+
+–
+–
+–
+–
+–
+
+conditional statement;
+case statement;
+while loop;
+do while loop;
+labelled statements.
+
+where the precondition is an input, the entry condition for a code fragment,
+and postconditions is an output, a tuple consisting of the N, R, B exit conditions according to the logic. The precontext is the prevailing goto context. The
+postcontext is the output goto context, consisting of a set of labelled conditions.
+For example, the speciﬁcation of the empty statement logic is:
+ctx e, p::empty() = (p, F, F) with ctx e;
+signifying that the empty statement preserves the entry condition p on normal
+exit (p), and cannot exit via return (F) or break (F). The context (e) is unaltered.
+The full set of logic speciﬁcations is given in Table 1. To translate back into the
+logic presentation in Section 3, consider that
+ctx e, p :: k = (n, r, b) with ctx e ;
+
+772
+
+P.T. Breuer and S. Pickin
+
+means
+
+p Ne (k) = n
+p Be (k) = b
+
+p Re (k) = r
+p Ge (k) = e
+
+when written out in the longer format.
+
+5
+
+Software
+
+The source code of the software described here is available for download from
+ftp://oboe.it.uc3m.es/pub/Programs/c-1.2.13.tgz under the conditions of
+the Gnu Public Licence, version 2.
+
+6
+
+Summary
+
+A C source static analyser for the Linux kernel has been created, capable of
+dealing with the millions of lines of code in the kernel on a reasonable timescale,
+at a few seconds per ﬁle. It is based on a “three-phase” logic of imperative
+programming, as described in this article.
+
+References
+1. P.T. Breuer, N. Mart´ınez Madrid, L. S´
+anchez, A. Mar´ın, C. Delgado Kloos: A formal
+method for speciﬁcation and reﬁnement of real-time systems. In Proc. 8’th EuroMicro Workshop on Real Time Systems, pages 34–42. IEEE Press, July 1996. L’aquilla,
+Italy.
+2. P.T. Breuer, C. Delgado Kloos, N. Mart´ınez Madrid, A. L´
+opez Marin, L. S´
+anchez:
+A Reﬁnement Calculus for the Synthesis of Veriﬁed Digital or Analog Hardware
+Descriptions in VHDL. ACM Transactions on Programming Languages and Systems
+(TOPLAS) 19(4):586–616, July 1997
+3. Peter T. Breuer, Marisol Garci´
+a Valls: Static Deadlock Detection in the Linux Kernel, pages 52-64 In Reliable Software Technologies - Ada-Europe 2004, 9th AdaEurope International Conference on Reliable Software Technologies, Palma de Mallorca, Spain, June 14-18, 2004, Eds. Albert Llamos´ı and Alfred Strohmeier, ISBN
+3-540-22011-9, Springer LNCS 3063, 2004.
+4. P. Cousot, R. Cousot: Abstract interpretation: A uniﬁed lattice model for static
+analysis of programs by construction or approximation of ﬁxpoints. In Proc. 4th
+ACM Symp. on the Principles of Programming Languages, pages 238–252, 1977.
+5. Jeﬀrey S. Foster, Manuel F¨
+ahndrich, Alexander Aiken: A Theory of Type Qualiﬁers. In Proc. ACM SIGPLAN Conference on Programming Language Design and
+Implementation (PLDI’99). Atlanta, Georgia. May 1999.
+6. Jeﬀrey S. Foster, Tachio Terauchi, Alex Aiken: Flow-Sensitive Type Qualiﬁers. In
+Proc. ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI’02), pages 1-12. Berlin, Germany. June 2002.
+7. Rob Johnson, David Wagner: Finding User/Kernel Pointer Bugs With Type Inference. In Proc. 13th USENIX Security Symposium, 2004 August 9-13, 2004, San
+Diego, CA, USA.
+8. David Wagner, Jeﬀrey S. Foster, Eric A. Brewer, Alexander Aiken: A First Step
+Towards Automated Detection of Buﬀer Overrun Vulnerabilities. In Proc. Network
+and Distributed System Security (NDSS) Symposium 2000, February 2-4 2000, San
+Diego, CA, USA.
+
+

@@ -1,0 +1,626 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 1906–1916
+ICCS 2016. The International Conference on Computational
+Science
+
+Reducing Communication in Distributed Asynchronous
+Iterative Methods
+Jordi Wolfson-Pou and Edmond Chow
+School of Computational Science and Engineering,
+Georgia Institute of Technology, Atlanta, Georgia, U.S.A.
+jwp3@gatech.edu, echow@cc.gatech.edu
+
+Abstract
+Communication costs are an important factor in the performance of massively parallel algorithms. We present a new asynchronous parallel algorithm for solving sparse linear systems that
+reduces communication compared to other algorithms on distributed memory machines. Implemented using passive one-sided remote memory access (RMA) MPI functions, the new method
+is a variation of the Southwell method, where rows are relaxed greedily, instead of sequentially,
+by choosing the row with the maximum residual norm. A process relaxes its rows if it holds
+the maximum residual norm among its neighbors at any given moment. Experimental results
+show that this method reduces communication costs compared to several other asynchronous
+iterative methods and the classic synchronous Jacobi method.
+Keywords: asynchronous iterative methods, Gauss-Seidel, Southwell, remote memory access
+
+1
+
+Introduction
+
+Inter-node communication has high energy costs compared to computation. In exascale computing, reducing communication, and thus energy costs, may become even more important than
+reducing overall time. We apply this extreme objective to relaxation-type iterative methods
+and propose a new asynchronous parallel Southwell method for solving sparse linear systems.
+This new method uses the idea of asynchronous relaxations, where each process does not have
+to wait for other processes in order to continue its computation. There have been numerous
+U.S. Department of Energy reports suggesting that asynchronous computation is necessary to
+save energy in exascale computations [1–4, 6].
+The standard sequential Southwell method relaxes one row at a time, corresponding to the
+row with the largest residual norm, and is a sequential algorithm by deﬁnition. Southwell can
+converge faster than Gauss-Seidel in terms of the number of relaxations. Since each relaxation is
+associated with communication, communication cost can also be reduced. However, to achieve
+this faster convergence, Southwell needs global communication after every relaxation step to
+determine the row with the largest residual. The goal is to develop a method to solve problems
+1906
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.501
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+Wolfson-Pou and Chow
+
+with less communication than with Gauss-Seidel or Jacobi, with the possibility of also being
+faster on extreme scale distributed systems.
+In our new distributed parallel Southwell algorithm, we approximate the standard Southwell iteration by 1) avoiding global communication, and 2) allowing some rows to be relaxed
+simultaneously. To describe the method, assume for now one processor node assigned to one
+row or grid point. At each iteration, each node determines if it is the node with the largest
+residual among its neighbors in the grid. If so, then this node relaxes its row and sends updated
+values to its neighbors. We will show that this method reduces communication compared to
+standard synchronous and asynchronous methods.
+Although the theory of asynchronous iterative methods is well-established [8, 9, 11], not
+much research has been done in distributed implementations that are truly asynchronous, i.e.,
+implementations using operations that allow an origin process to access memory on a target
+process while the target is occupied with other tasks. The implementation presented in this
+paper does just this by using passive one-sided asynchronous remote memory access (RMA)
+operations included in MPI-3 [5].
+
+2
+
+Related Work
+
+Asynchronous iterative methods were ﬁrst proposed in 1969 by Chazan and Miranker in their
+paper Chaotic Relaxation [11]. Their paper presented iterative methods that performed relaxations at arbitrary times. These methods included asynchronous Gauss-Seidel and Jacobi
+methods. Additionally, the paper established a convergence theorem, later expanded upon by
+Baudet [8]. Baudet also showed experimental results for asynchronous methods implemented
+on Carnegie Melon’s C.mmp machine [8]. Baudet showed that asynchronous implementations
+of Jacobi and Gauss-Seidel methods took fewer relaxations and a lower wall clock time to converge, which was also demonstrated by Bull and Freeman [10]. For an overview of asynchronous
+methods, see [13].
+In general, recent research in asynchronous iterative methods have addressed shared memory
+implementations, while few have conducted studies for reducing communication on distributed
+systems. An exception is Jager and Bradley [12], who experimentally showed that the asynchronous methods described by Chazan and Miranker had a lower communication cost when
+implemented with MPI-2 in an asynchronous way. They introduced two new asynchronous
+algorithms, the Reluctant and the Variable Threshold methods. These two methods used a
+threshold to determine whether a row should be relaxed based on the change in the row’s solution value after a relaxation or an update from a remote process. Nishida and Kuang [19]
+suggested a new asynchronous method where updated solution values were sent in bulk after
+some speciﬁed number of relaxations in order to reduce communication overhead. Although
+implemented on shared memory, Avron, Druinsky and Gupta [7] proposed a method in which
+rows are randomly relaxed. In general, recent and past work has not fully taken advantage of
+MPI’s newest asynchronous communication features. Additionally, the amount of research in
+developing new communication-avoiding asynchronous methods has been sparse.
+
+1907
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+3
+3.1
+
+Wolfson-Pou and Chow
+
+Background
+Jacobi and Gauss-Seidel Methods
+
+The Jacobi and Gauss-Seidel methods are examples of ﬁxed point methods for solving linear
+systems. A general ﬁxed point iteration method with initial guess x(0) can be written as
+x(k+1) = Cx(k) + d,
+
+(1)
+
+where the C ∈ Cn×n is the iteration matrix, and d, x ∈ Cn . The iteration number k = 0, 1, . . . is
+(k)
+bounded from above by the stopping criteria for convergence. We deﬁne the update of xi to
+(k+1)
+as the relaxation of row i.
+xi
+The Jacobi and Gauss-Seidel methods are fundamental algorithms for solving systems of
+linear equations [20]. For a system Ax = b, the Jacobi method can be expressed as
+x(k+1) = D−1 (b − (L + U )x(k) ),
+
+(2)
+
+where D is a diagonal matrix, and L and U are the strict lower and upper parts of A, respectively.
+Therefore, the iteration matrix is D−1 (L + U ). Expressed element-wise,
+(k+1)
+xi
+
+n
+1 ⎛
+(k) ⎞
+=
+bi − ∑aij xj
+,
+aii ⎝
+⎠
+j≠i
+
+(3)
+
+where i = 1, 2, . . . , n.
+Instead of using the entire x(k) vector to update x(k+1) , the Gauss-Seidel method uses the
+(k+1)
+most recent values of x to update element xi
+. The method can be expressed as
+x(k+1) = (D + L)−1 (b − U x(k) ),
+
+(4)
+
+where the iteration matrix is (D + L)−1 U . Expressed element-wise,
+(k+1)
+
+xi
+
+=
+
+i−1
+n
+1 ⎛
+(k+1)
+(k) ⎞
+− ∑ aij xj
+bi − ∑aij xj
+.
+aii ⎝
+⎠
+j=1
+j=i+1
+
+(5)
+
+Now let us consider carrying out ﬁxed point iterations in parallel on a distributed memory
+machine. For simplicity, we assign one row per process. The routine is simple: until convergence,
+each process i updates its xi value using local data and communicates the update to other
+processes. We deﬁne local as the use of data from shared memory. Therefore, Eq. 5 shows that
+Gauss-Seidel cannot be implemented in parallel because it uses the most recent information from
+other processes, which is not in local memory until the next iteration, assuming communication
+occurs after a phase of computation. Conversely, Eq. 3 is a parallel algorithm by deﬁnition
+because it uses only values from the previous iteration. Extending this to more than one row
+per process, each process executes a local sweep update before sending data. We deﬁne a local
+sweep update as sequentially relaxing all rows local to a process.
+It is important to note that we are dealing with sparse matrices in this paper. The sums in
+Eqs. 3 and 5, which take on the values j = 1, 2, . . . , n, should be modiﬁed to take advantage of
+sparsity. Instead of looping over an entire column, the loops should only visit the indices that
+belong to the neighbor cluster of row i. For row index ηj ≠ i, we say that row ηj is a neighbor
+1908
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+Wolfson-Pou and Chow
+
+Figure 1: Number of row relaxations needed to reach a particular ∣∣r∣∣2 for Gauss-Seidel (blue
+circles), Parallel Southwell (green triangles), and Southwell (red diamonds) using a small problem size, 36 × 36 (208 nnz) ﬁnite element discretization of the Laplace PDE. We used a random
+initial guess in the range [−.5, .5] and a 0 right-hand side.
+of the current row i if aηj i ≠ 0. We deﬁne the neighbor cluster of row i as the set of qi indices
+{η1 , η2 , . . . , ηqi } where each index in the set satisﬁes the neighbor requirement. In other words,
+the set of all rows that would be aﬀected by an update from row i.
+
+3.2
+
+Sequential Southwell Method
+
+Commonly used in computer graphics radiosity problems [15], the Southwell method takes a
+greedy approach to the order in which rows are relaxed [16,22,23]. Instead of relaxing each row
+in order, as in Gauss-Seidel, a Southwell relaxation chooses the row i with maximum residual
+norm and updates the residuals of the remaining rows. A row is relaxed such that ri = 0, i.e.,
+xi = xi + ariii . The residuals of the remaining rows can be updated by calculating r = r − ariii ai
+where ai is column i of A.
+The pseudocode for the Southwell iteration method is shown in Algorithm 1. For frame
+of reference, Gauss-Seidel can be expressed in the same way as shown in Algorithm 2 where i
+loops from 1 to n.
+Algorithm 1: Southwell Relaxation
+Determine i s.t. ∣ri ∣ is maximized
+r
+2 x i = xi + i
+aii
+3 for j = η1 , η2 , . . . , ηqi do
+a
+4
+rj = rj − ri aji
+ii
+5 end
+6 Set ri = 0
+1
+
+Algorithm 2: Gauss-Seidel Relaxation
+xi = xi + ariii
+2 for j = η1 , η2 , . . . , ηqi do
+a
+3
+rj = rj − ri aji
+ii
+4 end
+5 Set ri = 0
+1
+
+The advantage of Southwell over Gauss-Seidel is that Southwell often requires a lower number of total rows relaxed in order to reach convergence, as shown in Fig. 1. The test problem
+used in Fig. 1 is a small ﬁnite element Laplace matrix. When translated to a parallel environment, the number of relaxations are correlated with the amount of data communicated between
+processes. Therefore, an algorithm using the concept of Southwell iterations has the potential
+1909
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+Wolfson-Pou and Chow
+
+to reduce communication. Unfortunately, in order for a standard Southwell relaxation to take
+place, global communication is required to determine the process with the maximum residual
+norm.
+
+4
+
+Asynchronous Iterative Methods
+
+4.1
+
+Mathematical Formulation
+
+In general, a simple asynchronous iteration is carried out by 1) reading data from local memory,
+2) executing some number of relaxations, and 3) communicating the updates to neighboring
+processes. Each process carries out these iterations independent of the progress on other processes. Two simpliﬁed models of asynchronous iterations are shown in Algs. 3 and 4. Variable
+mi is the number of rows on processor i such that xi is of size mi and ∑pi=1 mi = n, where p is the
+number of processes. Algorithm 3 describes iterations in which updates are communicated after
+a single row has relaxed. Algorithm 4 describes iterations in which updates are communicated
+after a single sweep through all rows, where package is deﬁned as combining all data into one
+message.
+Algorithm 3: Asynchronous Relaxations
+while not converged on process i do
+Read xi from local memory
+3
+for j = 1 to mi do
+4
+Relax row j
+5
+Communicate xi,j
+6
+end
+7 end
+1
+2
+
+Algorithm 4: Asynchronous Local
+Sweeps
+1 while not converged on process i do
+2
+Read xi from local memory
+3
+Relax all mi rows
+4
+Package and communicate xi
+5 end
+
+From Eq. 1, Algs. 3 and 4 can be expressed mathematically as
+(k)
+⎧
+xi ,
+⎪
+⎪
+⎪
+⎪
+(k+1)
+xi
+=⎨ n
+(fj (k))
+⎪
++ di ,
+∑ cij xj
+⎪
+⎪
+⎪
+⎩j=0
+
+if i ≠ gi (k),
+if i = gi (k).
+
+(6)
+
+The function g ∶ N → N determines if a row should relax, where i ∈ gi (k) for some k. Function
+f ∶ N → N maps k to the iteration index of the most recently updated x values, where fj (k) ≤ k
+and limk→∞ fj (k) = ∞. The second constraint on f indicates that in some number of iterations,
+(k+1)
+xi
+will use newer information from other rows. For example, fj (k) = k − 1 and gi (k) = k
+mod (n + 1) for Gauss-Seidel iterations.
+Chazan and Miranker introduced a general convergence theorem for asynchronous iterative
+methods [11], which was later expanded upon by Baudet [8].
+Theorem 1. Consider the ﬁxed point method from Eq. 1 and the generalized asynchronous
+iterative method in Eq. 6. If ρ(∣C∣) < 1, then x(k+1) in Eq. 6 converges to the ﬁxed point x∗ .
+For the purposes of this paper, we can choose the Jacobi iteration matrix for the iteration
+matrix C, which is the worst case. We can therefore assume guaranteed convergence of our
+methods, provided that our test problems satisfy the above theorem.
+If there is more than one row per process, a choice must be made for how the local rows will
+be relaxed. In this paper, the following asynchronous methods will be compared with our new
+method.
+1910
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+Wolfson-Pou and Chow
+
+• Asynchronous Gauss-Seidel Local Sweep (AGSLS): Execute Gauss-Seidel sweeps, package
+the data, and communicate packaged data to neighbors. This is an example of Alg. 4.
+• Asynchronous Gauss-Seidel Local Relax (AGSLR): Execute Gauss-Seidel relaxations and
+communicate updates to neighbors after each relaxation. This is an example of Alg. 3.
+• Asynchronous Southwell Local Relax (ASLR): Execute sequential Southwell iterations and
+communicate updates to neighbors after each relaxation. This is an example of Alg. 3,
+and is a variation of our new method described in Sec. 4.2.
+
+4.2
+
+Parallel and Asynchronous Parallel Southwell Methods
+
+We now propose the Parallel Southwell (PS) method. For simplicity, let us assume an equal
+number of rows and processes, with one row assigned to a process. First, each process checks
+to see if it holds the maximum residual norm within its neighbor cluster. If so, it relaxes and
+sends updates packaged with its new residual to its neighbors. Otherwise, it waits for incoming
+updates while other processes relax their rows. We can simulate this method sequentially, as
+shown in Figure 1, which compares a simulated PS with Southwell and Gauss-Seidel. The
+sequential simulation ﬁrst executes a preliminary sweep in which each row determines whether
+it should update. An additional sweep is then made that relaxes the rows that calculated
+themselves as maximum during the ﬁrst sweep. These rows are relaxed using updates from
+the previous iteration, as in Jacobi. The ﬁgure shows that with respect to number of total
+relaxations for a given residual norm, PS falls somewhere between Southwell and Gauss-Seidel
+in terms of total relaxation count for a given residual norm.
+We now propose the asynchronous parallel Southwell (APS) method, which is an asynchronous implementation of PS. The APS method is a type of asynchronous local sweep method,
+and takes on the following steps on processor i:
+1. Check for incoming data from neighbors which consists of solution updates to x packaged
+with new residual norms. We deﬁne residual norms from neighbors as r1 , r2 , . . . , rqi and
+the process’s local residual norm as r . In our algorithm, we used the 2-norm to calculate
+the residual norms.
+2. Determine if r = max(γ), where γ = {r1 , r2 , . . . , rqi , r }.
+3. If r is the max, execute a Gauss-Seidel sweep and communicate solution updates packaged
+with the new r to all neighbors. We deﬁne outbound solution updates as χ1 , χ2 , . . . , χqi .
+Pseudocode for the routine is shown in Algorithm 5.
+Algorithm 5: Asynchronous Parallel Southwell method
+while not converged on process i do
+Check for updates from neighboring processes
+3
+Set γ = {r1 , r2 , . . . , rqi , r }
+4
+Calculate max(γ)
+5
+if r is max then
+6
+Perform Gauss-Seidel sweep
+7
+Set σ = {{χ1 , r }, {χ2 , r }, . . . , {χqi , r }}
+8
+for j = η1 , η2 , . . . , ηqi do
+9
+Communicate σ(j) to neighbor j
+10
+end
+11
+end
+12 end
+1
+2
+
+1911
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+5
+
+Wolfson-Pou and Chow
+
+Implementation
+
+We used passive one-sided remote memory access (RMA) MPI operations [5] to implement the
+asynchronous algorithms outlined section 4. One-sided communication operations can eliminate the requirement for a communication handshake when data is moved between origin and
+target processes. The two types of one-sided communication are active and passive. For active communication, both processes must be aware of the communication by using blocking or
+partial blocking commands. For passive communication, only the origin needs to be involved
+in accessing the data at the target, which is more appropriate for implementing asynchronous
+algorithms.
+An access epoch must be initialized at the target’s memory window in order for the origin
+process to access data on the target. The origin must also and specify an exclusive or shared
+lock on that window. If an exclusive lock is speciﬁed, only the origin process can access data
+at the target, while shared allows any number of processes to access the data. There are
+three primary operations that can be used for data movement: MPI_Put(), MPI_Get(), and
+MPI_Accumulate(). The function MPI_Put() places data on the target process, MPI_Get()
+retrieves data, and MPI_Accumulate() updates data on the target using a speciﬁed operation.
+The MPI_Put() and MPI_Get() are problematic for asynchronous iterative methods because of
+access collisions. Unknown behavior results when multiple origin processes try to alter data on
+the same target with calls to MPI_Put() or MPI_Get(), so an exclusive lock must be used. This
+issue is addressed in [14, 17, 21] by using eﬃcient lock scheduling schemes. For simplicity, this
+paper bypasses this by using only the MPI_Accumulate() with an MPI_SUM operation, which
+handles multiple accesses to the same window. Additionally, MPI_Win_lock() with a shared
+lock is used to make sure that each process can receive data from multiple neighbors at a time.
+
+6
+6.1
+
+Results
+Test Framework
+
+Our passive one-sided RMA implementations were compiled and run with Intel MVAPICH2 on
+part of Georgia Institute of Technology’s Partnership for Advanced Computing Environment
+(PACE) cluster. We used 5 nodes, each with two 10-core Intel Xeon E5-2680 CPUs with
+InﬁniBand interconnect.
+The stopping criteria for convergence was determined by locally checking, on each process,
+if ∣∣Δx ∣∣2 < tol or if sweeps > max sweeps, where x is the local solution to a process, tol is some
+prescribed tolerance, and max sweeps is an upper bound on the sweeps. If a process satisﬁes
+the convergence criteria, it sends a ﬂag to all other processes. On each process, if all ﬂags have
+been set, then that process terminates.
+We choose a random initial guess for x in the range [−.5, .5] and a 0 right-hand side. The
+test problems we used were ﬁnite diﬀerence (FD) and ﬁnite element (FE) discetizations of the
+Laplace PDE on a 2D domain. The matrices were stored using compressed sparse column
+format. The matrices were ordered using the serial graph partitioning software METIS [18].
+METIS uses an adjacency matrix of an undirected graph and a desired number of subdomains
+as input. The goal of METIS is to (1) assign approximately the same number of elements to
+each subdomain, and (2) partition the graph such that either the edge cut or communication
+volume between the subdomains is reduced. For parallel computations, the ﬁrst goal addresses
+load balancing issues, and the second goal reduces communication between processes. We
+observed no diﬀerence in communication cost when choosing edge cut versus communication
+1912
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+(a)
+
+Wolfson-Pou and Chow
+
+(b)
+
+Figure 2: Comparison of all methods presented in this paper. The ﬁgures show the residual
+norm, speciﬁcally ∣∣r∣∣2 , as a function of communication cost (a) and wall time (b) in log scale.
+volume reduction, so we arbitrarily chose edge cut reduction. For this paper, the number of
+subdomains equals the number of processes.
+The metrics studied in this paper are the communication cost and the communication ratio.
+The communication cost is deﬁned as the total number of messages sent from the ﬁrst relaxation
+until the convergence criteria is met. The communication ratio is the ratio of the communication
+cost of APS to that of some other algorithm.
+
+6.2
+
+Comparing All Methods
+
+In this section we compare APS with the asynchronous algorithms deﬁned in Section 4 and
+synchronous Jacobi (SJ). We used an FE matrix with 349, 603 non-zero values and all 100
+processes (5 nodes, 20 processes per node) with ∼500 rows per process. We looked at the
+residual norm, speciﬁcally ∣∣r∣∣2 , as a function of communication cost and wall time.
+Figure 2 (a) shows the results for the communication cost, and 2 (b) shows the results for
+wall time, both in log scale. The results show that the asynchronous sweep methods, i.e., the
+APS and AGSLS methods, clearly lead in reducing communication and wall time over the other
+three methods. It is expected that sending after every relaxation would converge faster than
+Jacobi because updates from other processes should be more readily available at a given point
+in time. This frequent access to newer data should result in a lower communication cost and
+wall time because the convergence rate would be faster, i.e., a convergence rate closer to that
+of Gauss-Seidel. However, it is shown here that this may not be true in practice, seeing as SJ
+has similar behavior to the two asynchronous relaxation methods, i.e., the ASLR and AGSLR
+methods. This suggests that the communication overhead associated with sending after each
+relaxation reduces the potential to increase the convergence rate.
+
+6.3
+
+Comparing APS and AGSLS
+
+In this section we look at how APS compares with the next best algorithm, AGSLS. The ﬁrst
+test was taking a ﬁxed problem size and varying the number of processes. We used an FE
+matrix with 1,407,811 non-zero values and varied the number of processes by increments of
+20 from 20 to 100, with 20 processes per node. Figure 3 (a) shows the residual norm as a
+function of the communication cost, for 100 processes. APS clearly reduces communication
+1913
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+(a)
+
+Wolfson-Pou and Chow
+
+(b)
+
+Figure 3: Communication cost and ratio comparisons of APS and AGSLS for the FE Laplace
+matrix test. Plot (a) shows the residual norm as a function of the communication cost for 100
+processes. Plot (b) shows the communication ratio for diﬀerent numbers of processes.
+over AGSLS. Figure 3 (b) shows the communication ratio for diﬀerent numbers of processes.
+The ﬁgure shows that the with a higher number of processes, in this case p = 80 and 100, a
+smaller communication ratio is attainable. For example, for the lowest residual norm, APS
+with 20 processes costs ∼70% of AGSLS’s cost with 20 processes, while APS with 100 processes
+costs ∼50% of AGSLS with 100 processes.
+We also varied the problem size and the number of processes, while keeping the number of
+rows per process constant. We used an FD matrix for this test and ﬁxed 5000 rows per process.
+The resulting problem sizes ranged from 489, 960 to 2, 489, 800 non-zeroes. Again, Figure 4 (a)
+shows the residual norm as a function of the communication cost for the largest problem size,
+i.e., 100 processes with 5000 rows per process. Figure 4 (b) shows the communication ratio
+for diﬀerent numbers of processes. This test gives a clearer result, showing that if we maintain
+the same local problem size, the communication ratio tends to be smaller for a larger number
+of processes. For example, 80 and 100 processes give the smallest ratio for a suﬃciently low
+residual norm. This result shows that the new method is more advantages for larger numbers
+of processes. This supports the idea that our method has the potential to greatly reduce
+communication for exascale computing.
+
+7
+
+Conclusion
+
+In this paper, we proposed an asynchronous parallel Southwell (APS) method. The method is
+based on the sequential Southwell method, which relaxes the row with largest residual norm
+on each iteration, instead of in a prescribed order as in Gauss-Seidel. The APS method relaxes
+the row with the highest residual norm in a neighbor cluster, which allowed for parallelism
+and eliminated global communication. We showed that this method successfully reduced internode communication compared to four other methods. The proposed method may be useful for
+exascale computing. The ideas in this paper may also apply to computations in sensor networks,
+where nodes are composed of very simple compute devices with limited energy resources, and
+communication costs of an in-network computation dominate computational costs, and where
+overall computation time may not be the highest priority.
+
+1914
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+(a)
+
+Wolfson-Pou and Chow
+
+(b)
+
+Figure 4: Communication cost and ratio comparisons of APS and AGSLS for the FD Laplace
+matrix test. Plot (a) shows the residual norm as a function of the communication cost for 100
+processes. Plot (b) shows the communication ratio for diﬀerent numbers of processes.
+
+8
+
+Acknowledgments
+
+This material is based upon work supported by the U.S. Department of Energy Oﬃce of Science,
+Oﬃce of Advanced Scientiﬁc Computing Research, Applied Mathematics program under Award
+Number DE-SC-0012538. We wish to acknowledge Jeﬀ Hammond for his advice on passive onesided MPI.
+
+References
+[1] U.S. D.O.E. Workshop Report: Scientiﬁc Grand Challenges: Architectures and Technology for
+Extreme Scale Computing, December 2009.
+[2] U.S. D.O.E. Workshop Report: Scientiﬁc Grand Challenges: Crosscutting Technologies for Computing at the Exascale, February 2010.
+[3] U.S. D.O.E. Workshop Report: Exascale and Beyond: Conﬁguring, Reasoning, Scaling, August
+2011.
+[4] U.S. D.O.E. Workshop Report: Exascale Programming Challenges, July 2011.
+[5] MPI: Message Passing Interface Standard, Version 3.0, High-Performance Computing Center
+Stuttgart, September 2012.
+[6] U.S. D.O.E. Workshop Report: Applied Mathematics Research for Exascale Computing, March
+2014.
+[7] H. Avron, A. Druinsky, and A. Gupta, A randomized asynchronous linear solver with provable
+convergence rate, CoRR, abs/1304.6475 (2013).
+[8] G. Baudet, Asynchronous iterative methods for multiprocessors, J. ACM, 25 (1978), pp. 226–244.
+[9] D. Bertsekas, Distributed asynchronous computation of ﬁxed points, Mathematical Programming,
+27 (1983), pp. 107–120.
+[10] J. Bull and T. Freeman, Numerical performance of an asynchronous Jacobi iteration, in Parallel
+Processing: CONPAR 92—VAPP V: Second Joint International Conference on Vector and Parallel
+Processing Lyon, France, September 1–4, 1992 Proceedings, L. Boug´e, M. Cosnard, Y. Robert, and
+D. Trystram, eds., Berlin, Heidelberg, September 1992, Springer Berlin Heidelberg, pp. 361–366.
+
+1915
+
+Reducing Communication in Distributed Asynchronous Iterative Methods
+
+Wolfson-Pou and Chow
+
+[11] D. Chazan and W. Miranker, Chaotic relaxation, Linear Algebra and its Applications, 2 (1969),
+pp. 199 – 222.
+[12] D. de Jager and J. Bradley, Extracting State-Based Performance Metrics using Asynchronous
+Iterative Techniques, Performance Evaluation, 67 (2010), pp. 1353–1372.
+[13] A. Frommer and D. Szyld, On asynchronous iterations, Journal of Computational and Applied
+Mathematics, 123 (2000), pp. 201 – 216.
+[14] R. Gerstenberger, M. Besta, and T. Hoefler, Enabling highly-scalable remote memory access programming with MPI-3 one sided, in Proceedings of the International Conference on High
+Performance Computing, Networking, Storage and Analysis, SC ’13, New York, NY, USA, 2013,
+ACM, pp. 53:1–53:12.
+[15] S. Gortler, M. Cohen, and P. Slusallek, Radiosity and relaxation methods, IEEE Computer
+Graphics and Applications, 14 (1994), pp. 48–58.
+[16] M. Griebel and P. Oswald, Greedy and randomized versions of the multiplicative Schwarz
+method, Linear Algebra and its Applications, 437 (2012), pp. 1596 – 1610.
+[17] W. Jiang, J. Liu, H. Jin, D. Panda, D. Buntinas, R. Thakur, and W. Gropp, Eﬃcient
+implementation of MPI-2 passive one-sided communication on InﬁniBand clusters, in Recent Advances in Parallel Virtual Machine and Message Passing Interface: 11th European PVM/MPI
+Users’ Group Meeting Budapest, Hungary, September 19 - 22, 2004. Proceedings, D. Kranzlm¨
+uller,
+P. Kacsuk, and J. Dongarra, eds., Berlin, Heidelberg, 2004, Springer Berlin Heidelberg, pp. 68–76.
+[18] G. Karypis and V. Kumar, A fast and high quality multilevel scheme for partitioning irregular
+graphs, SIAM J. Sci. Comput., 20 (1998), pp. 359–392.
+[19] H. Nishida and H. Kuang, Experiments on asynchronous partial Gauss-Seidel method, in Advanced Parallel Processing Technologies: 6th International Workshop, APPT 2005, Hong Kong,
+China, October 27-28, 2005. Proceedings, J. Cao, W. Nejdl, and M. Xu, eds., Berlin, Heidelberg,
+2005, Springer Berlin Heidelberg, pp. 111–120.
+[20] Y. Saad, Iterative Methods for Sparse Linear Systems, SIAM, Philadelphia, PA, USA, 2nd ed.,
+2003.
+[21] G. Santhanaraman, P. Balaji, K. Gopalakrishnan, R. Thakur, W. Gropp, and
+D. Panda, Natively supporting true one-sided communication in MPI on multi-core systems with
+InﬁniBand, in Proceedings of the 2009 9th IEEE/ACM International Symposium on Cluster Computing and the Grid, CCGRID ’09, Washington, DC, USA, 2009, IEEE Computer Society, pp. 380–
+387.
+[22] R. Southwell, Relaxation Methods in Theoretical Physics, a continuation of the treatise, Relaxation methods in engineering science, Oxford University Press, 1946.
+[23] R. Southwell, Relaxation Methods in Engineering Science - A Treatise on Approximate Computation, Oxford University Press, 1940.
+
+1916
+
+

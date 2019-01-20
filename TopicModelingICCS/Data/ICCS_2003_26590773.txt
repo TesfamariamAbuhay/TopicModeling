@@ -1,0 +1,312 @@
+Parallel Finite Element Analysis Platform for the Earth
+Simulator: GeoFEM
+Hiroshi Okuda1, Kengo Nakajima2, Mikio Iizuka2,
+Li Chen2, and Hisashi Nakamura2
+1
+
+Department of Quantum Engineering and Systems Science, University of Tokyo
+7-3-1 Hongo, Bunkyo, Tokyo 113-8656, Japan
+okuda@q.t.u-tokyo.ac.jp
+2 Research Organization for Information Science & Technology (RIST)
+2-2-54 Naka-Meguro, Meguro, Tokyo 153-0061, Japan
+{nakajima,iizuka,chen,nakamura}@tokyo.rist.or.jp
+
+Abstract. GeoFEM has been developed as a finite element solid earth simulator
+using the Earth Simulator (ES) (35.61 Tflops/peak according to the Linpack
+benchmark test). It is composed of a platform and some pluggable ‘analysis
+modules’ for structural, electromagnetic thermal fluid, and wave propagation
+simulations. The platform includes three parts: parallel I/O interface, iterative
+equation solvers and visualizers. Parallel solvers have got very high performance on the ES. When using up to 176 nodes of the ES, the computational
+speed of the static linear analysis by the optimized ICCG (Conjugate Gradient
+method with Incomplete Cholesky Preconditioning) solver, has reached 3.8
+TFLOPS (33.7% of peak performance of 176 nodes). Parallel visualizer can
+provide many visualization methods for analysis modules covering scalar, vector and tensor datasets, and have been optimized in parallel performance. The
+analysis modules have also been vectorized and parallelized suitably for the ES
+and coupled on memory with the parallel visualizer.
+
+1 Introduction
+In order to solve global environmental problems and to take measures against the
+natural disasters, Japanese Ministry of Education, Culture, Sports, Science and Technology (formerly, the Science and Technology Agency) has begun a five-year project
+called ‘Earth Simulator project’ from the fiscal year of 1997, which tries to forecast
+various earth phenomena through the simulation of virtual earth placed in a supercomputer. It is also expected to be a breakthrough in bridging the geoscience and
+information science fields. The specific research topics of the project are as follows:
+(1) Development of the Earth Simulator (ES)[1], a high performance massively parallel processing computer;
+(2) Modeling of atmospheric and oceanic field phenomena and carrying out highresolution simulations;
+(3) Modeling and simulation of solid earth field phenomena;
+(4) Development of large-scale parallel software for the 'Earth Simulator'.
+P.M.A. Sloot et al. (Eds.): ICCS 2003, LNCS 2659, pp. 773–780, 2003.
+© Springer-Verlag Berlin Heidelberg 2003
+
+774
+
+H. Okuda et al.
+
+The ES started its operation in March, 2002. It has shared memory symmetric multiprocessor (SMP) cluster architecture, and consists of 640 SMP nodes connected by a
+high-speed network (data transfer speed: 12.3 GB). Each node contains eight vector
+processors with a peak performance of 8 GFLOPS and a high-speed memory of 2 GB
+for each processor. According to the Linpack benchmark test, the ES was listed as the
+fastest machine on Top500 as of June 2002, having a peak performance of 35.61
+TFLOPS [1]. The GeoFEM deals with the topics (3) and (4) of the above list.
+The solid earth is a coupled system of various complicated phenomena extending
+over a wide range of spectrum of space and time. To simulate this, it needs large-scale
+parallel technologies, combining the sophisticated models of solid earth processes and
+the large amount of observation data [2]. GeoFEM [3, 4] challenges for long-term prediction of the activities of the plate and mantle near the Japanese islands through the
+modeling and calculation of the solid earth problems, including the dynamics and heat
+transfer inside the earth.
+In the followings, some features of GeoFEM are described, i.e. system overview,
+parallel iterative solvers and parallel visualization techniques.
+
+2 Software System Configuration
+GeoFEM consists of the components ‘platform’, ‘analysis modules’ and ‘utilities’, as
+shown in Fig. 1. Platform includes device-independent I/O interface, iterative equation
+solvers and visualizers. Analysis modules are linked to platform on memory by deviceindependent interface such that the copies of data should be avoided as much as possible
+for large scaled-data and high-speed calculations. To deal with various problems of solid
+earth, analysis modules plugged-in are elastic, plastic, visco-elastic, and contact structural analysis, wave propagation analysis, thermal analysis and incompressible thermal
+fluid analysis modules. Utilities are for domain partitioning and pre/post viewers.
+As for the I/O support, device independent communicator, which is also a module, is
+supplied by the platform. For data, which has standardized format, e.g. mesh data,
+reader programs in the same interface are supported by the platform. On the other hand,
+generic data input is supported for analyzer-specific data, e.g. various control data like
+the time increment or the convergence criteria. To do this, GDL (GeoFEM Data Description Language) and GDL compiler are supplied by the platform. GDL, just like
+Fortran 90 language, defines the data structures and generates the reader program. A
+simple example of the GDL script is shown as follows:
+begin structure_static_contact
+begin solver
+method BICGSTAB
+precondition
+BLOCK
+iteration
+real_parameter
+end
+begin nonlinear_method
+…
+end
+end
+
+1.0e-5
+
+Parallel Finite Element Analysis Platform for the Earth Simulator: GeoFEM
+
+775
+
+Since the ES is an SMP cluster machine which has a hybrid-parallel architecture
+that consists of a number of nodes which are connected by a fast network. Each node
+consists of multiple processors which have access to a shared memory, while the data
+on other nodes may be accessed by means of explicit message-passing.
+In order to get high performance on this type of machine, the three-level hybrid
+parallelization was adopted in GeoFEM. That means:
+– Inter-SMP node: MPI;
+– Intra-SMP node: OpenMP for parallelization;
+– Individual PE: Compiler directives for vectorization / pseudo vectorization.
+Except parallel visualizers, GeoFEM software is implemented by Fortran 90 because the compilers of Fortran 90 on the ES are highly optimized and Fortran 90 is
+very popular for most researchers in computing areas. However, in the visualization
+part, Fortran 90 is difficult to realize the specific functions. C language and a good
+interface between C and Fortran are used.
+
+Fig. 1. System configuration of GeoFEM
+
+3 Hybrid Parallel Iterative Solver on the ES [5–7]
+When iterative solvers with preconditioning are used, a partitioning in a node-based
+manner at the defining point of degree of freedom is favorable. GeoFEM assumes
+that the finite element mesh is partitioned into subdomains before the computation
+starts. The partitioning is done by RCB (Recursive Coordinate Bisection), RSB (Re-
+
+776
+
+H. Okuda et al.
+
+cursive Spectral Bisection) or the Greedy algorithm. The communication table is
+generated during the partitioning process.
+Each subdomain is assigned to one SMP node. In order to achieve the efficient
+parallel and vector computation for applications with unstructured grids, the following three issues are critical:
+– Local operation and no global dependency;
+– Continuous memory access;
+– Sufficiently long loops.
+Three-level hybrid parallel was implemented in the solvers. Compared with flatMPI (only MPI is used in communication among PEs), the hybrid method can obtain
+better performance with the increase of data size. Simple 3D elastic linear problems
+with more than 2.2×109 DOF have been solved by localized 3×3 block ICCG(0) with
+the additive Schwarz domain decomposition. PDJDS/CM-RCM (Parallel Descendingorder Jagged Diagonal Storage/Cyclic Multicolor-Reverse Cuthil McKee) [8, 9] reordering is applied. Using 176 SMP nodes of the ES, performance of 3.8 TFLOPS
+(33.7% of peak performance of 176 SMP nodes) has been achieved. Here, the problem size per SMP node is fixed as 12,582,912 DOF.
+
+4000
+
+GFLOPS
+
+3000
+
+2000
+
+1000
+
+0
+0
+
+16
+
+32
+
+48
+
+64
+
+80
+
+96 112 128 144 160 176 192
+
+NODE#
+Fig. 2. Problem size and parallel performance (GFLOPS rate) on the ES for the 3D linear
+elastic problem, using up to 176 SMP nodes (Black circle: Flat MPI, White circle: Hybrid)
+
+Parallel Finite Element Analysis Platform for the Earth Simulator: GeoFEM
+
+777
+
+4 Parallel Visualization
+The target of data size in GeoFEM simulation on the ES will reach one to ten
+petabytes. In order to help researchers understand the complicated relationship
+among different physical attributes in extremely large datasets well, it is very important to develop a parallel visualization system which can transform the huge data into
+appealing images in a high performance and quality. However, it is very challenging
+due to the complicated grids including unstructured, hierarchical and hybrid grids,
+extremely large data size with time-varying large timesteps, many kinds of physical
+attributes covering scalars, vectors and tensors, and no graphics hardware on the ES.
+Facing up to these challenges, we have developed a parallel visualization subsystem
+in GeoFEM for the ES, which has the following features [10, 11]:
+(1) Concurrent with analysis modules on the ES
+The concurrent visualization with analysis modules on the ES has been developed in
+GeoFEM. Thus, there is no need to save the results generated by analysis modules on
+the hard disk or transfer huge data by network, which can avoid the limitations of
+storage capacity for large-scale data. Meanwhile, full use of supercomputers’ huge
+memory can be made to complete visualization. Moreover, at each time step, multiple visualization methods can be performed to generate visualization results by different visualization methods and different parameters. Two kinds of output styles are
+provided. One is to output the simplified geometric visual elements to clients. On
+each client, the users can set viewing, illumination, shading parameter values, and so
+on, and display the graphic primitives by the GPPView viewing software, which is
+also developed by the GeoFEM group [3]. On the computational server, the users
+only specify in the batch files the visualization methods such as cross-sectioning,
+streamlines, and related parameters. The second style is to output an image or a sequence of animation images directly to clients in case that even the simplified geometric primitives are still too large to transfer.
+(2) Applicable for complicated unstructured datasets
+Most current commercial visualization software can get good performance for regular
+datasets, but fail for unstructured datasets. The present visualization techniques are
+well designed for complicated unstructured datasets.
+(3) A number of parallel visualization techniques available in GeoFEM
+As shown in Table 1, a number of parallel visualization techniques are provided in
+GeoFEM for scalar, vector and tensor data fields, to reveal the features of datasets
+from many aspects.
+Table 1. Available parallel visualization techniques in GeoFEM
+
+Scalar Field
+Surface Rendering
+Interval Volume Fitting
+Volume Rendering
+Hybrid Surface and Volume
+Rendering
+
+Vector Field
+Streamline
+Particle Tracking
+Line Integral Convolution
+Volume Rendering
+
+Tensor Field
+Hyperstreamline
+
+778
+
+H. Okuda et al.
+
+(4) High parallel performance
+Optimization by three-level hybrid parallelization has been performed on our Parallel
+Surface Rendering and Parallel Volume Rendering modules on the ES, including the
+message passing for inter-node communication, p-thread or microtasking for intranode parallelization, and the vectorization for each PE. Furthermore, the dynamic
+load balancing is considered for achieving good speedup performance.
+Visualization images have been obtained by applying the above techniques to
+some unstructured earthquake simulation datasets, stress analysis of Pin Grid Array
+(PGA) and flow analysis of outer core. Also, speedup performances tested on Hitachi
+SR8000 and the ES demonstrate the high parallel performance of our visualization
+modules. Figure 3 is the volume rendered images to show the equivalent stress by the
+linear elastostatic analysis for PGA dataset with 5,886,640 elements and 6,263,201
+grid nodes. On the ES using 8 SMP nodes, it took about 0.977 seconds to generate
+the right image in Fig. 3 (image resolution 460*300 pixels), and the speedup of 20.6
+was attained by virtue of the three-level of parallelization compared with the result
+using flat MPI without vectorization. Figure 4 shows the parallel volume rendering
+image for a large earthquake simulation dataset of the Southwest Japan in 1944, with
+2,027,520 elements. The magnitude of the displacement data attribute is mapped to
+color. On the ES, with 8 nodes, it took about 1.09 seconds to generate a single image
+(image resolution: 400*190 pixels), and about 5.00 seconds to generate 16 animation
+images with a rotation of the viewpoint along the x axis.
+
+Fig. 3. Parallel volume rendered images from different viewpoints showing the equivalent
+stress value by the linear elastostatic analysis for a PGA dataset with 5,886,640 mesh elements
+
+Fig. 4. Parallel volume rendering a large earthquake simulation dataset of the southwest Japan
+in 1944, with 2,027,520 elements. Left: complicated mesh of the dataset; Right: a volume
+rendering image in which the magnitude of the displacement data attribute is mapped to color
+
+Parallel Finite Element Analysis Platform for the Earth Simulator: GeoFEM
+
+779
+
+5 Concluding Remark
+The characteristics of GeoFEM as a parallel FEM analysis platform are:
+– High performance parallel solver;
+– Pluggable design;
+– Visualization for large-scale data.
+By virtue of the pluggable design, the sequential finite element codes, developed
+by the geoscientists, can be easily converted to the parallel codes, which can enjoy the
+high performance of GeoFEM.
+GeoFEM ported to the ES is expected to be a powerful tool to handle larger size of
+engineering problems as well as tackle more realistic solid earth problems. Meanwhile, except the ES, it can achieve high parallel performance on all the SMP cluster
+machines, and its flat MPI version can work efficiently on all distributed-memory
+machines.
+Acknowledgements. This work is supported by MEXT’s (Ministry of Education,
+Culture, Sports, Science and Technology) Science and Technology Promotion Fund
+entitled ‘Study on Parallel Software for Precise Prediction of Global Dynamics’.
+
+References
+1.
+2.
+3.
+4.
+
+5.
+
+6.
+
+7.
+
+8.
+
+http://www.es.jamstec.go.jp
+1st ACES (APEC Cooperation for Earthquake Simulation) Workshop Proceedings, 1999
+http://geofem.tokyo.rist.or.jp
+Okuda, H., Yagawa, G., Nakajima, K., Nakamura, H.: Parallel Finite Element Solid Earth
+Simulator: GeoFEM. Proc. Fifth World Congress on Computational Mechanics (WCCM
+V), July 7-12 (2002) Vienna, Austria, ISBN 3-9501554-0-6,
+http://wccm.tuwien.ac.at, Vol.1, 160–166
+Garatani, K., Nakajima, K., Okuda, H., Yagawa, G.: Three-Dimensional Elasto-Static
+Analysis of 100 Million Degrees of Freedom. Advances in Engineering Software, Vol. 32,
+No. 7, (2001) 511–518
+Nakajima, K., Okuda, H.: Parallel Iterative Solvers with Localized ILU Preconditioning
+for Unstructured Grids on Workstation Clusters. International Journal for Computational
+Fluid Dynamics, Vol. 12 (1999) 315–322
+Nakajima, K., Okuda, H.: Parallel Iterative Solvers for Unstructured Grids Using an
+OpenMP/MPI Hybrid Programming Model for the GeoFEM Platform on SMP Cluster Architectures. WOMPEI 2002 (International Workshop on OpenMP: Experiences and Implementations), Kansai Science City, JAPAN, May 15 (2002) 437–448
+Washio, T., Maruyama, K., Osoda, T., Shimizu, F., Doi, S.: Blocking and Reordering to
+Achieve Highly Parallel Robust ILU Preconditioners. RIKEN Symposium on Linear Algebra and its Applications, The Institute of Physical and Chemical Research (1999) 42–49
+
+780
+9.
+
+H. Okuda et al.
+
+Washio, T., Maruyama, K., Osoda, T., Shimizu, F., Doi, S.: Efficient Implementations of
+Block Sparse Matrix Operations on Shared Memory Vector Machines. SNA2000: CD
+Proceedings of the Fourth International Conference on Supercomputing in Nuclear Applications (2000)
+10. Fujishiro, I., Chen, L., Takeshima, Y., Nakamura, H., Suzuki, Y.: Parallel Visualization of
+Gigabyte Datasets in GeoFEM. Journal of Concurrency and Computation: Practice and
+Experience, Vol. 14, No. 6-7 (2001) 521–530
+11. Chen, L., Fujishiro, I., Nakajima, K.: Parallel Performance Optimization for Large-Scale
+Unstructured Data Visualization for the Earth Simulator. In: Reinhard, E., Pueyo, X.,
+Bartz, D. (eds.): Proceedings of Fourth Eurographics Workshop on Parallel Graphics and
+Visualization, Germany (2002) 133–140
+
+

@@ -1,0 +1,988 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 9 (2012) 354 – 363
+
+International Conference on Computational Science, ICCS 2012
+
+fastsg: A Fast Routines Library for Sparse Grids
+Alin Muraras¸u, Gerrit Buse, Dirk Pﬂ¨uger, Josef Weidendorfer, Arndt Bode
+Technische Universit¨at M¨unchen
+
+Abstract
+In a complex processor landscape dominated by multi- and many-core processors, simplifying programming plays
+a crucial role in enhancing developers’ productivity. One way is to use highly tuned library functions. In this paper
+we present fastsg, an optimized library for the sparse grid technique with support for dimensional truncation. With
+optimizations for best cache use and vectorization, we improve the performance on one processor core up to a factor
+of 10. Parallelization using OpenMP scales almost linearly on a 12-core system.
+Keywords: sparse grids, dimensional truncation, library, optimizations
+
+1. Introduction
+Getting the best performance out of the now ubiquitous multi- and many-core processors is a very diﬃcult task.
+Instead, one would like to simplify programming to enhance developers’ productivity. One way to accomplish both
+goals is to use libraries that hide the underlying parallel architecture from the mainstream programmer, and still
+achieve performance via highly tuned code. The programmer can reason about his program sequentially, and yet the
+library functions can make best use of the parallel system the program is running on. For linear algebra, vendors
+provide such libraries such as MKL from Intel, ACML from AMD, or CUBLAS from Nvidia.
+In this paper we propose fastsg, a library for the sparse grid technique [1]. This numerical technique can cope
+with the curse of dimensionality, referring to the fact that the number of points required to densely represent a highdimensional function with a full grid grows exponentially in the number of dimensions. Instead of O(N d ) points,
+a sparse grid requires O(N · (log(N))d−1 ) points, where N is the number of points in each dimension and d is the
+number of dimensions. Despite requiring orders of magnitudes less grid points than full grids, the accuracy is only
+slightly deteriorated for suﬃciently smooth functions. Sparse grids allow for new ways to solve problems involving
+high-dimensional functions, where the only chance before was to use stochastic methods. Many ﬁelds can beneﬁt
+from them, including ﬁnance [2], data mining and computational ﬂuid dynamics [1]. In [3] sparse grids are employed
+in computational steering, for which our library has originally been developed.
+This work uses some results of [4], where the authors present a space eﬃcient data structure for regular sparse
+grids, showing how it can be used to port algorithms to GPUs. We aim at higher ﬂexibility by introducing the notion
+of dimensional truncation, an extension to the regular grid allowing for anisotropic sampling while preserving space
+Email addresses: murarasu@in.tum.de (Alin Muraras¸u), buse@in.tum.de (Gerrit Buse), pflueged@in.tum.de (Dirk Pﬂ¨uger),
+weidendo@in.tum.de (Josef Weidendorfer), bode@in.tum.de (Arndt Bode)
+
+1877-0509 © 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+doi:10.1016/j.procs.2012.04.038
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+355
+
+eﬃciency. Truncated sparse grids form a subset of general dimensionally adaptive grids as described in [5, 6, 7].
+Furthermore, we focus on performance for standard single- and multi-core processors.
+Our library oﬀers a ﬂexible interface with low-level routines for handling data structures with minimal memory
+footprint, and high-level routines for initialization, hierarchization and evaluation, the last two being the central
+operations of the sparse grid technique (see Sec. 3). The contributions of our paper can be summed up as follows:
+• As part of fastsg, we propose a data structure with minimal memory consumption for the sparse grid technique,
+supporting dimensional truncation. Its building blocks are dynamic programming algorithms (Sec. 4).
+• We describe optimizations organized in three categories: for caches, for vector units, and for integer operations
+(Sec. 6). Our transformations reduce the execution time of our hierarchization routine up to a factor of 4.6
+whereas evaluation is up to 10 times faster (Sec. 7). Regarding the scalability of the OpenMP versions of our
+main routines, we report a speedup of 8 for hierarchization and 12 for evaluation on a 12-core system.
+2. Related Work
+Space eﬃcient data structures for regular sparse grids are described in [4]. In contrast, we propose and describe
+in detail a data structure with minimal memory footprint that can handle both regular and truncated sparse grids. Our
+work is complementary to [8] with which it also shares some general concepts pertaining to the bijective mapping
+(agp2idx) covered in Sec. 3. We derive our concept of dimensional truncation from the concept of dimensional
+adaptivity as described in [5, 6, 7] and spinterp, a Matlab framework for sparse grid interpolation [9, 10]. Regular
+sparse grids are the simplest type of sparse grids. They expose one scalar parameter, n, that controls the reﬁnement
+of the grid. Truncated sparse grids however allow for an additional constraint vector c that is used to control the
+maximum reﬁnement level in each single dimension. This provides truncated sparse grids with extra ﬂexibility and
+can result in a more eﬃcient usage of memory in particular when dealing with anisotropic functions.
+Our algorithms for hierarchization and evaluation are similar to the ones described in [4]. The authors propose
+iterative in-place algorithms that enable them to port the sparse grid technique to Nvidia GPUs. Similar work on
+vectorizing evaluation of adaptive sparse grids is presented in [11]. The authors’ approach to vectorization includes
+transforming the inherently recursive algorithm for evaluation to an iterative form and then performing loop transformations in order to provide in the innermost loop the instruction parallelism required for vectorization. In our paper
+we propose a more comprehensive set of optimizations, covering also hierarchization.
+3. The Sparse Grid Technique in a Nutshell
+For simpliﬁcation, we deﬁne multi-dimensional functions on the domain Ω := [0, 1]d , and we restrict the theory
+to functions with zero boundary. An approximation for a function f : Ω → R is typically done by discretizing f ’s
+deﬁnition domain, and representing f as a weighted sum of basis functions. Let l := (l1 , . . . , ld ) and i =: (i1 , . . . , id )
+be vectors from Nd . We use xl,i := (xl1 ,i1 , . . . , xld ,id ) ∈ Qd to denote a vector for which xl,i := i · 2−l , i ∈ {1, . . . , 2l − 1},
+and i odd. Note that using this deﬁnition, there is a unique (l, i) for every xl,i ∈ Q. This means that we can uniquely
+identify a grid point by using xl,i or the pair (l, i). The ﬁrst discretization we deﬁne on Ω is the full grid, Ω f ⊂ Ω,
+Ω f := {xl,i : |l|∞ ≤ n},
+where n is the reﬁnement level and |l|∞ := max(l1 , . . . , ld ). The cardinality of Ω f is O(2nd ), making full grids impractical for high-dimensional problems, e.g. d = 10, n = 10. We move next to the regular sparse grid, Ωr ⊆ Ω f ,
+Ωr := {xl,i : |l|1 ≤ n + d − 1}.
+Note that the regular sparse grid is obtained from the full grid by replacing |l|∞ ≤ n with the more restrictive |l|1 ≤
+n + d − 1. The eﬀect is that Ωr has a signiﬁcantly reduced cardinality O(2n · nd−1 ). A 2d regular sparse grid is depicted
+in Fig. 1 (top). The truncated sparse grid, Ωa ⊆ Ωr , identiﬁed by a given constraint vector c, is the set of points
+Ωa := {xl,i : |l|1 ≤ n + d − 1, lt ≤ ct , t ∈ {1, . . . , d}}.
+
+356
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+Ωa is obtained by ﬁltering Ωr using c. Intuitively, we can see that c further decreases the number of points of the
+regular sparse grid. c is a controllable parameter that enables us to tune Ωa such that its cardinality is minimized
+whereas the accuracy of the approximation is the same as with Ωr . It is worth mentioning that ct = n, ∀1 ≤ t ≤ d
+results in Ωa = Ωr . Fig. 1 (bottom) is an example of a 2d truncated sparse grid. In this case, c = (5, 3) reduces the
+number of points from 129 to 89. A 2d full grid with the same reﬁnement level contains 961 points. The approximation
+of our generic function f can be built on top of any of these grids. Without loss of generality, let us consider that our
+discretization is realized through truncated sparse grids. The approximation fa : Ωa → R is
+αl,i · φl,i ,
+
+fa :=
+xl,i ∈Ωa
+
+where αl,i is the weight (or hierarchical coeﬃcient) and φl,i is the basis function centered at the grid point xl,i . More
+exactly, φl,i is in our case a multi-linear function obtained by multiplying d one-dimensional functions φl,i (x) :=
+h(2l x − i), where h is the standard hat function h(x) := max(1 − |x|, 0). Hence, the formula for φl,i is
+d
+
+φl,i (x) :=
+
+φlt ,it (xt ).
+t=1
+
+At this point we can introduce the main operations of the sparse grid technique. The init operation initializes the
+grid with the values of the function that we want to approximate. Computing the α coeﬃcients of the approximation
+is called hierarchization. Using the α coeﬃcients we determine the value of the approximation at any point inside the
+[0, 1]d domain. We call this operation evaluation of the sparse grid at a given point.
+Data Structures and Algorithms for Sparse Grids
+A sparse grid is typically stored in memory as a set of (point, value) pairs. This increases drastically the memory
+consumption as for each point O(d) values need to be stored. Our goal is to use a bijection based data structure with
+minimal memory consumption, in which only the data associated with the grid’s points is stored in a 1d array. In other
+words, we want to deﬁne a mapping that takes a multi-dimensional point and maps it to a certain index in the array.
+To achieve this we decompose a truncated sparse grid into simple structures which are easy to linearize. Fig. 2 shows
+how this is done for the 2d truncated sparse grid from Fig. 1 (bottom). Note that in the rest of the paper we count the
+levels starting from 0 instead of 1, i.e. l ∈ {0, . . . , n − 1}d and |l|1 ≤ n − 1. n and c remain unchanged.
+At the base of our structure, we have the block which contains all grid points that share the same l. Consequently
+l is used as identiﬁer for a block. With our changed notation block l has 2|l|1 points and can be seen as a simple
+multi-dimensional array, i.e. b[2l1 ] . . . [2ld ]. On the second level, we deﬁne group j as the set of blocks l with |l|1 = j,
+and introduce a strong order on the set’s elements. Finally, we store the groups j, 0 ≤ j < n in ascending order with
+respect to their identiﬁer j. Based on this layout, we can compute a unique array index of a grid point (l, i) via agp2idx
+(its inverse being idx2agp), a mapping deﬁned by the sum of the following three indices:
+• idx1 is the number of points in groups whose identiﬁer is smaller than |l|1 .
+• idx2 is the number of points whose identiﬁer is smaller than l according to the assumed strong order.
+• idx3 is the index of the grid point identiﬁed by i within its containing block l.
+In the following we will see what is needed to compute agp2idx eﬃciently. Consider the group of blocks l with
+|l|1 = j and lt < ct , ∀t ∈ {1, ..., d}. Let a(d, j) be the number of blocks in group j, so the total number of grid points
+within j is a(d, j) · 2 j . In order to determine idx1 we then have to count all points in groups with identiﬁers smaller
+that |l|1 , which leads to the following formula
+|l|1 −1
+
+idx1 =
+
+a(d, k) · 2k .
+
+(1)
+
+k=0
+
+In Sec. 4 we describe in detail how to compute all necessary values a(d, k) eﬃciently in O(d · n) time using dynamic
+programming techniques. These values can also be cached in a small lookup table for fast repeated access. Computing
+
+357
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+l = (0,0)
+
+1
+
+Group0
+
+0.875
+
+0.75
+
+0.625
+
+l = (1,0)
+
+l = (0,1)
+
+0.5
+
+Group1
+
+0.375
+
+0.25
+
+l = (2,0)
+
+0.125
+
+0
+
+0
+
+0.125
+
+0.25
+
+0.375
+
+0.5
+
+0.625
+
+0.75
+
+0.875
+
+l = (1,1)
+
+l = (0,2)
+
+Group2
+
+1
+
+1
+
+l = (3,0)
+
+0.875
+
+l = (2,1)
+
+l = (1,2)
+
+Group3
+
+0.75
+
+0.625
+
+0.5
+
+l = (4,0)
+
+l = (3,1)
+
+l = (2,2)
+
+0.375
+
+Group4
+
+0.25
+
+0.125
+
+0
+
+0
+
+0.125
+
+0.25
+
+0.375
+
+0.5
+
+0.625
+
+0.75
+
+0.875
+
+1
+
+idx1 = 41
+
+Figure 1: 2d zero boundary sparse grids. Top: regular sparse grid, 5 reﬁnement levels, 129 points. Bottom:
+truncated sparse grid, 5 reﬁnement levels, constraint vector (5, 3), 89 points.
+
+dx2 = 32
+
+idx3 = 3
+
+Figure 2: Decomposition of a 2d truncated sparse grid
+(Fig. 1 (bottom)) in simple block structures. Grid point
+(0.875, 0.125) corresponding to l = (2, 2) and i = (7, 1)
+maps to index 76 (= 41 + 32 + 3).
+
+idx2 implies counting the points in all blocks with identiﬁers smaller than l. Employing a function pos(l) that returns
+the position of a block l within its group, we get idx2 as
+idx2 = pos(l) · 2|l|1 .
+
+(2)
+
+Assuming access to the values a(d, j) in constant time, pos(l) has a complexity of O(d + n) as shown in Sec. 4. With
+˜it := (it − 1) · 2−1 , ∀t ∈ {1, . . . , d}, we derive idx3 from the regular linearization of a multi-dimensional array:
+d−1
+
+idx3 =
+
+˜it · 2lt+1 + ˜id .
+
+(3)
+
+t=1
+
+Our theory for truncated sparse grids is centered on the zero-boundary case. To handle the non-zero boundary case,
+we employ a projection based approach in which a non-zero boundary sparse grid is decomposed in a d-dimensional
+zero-boundary sparse grid and the set of grid points on the boundary. The grid points on the boundary are arranged in
+a sequence of projections of the d-dimensional sparse grid on lower-dimensional hyperplanes forming the boundary
+of the [0, 1]d hypercube. As the projections are also truncated sparse grids, this approach allows for agp2idx to be also
+used for accessing the values of grid points located on the boundary.
+A similar storage scheme for regular sparse grids is described in [4]. The multi-index bijection proposed by the
+authors there also motivates decomposing the sparse grid into an ordered sequence of regular blocks of grid points. We
+emphasize that here we target truncated sparse grids which for anisotropic multi-dimensional functions may employ
+even fewer points without losing accuracy. In fact, the storage scheme for truncated grids is also applicable to regular
+sparse grids since the latter is a special case of the former. A major diﬀerence between both approaches is that for
+regular sparse grids the formulas for idx1 and idx2 purely rely on combinatorics. The introduction of the additional
+d constraints speciﬁed through c makes combinatorics inapplicable. We address this problem using the dynamic
+programming algorithms presented in Sec. 4, and ﬁnd that our bijection’s complexity only slightly increases from
+O(d) to O(d + n) when compared to the regular case. Still, we plan to make the routines in fastsg use the more
+specialized approach in [4] for the case of regular sparse grids. Our algorithms for hierarchization and evaluation
+
+358
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+Algorithm 1 Dynamic programming solution for problem 1.
+1: a[1][:] ← 1 , a[:][0] ← 1
+2: for i = 2 to d do
+3:
+for j = 1 to min(n, c[i]) do
+4:
+a[i][ j] ← a[i][ j − 1] + a[i − 1][ j]
+5:
+end for
+6:
+for j = min(n, c[i]) + 1 to n do
+7:
+a[i][ j] ← a[i][ j − 1] + a[i − 1][ j] − a[i − 1][ j − c[i]]
+8:
+end for
+9: end for
+
+are iterative in-place algorithms built around the concepts presented in [4]. Since these algorithms are very time
+consuming, our primary goal is is to accelerate them using multi-core CPUs.
+4. Dynamic Programming Algorithms
+At the base of our data structure are two dynamic programming algorithms. First, we want the number of vectors
+v := (v1 , . . . , vd ) with positive integers, subject to d + 1 constraints speciﬁed through a scalar n and a constraint vector
+c := (c1 , . . . , cd ). Second, given a comparison function that orders any pair of two vectors, we deﬁne a function that
+returns for any vector its corresponding index in the sorted sequence. These algorithms are used for our data structure
+as explained in Sec. 3.
+Problem 1. Determine the number of vectors v with positive integer components, that satisfy the constraints: (1)
+vt < ct , ∀t ∈ {1, . . . , d} and (2) |v|1 = n − 1, where |v|1 := dt=1 vt , i.e. the L1 -norm.
+Solution. Alg. 1.
+Proof. We make the notation sub(v, i, j) for a vector with j − i + 1 components, that contains the components of v
+between the i-th and the j-th position, sub(v, i, j) := (vi , vi+1 . . . , v j−1 , v j ). Let a(i, j) represent the number of solution
+vectors v with i components and |v|1 = j. It is obvious that a(1, j) = 1 and a(i, 0) = 1 for any j ≥ 0 and i ≥ 1.
+This represents our base case. Let us consider now that i ≥ 2 and the i-th component of a generic solution vector
+v is ﬁxed. From the ﬁrst constraint we know that vi ≤ min( j, ci − 1). The second constraint allows us to write
+|sub(v, 1, i − 1)|1 = j − vi . This means that the number of v with the i-th component ﬁxed is equal to a(i − 1, j − vi ). If
+we consider all the possibilities for the i-th component of v we obtain the recursive formula
+mi
+
+a(i − 1, j − t), mi = min( j, ci − 1), i ≥ 2, j ≥ 1.
+
+a(i, j) =
+
+(4)
+
+t=0
+
+We now have a recursive formula for the number of solutions for our ﬁrst problem. By combining the recursive
+formula with memoization we obtain a more eﬃcient dynamic programming algorithm. In other words, by storing
+a(d, n) as a 2d array (d rows, n + 1 columns) and ﬁlling it row by row in ascending order of the row index, we obtain
+an iterative algorithm for computing a(d, n) with polynomial complexity. More precisely, our current complexity is
+O(d · n2 ), where O(d · n) results from traversing the entire 2d array and O(n) is the complexity of the innermost loop
+that computes Formula 4. We now show that we can actually reduce the complexity from O(d · n2 ) to O(d · n).
+Let us look now at cases j < ci and j ≥ ci . For both, we obtain by expanding and subtracting:
+⎧
+⎪
+⎪
+for j < ci
+⎨ a(i − 1, j)
+a(i, j) − a(i, j − 1) = ⎪
+⎪
+⎩ a(i − 1, j) − a(i − 1, j − ci ) for j ≥ ci
+Putting all pieces together, we obtain Alg. 1 for computing a(i, j), with 1 ≤ i ≤ d and 0 ≤ j < n.
+
+359
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+Layer
+Data structure
+
+Routine
+init(d, n, c[d], f )
+agp2idx(l[d], i[d])
+idx2agp(idx)
+
+Sparse grid operations
+
+next(l[d])
+size()
+hierarchize()
+evaluate(x[m][d])
+error()
+
+Description
+Allocates a d-dimensional truncated sparse grid with reﬁnement
+level n and constraint array c. Initializes using function f .
+Converts the grid point given by the pair of arrays (l, i) to the corresponding index in the 1d representation.
+Converts the index in the 1d representation to the corresponding
+multi-dimensional grid point, returned as pair of two arrays (l, i).
+Returns l’s successor in the sequence built via For. 5 from Sec. 4.
+Returns the number of points in the sparse grid.
+Based on f ’s values at sparse grid points, stores computed α coefﬁcients of the approximation into the grid.
+Returns approximation’s values at m d-dimensional points (stored
+in the 2d array x) inside f ’s deﬁnition domain.
+Returns the error of the approximation.
+
+Table 1: Dual-layer interface exposed by fastsg to programmers. The list contains only the most important routines.
+At this point, we can determine eﬃciently the number of solutions for our ﬁrst problem. We now convert the set of
+solution vectors to a sequence. To achieve this we introduce the order of the sequence based on the rule
+u < v ↔ ∃i : ui < vi and ∀t > i, ut = vt .
+
+(5)
+
+We now determine the position of a vector in the sequence. This has to be fast as we need it in the innermost loop of
+our sparse grid routines. We show that we can obtain a dynamic programming algorithm which returns the position
+of any vector in the sequence in O(d + n).
+Problem 2. Let a sequence of d-dimensional vectors have the same L1 -norm, n, satisfy the constraints (1) and (2), and
+be ordered according to Formula 5. For a vector v from this sequence, determine its position, pos(v), in the sequence.
+Solution.
+
+d vt −1
+
+pos(v) =
+
+a(t − 1, |sub(v, 1, t − 1)|1 + j)
+
+(6)
+
+t=2 j=0
+
+Proof. The basic idea is to count all vectors that are smaller than v and have the L1 -norm equal to |v|1 . Let s :=
+(s1 , . . . , sd ) be such a vector. According to Formula 5, there must be an i such that si < vi and sub(s, i + 1, d) =
+sub(v, i + 1, d), meaning all s’s components after i are equal to the ones of v. Hence, the sum of s’s ﬁrst i − 1
+components must satisfy |sub(v, 1, i − 1)|1 ≤ |sub(s, 1, i − 1)|1 < |sub(v, 1, i − 1)|1 + vi .
+This links us to our ﬁrst problem. If we consider all the possibilities for |sub(s, 1, i − 1)|1 , we can state that the
+i −1
+number of vectors smaller than v with i ﬁxed is vj=0
+a(i − 1, |v|1 − |sub(v, i, d)|1 + j). Counting all vectors smaller than
+v is equivalent to considering all the possible values for i, i.e. i ∈ {2, . . . , d}. This leads us to Formula 6.
+5. The fastsg Collection of Routines
+fastsg consists of highly tuned C routines for the sparse grid technique, intended to simplify its use for high
+dimensional problems. The interface is given in Table 1. Applications built on top of the library beneﬁt from the
+agp2idx bijection, resulting in a minimal memory consumption. The storage scheme enables cache optimizations and
+vectorization, as described in Sec. 6. The library exposes two layers: the data structure and the sparse grid operations
+layer. This design provides ﬂexibility by using the low-level for accessing the data structure, and using the high-level
+for sparse grid operations: hierarchization, evaluation, and error.
+An example using the high-level routines is the computational steering application from [3]. It uses sparse grids
+for compressing and decompressing high-dimensional, large-scale simulation data. The terminology diﬀers slightly
+there. In the application-independent sparse grid terminology, compression is referred to as hierarchization and decompression as evaluation. In this use case, the speedup and memory footprint of fastsg are directly transferred to the
+
+360
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+Algorithm 2 Hierarchization.
+1: for t = 1 to d do
+2:
+j ← size()
+3:
+for g = n downto 1 do
+4:
+for b = a(d, g) downto 1 do
+5:
+for k = 2g downto 1 do
+6:
+(l, i) ← idx2agp( j)
+
+9:
+
+(ll, il) ← left(l, i, t)
+(lr, ir) ← right(l, i, t)
+v1 ← asg1d[agp2idx(ll, il)]
+
+10:
+
+v2 ← asg1d[agp2idx(lr, ir)]
+
+7:
+8:
+
+11:
+asg1d[ j] ← asg1d[ j] − (v1 + v2) · 0.5
+12:
+j← j−1
+13:
+end for
+14:
+end for
+15:
+end for
+16: end for
+
+Algorithm 3 Evaluation.
+1: for j = 1 to m do
+2:
+idx23 ← 0
+3:
+for g = 1 to n do
+4:
+for b = 1 to a(d, g) do
+5:
+idx1 ← 0
+6:
+p←1
+7:
+Compute l for which pos(l) = b
+8:
+for t = 1 to d do
+9:
+i ← x[ j][t]/2l[t] · 2 + 1
+10:
+p ← p · max(1 − |2l[t] · x[ j][t] − i|, 0)
+11:
+idx1 ← idx1 · 2l[t] + x[ j][t]/2l[t]
+12:
+end for
+13:
+r[ j] ← r[ j] + asg1d[idx1 + idx23] · p
+14:
+idx23 ← idx23 + 2g
+15:
+end for
+16:
+end for
+17: end for
+
+computational steering application. An example for an application explicitly using the data structure layer is the combination technique [12], which allows to obtain the sparse grid solution to a high-dimensional problem by combining
+the solutions computed on much coarser anisotropic full grids. Here, the values of the full grids are “reduced” in the
+sparse grid and direct access via agp2idx to individual points of the sparse grid is necessary.
+The programmer has to specify the reﬁnement level of a sparse grid (n) and the constraint vector (c). The error
+routine computes the L2 -norm (Euclidean) of the approximation error of the generic multi-dimensional function f .
+Thus, it is possible to specify an ε instead of n and c. The possible values for n and c are then explored until error
+returns a value smaller than ε. For a programmer, this is done transparently. The number of grid points is reduced,
+which also reduces the memory footprint. The cost is increased execution time of the init routine. By specifying n
+and c in init, a programmer can use application speciﬁc algorithms for discovering the optimal values.
+6. Optimizations of Sparse Grid Operations for Multi-core CPUs
+The important functions for performance optimizations are init, hierarchize, and evaluate. Since init can be seen
+as a subpart of hierarchize, we focus only on the last two. The impact of init depends on f provided by the user.
+Sequential Optimizations. In hierarchization, asg1d is a 1d array containing the values of a truncated sparse grid.
+We traverse asg1d d times, each time updating the value at a point based on the values of its dependencies, i.e. its
+parents in the current dimension t. The iterations of the t loop are dependent. The g loop traverses groups of grid
+points whereas the b loop iterates over blocks from the same group. Finally, the k loop is equivalent to the traversal of
+all the points of a block. The left and right parents of a point in dimension t is returned by the routines left and right
+respectively. Computing the left parent in dimension t is equivalent to solving the equation (it − 1) · 2−lt = ilt · 2−llt ,
+where ilt ∈ {1, . . . , 2llt +1 } and ilt odd. Except for the t-th components, all the other components of ll and il are equals to
+the ones of l and i respectively. Similarly, the right parent is given by (it + 1) · 2−lt = irt · 2−lrt . All its other components
+are the same as in l and i. An important observation is that for both the left and right parent llt < lt and lrt < lt . The
+parent concept is essential for the cache locality of this algorithm. We ﬁrst need to look at dependencies from a higher
+level. We pack the grids points in blocks, and the identiﬁer of a block is the l shared by the points it contains. For any
+block with the norm of its identiﬁer b, the parents of its points reside in b − 1 blocks with the same components of their
+respective identiﬁers except the t-th. We can therefore say that the dependencies of the block reside in a relatively
+compact memory space with a total size of 2b − 1, where 2b is the size of the block. This result invalidates part of the
+analysis presented in [4] that presents hierarchization as a cache unfriendly operation. The cache optimization is a
+direct beneﬁt of the storage scheme.
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+361
+
+In Alg. 2, much time is spent computing the bijections idx2agp and agp2idx. This is the target of opt1 and opt2,
+which perform loop invariant code motion by placing operations immediately before the innermost loop. opt1 uses
+the fact that all points in a block have the same l. Hence l can be computed only once for any block with 2g points.
+Thus, it is safe to do the computation of l outside the k loop. opt2 relies on the fact that a block whose identiﬁer has the
+norm g has g − 1 block dependencies. Thus the indices in asg1d of these blocks can be computed before the innermost
+loop, and stored in a small 1d array, idx12mem of size n, thus reducing the number of operations in lines 9 and 10.
+Remember that the bijection computes three indices. Now only idx3 has to be computed in the body of the k loop.
+The sum idx1 + idx2 is obtained by indexing idx12mem using the t-th component of ll in line 9 and lr in line 10. In
+Sec. 7 we show that we cannot obtain this optimization automatically from compilers. Optimization opt3 reduces the
+number of instructions executed in line 6. After moving the computation of l outside, only i is computed in line 6. This
+is the inverse of computing idx3 (Formula 3). The complexity is O(d). We replace it with an iterator that generates
+the current i based on the previous i. It increments the values of i starting with the last component until no carry is
+generated or there are no more components left. A carry is produced when the t-th component of i reaches the value
+2l[t] . Whenever a carry is generated, the corresponding component of i is reset to zero. opt3 introduces dependencies
+between the iterations of the innermost loop. In opt4, the k loop is unrolled to allow for vectorization in the implicit
+loops from the lines 6, 9, and 10. This is incompatible with dependencies introduced in opt3. For vectorization, opt4
+uses SSE intrinsics for integer operations.
+Alg. 3 represents the core of evaluate. The j loop from line 1 iterates over the points where we evaluate the sparse
+grid. These are stored in the matrix x[m][d], and evaluation results in the r vector. Similarly to hierarchization, the
+g and b loops traverse groups and blocks respectively. For every point represented as a row of x, we use exactly one
+value from every block (line 13). idx23 indexes the beginning of the current block in the 1d representation asg1d.
+opt5 applied to this algorithm makes assumptions about the number of iterations of the loops. In general, asg1d can
+be up to three orders of magnitude bigger than x. But 2g is typically smaller than x. For better locality we permute the
+loops from ( j, g, b, t) to (g, b, j, t). This optimization reuses l from line 7 for multiple points from x. Even with opt5,
+vectorizing the t loop is tricky due to dependencies. Nevertheless, we build opt6 on opt5. We vectorize the innermost
+loop t by inserting iterations from the j loop into the t loop. This results in loop tiling, loop interchange, and loop
+unrolling. Next, software pipelining can be done in the unrolled loop. This is not enough as accessing x is not stride-1
+but stride-d. Thus, we change the layout of x using x[ j][t] → x˜[( j/m2) · d + t][ j mod m2], where m2 is the size of the
+tile from the loop tiling transformation. Using x˜ instead of x we get stride-1 for eﬃcient SSE vectorization.
+Parallelization. Our sparse grids routines are parallelized for shared memory machines using OpenMP. Alg. 2 does
+not oﬀer many possibilities for parallelization mainly due to the sequential optimizations. The t loop has dependent
+iterations. The iterations of the k loop are also dependent after applying opt3. Additionally, we cannot update two
+groups in parallel as one of them can depend on the old values of the second. As we aim at minimal memory
+consumption, we do not want extra copies of the data. Thus, only the b loop is a target for OpenMP. For the evaluation
+algorithm, we have more options for parallelization. One approach covers the case when the sparse grid is evaluated
+at a small number of points, e.g. one point. It implies distributing the iterations of the b loop. In the case of one point,
+at the end of the evaluate routine, the results computed by multiple threads are summed up. A coarser parallelization
+is used if the number of points is reasonably big. Here, we parallelize the j loop.
+7. Evaluation
+Our test system is a dual socket Intel Xeon X5670 (Westmere-EP) with six cores per socket. The cores operate at
+2.93 GHz. Hyper-threading is enabled. For compilation, we use gcc 4.4 and gcc 4.5, and icc 11 and icc 12. The ﬂags
+used are “-msse4 -O3 -funroll-loops -fopenmp”. While we will see that compilers cannot produce the best binary for
+fastsg without signiﬁcant human intervention, we provide as many hints as possible to allow the compilers to perform
+a proper data dependence analysis, e.g. by using the restrict keyword. However, we avoid compiler speciﬁc hints.
+We present the impact of our optimizations by GFlops, measured with PAPI [13]. Flops are always single-precision.
+The reference single-core performance of evaluate is measured for 10,000 random points at which we evaluate the
+approximation obtained with sparse grids. Parallel performance is measured for 240,000 points.
+Fig. 3a depicts the performance of the sequential version of hierarchize. The plots correspond to gcc 4.4. We
+can see in this ﬁgure that opt1, opt2, opt3 improve the performance whereas opt4 reduces it. This means that opt4
+
+362
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+
+
+
+
+
+
+
+
+	
+
+
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+	
+	
+
+
+
+
+
+
+
+	
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+	
+	
+
+
+
+	
+	
+
+	
+	
+
+
+
+	
+	
+
+
+
+
+
+(a) Sequential hierarchization, gcc 4.4.
+
+	
+
+(b) Sequential evaluation, gcc 4.4.
+
+
+
+	
+
+
+	
+
+
+
+
+	
+
+
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+	
+
+
+
+
+
+	
+
+
+
+
+	
+
+
+
+
+	
+
+
+
+
+
+
+
+
+	
+
+
+
+ !"
+
+ !
+
+
+
+
+
+
+
+
+
+	
+
+	
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+(c) Sequential hierarchization with (d, n) = (5, 15).
+
+
+
+
+
+
+
+	
+
+
+
+(d) Sequential evaluation with (d, n) = (5, 15).
+
+Figure 3: Performance of sequential sparse grid operations, showing impact of optimizations on performance.
+creates conﬂicts with the transformations performed by the compiler in the case of opt1+2, i.e. when only opt1
+and opt2 are applied. Less obvious is the fact that the beneﬁts of opt3 diminish with the increase of the reﬁnement
+level, n. Consequently, the performance obtained for opt1+2+3 decreases as we move from left to right along the
+horizontal axis. Compared to the performance of the basic version of hierarchize, the speedup obtained for the fully
+optimized version is in the range from 3.4 to 4.6 depending on the inputs. In Fig. 3b, we see that the performance
+of our optimized version of evaluate reaches approximately 25% of the peak performance of one processor core. The
+performance improvement resulting from opt5 decreases when the size of the sparse grid decreases. This happens
+because smaller sparse grids beneﬁt from the cache even in the absence of opt5. The acceleration obtained with our
+optimization over the unoptimized version of evaluate are in the interval from 4.06 to 6.83.
+The performance behavior of our optimizations varies between diﬀerent compilers and even between two versions
+of the same compiler. This aspect is shown in Fig. 3c/3d. For hierarchize, we see that opt1+2+3 provides the best
+performance for three compilers. For gcc 4.5 however, opt1+2+4 results in the best GFlops rate. Regarding opt4, it
+improves the performance obtained using opt1+2 provided that the icc compilers are used. The gcc compilers expose
+an unexpected behavior in the sense that opt4 results in a performance below opt1+2. In Fig. 3d, we see that icc 12
+provides the best performance for evaluate, i.e. it is more than 10 times faster than the unoptimized version. Another
+notable aspect is that gcc 4.4 generates a binary that is faster than the one produced with a more recent version of gcc.
+The parallel performance of our OpenMP versions of hierarchize and evaluate is shown in Fig. 4. Remember
+that our test system is a 12 core system with Hyper-threading (24 hardware threads). For hierarchize, the maximum
+speedup of 8 is achieved for 12 threads. Hyper-threading does not improve the performance in this case. In contrast,
+evaluate beneﬁts considerably from Hyper-threading, i.e. the speedup is 18. This means that there is a signiﬁcant
+
+363
+
+Alin Muraras∏u et al. / Procedia Computer Science 9 (2012) 354 – 363
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ !"
+
+ !"
+
+
+
+
+
+
+
+
+   
+   
+
+
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+    
+     
+  
+    	     	  
+
+
+(a) Performance of parallel hierarchization.
+
+    
+     
+  
+    	     	  
+ 
+ 
+
+(b) Performance of parallel evaluation.
+
+Figure 4: Parallel sparse grid operations, gcc 4.4 on a 12-core system with Hyper-threading
+amount of pipeline latency not handled properly by gcc 4.4 used in this test. It is important to mention that icc 12
+generates a better sequential version, up to 1.9 times faster than the version generated with gcc. For icc 12, the
+scalability graph for evaluate reaches approximately 70 GFlops for 12 threads and shows no improvement for more
+than 12 threads (similar to hierarchize), meaning that the compiler manages to eﬃciently reorder the instructions
+resulting in a better utilization of the instruction pipeline.
+8. Conclusion
+In this paper we propose fastsg, a library for the sparse grid technique. As opposed to existing solutions, we
+provide data structures and routines with minimal memory footprint, while being optimized for fast execution on
+modern multi-core processors at the same time. These aspects become critical e.g. in computational steering, where
+compressed high-dimensional functions (simulation results) need to be unpacked and displayed in real-time. fastsg’s
+eﬃciency is achieved through dynamic programming algorithms helping us to deﬁne a bijective map for convenient
+storage of the sparse grid coeﬃcients. Further, our loop transformations accelerate the serial routines up to 10 times.
+Acknowledgement. This publication is based on work supported by Award No. UK-C0020, made by King Abdullah
+University of Science and Technology (KAUST).
+References
+[1] H. J. Bungartz and M. Griebel. Sparse Grids. Acta Numerica, 13:147–269, 2004.
+[2] D. Pﬂ¨uger. Spatially Adaptive Sparse Grids for High-Dimensional Problems. Verlag Dr. Hut, M¨unchen, August 2010.
+[3] D. Butnaru, D. Pﬂ¨uger, and H. J. Bungartz. Towards High-Dimensional Computational Steering of Precomputed Simulation Data using
+Sparse Grids. Procedia CS, 4:56–65, 2011.
+[4] A. F. Murarasu, J. Weidendorfer, G. Buse, D. Butnaru, and D. Pﬂ¨uger. Compact Data Structure and Scalable Algorithms for the Sparse Grid
+Technique. In PPoPP, pages 25–34, 2011.
+[5] J. Garcke. A dimension adaptive sparse grid combination technique for machine learning. In Proceedings of the 13th Biennial Computational
+Techniques and Applications Conference, CTAC-2006, volume 48, pages C725–C740, 2007.
+[6] T. Gerstner and M. Griebel. Dimension-adaptive tensor-product quadrature. Computing, 71:2003, 2003.
+[7] M. Hegland. Adaptive sparse grids. In CTAC-2001, volume 44, pages C335–C353, April 2003.
+[8] Chr. Feuers¨anger. Sparse Grid Methods for Higher Dimensional Approximation. Dissertation, Universit¨at Bonn, 2010.
+[9] A. Klimke and B. Wohlmuth. Algorithm 847: spinterp: Piecewise Multilinear Hierarchical Sparse Grid Interpolation in MATLAB. ACM
+Transactions on Mathematical Software, 31(4), 2005.
+[10] A. Klimke. Sparse Grid Interpolation Toolbox – User’s Guide. Technical Report IANS report 2007/017, University of Stuttgart, 2007.
+[11] A. Heinecke and D. Pﬂ¨uger. Multi- and Many-Core Data Mining with Adaptive Sparse Grids. In CF, May 2011.
+[12] M. Griebel, M. Schneider, and C. Zenger. A combination technique for the solution of sparse grid problems. In Iterative Methods in Linear
+Algebra, pages 263–281, 1992.
+[13] PAPI website. http://icl.cs.utk.edu/papi/.
+
+

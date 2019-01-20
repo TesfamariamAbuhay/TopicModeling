@@ -1,0 +1,641 @@
+Compatibility of Scalapack with the Discrete
+Wavelet Transform
+Liesner Acevedo1,2 , Victor M. Garcia1 , and Antonio M. Vidal1
+1
+
+Departamento de Sistemas Inform´
+aticos y Computaci´
+on
+Universidad Polit´ecnica de Valencia
+Camino de Vera s/n, 46022 Valencia, Espa˜
+na
+{lacevedo, vmgarcia, avidal}@dsic.upv.es
+2
+Departamento de T´ecnicas de Programaci´
+on
+Universidad de las Ciencias Informaticas
+Carretera a San Antonio de los Ba˜
+nos Km 2 s/n, La Habana, Cuba
+
+Abstract. Parallelization of the Discrete Wavelet Transform (DWT)
+oriented to linear algebra applications, specially the solution of large
+linear systems, is studied in this paper. We propose that for parallel applications using linear algebra and wavelets, it can be advantageous to
+use directly the two-dimensional block cyclic distribution (2DBC), used
+in ScaLAPACK [1]. Although the parallel computation of the DWT may
+be faster with other data distributions, the eﬃciency of the 2DBC distribution for some linear algebra applications can make it more appropriate.
+We have tested this approach implementing a preconditioner for iterative solution of linear systems, which uses wavelets and was proposed in
+[2]. The results using the 2DBC Distribution are better than those obtained with a popular parallel data distribution for computing wavelets,
+the ”Communication-Eﬃcient” scheme proposed in [3].
+Keywords: Discrete Wavelet Transform, Parallel Linear Algebra, Scalapack.
+
+1
+
+Introduction
+
+The Discrete Wavelet transform is still a very recent ﬁeld, so that it is the subject
+of active research. The number of applications which can beneﬁt from this tool
+increases nearly every day, such as time series analysis, signal analysis, signal
+denoising, signal and image compression, fractals, and many more.
+The main motivation of this work has been the parallelization of linear algebra
+algorithms which use wavelets at any stage. There are many papers describing
+diﬀerent techniques for the parallelization of the DWT; however, the algorithms
+described in these papers put the emphasis in computing the DWT as fast as
+possible; therefore the data distribution among the processors is chosen to minimize the computing time needed to obtain the transformed matrix.
+In linear algebra algorithms, the matrix obtained after applying the DWT
+may have to be used for some calculation far more expensive than the DWT
+Y. Shi et al. (Eds.): ICCS 2007, Part I, LNCS 4487, pp. 152–159, 2007.
+c Springer-Verlag Berlin Heidelberg 2007
+
+Compatibility of Scalapack with the Discrete Wavelet Transform
+
+153
+
+in itself, such as solution of linear systems. The standard parallel library for
+linear systems with dense matrices is ScaLAPACK. However, in order to use the
+ScaLAPACK functions the matrix must be distributed using the bidimensional
+block cyclic distribution (2DBC distribution), the ScaLAPACK standard. If the
+matrix is not distributed in this way, one must face either a redistribution of
+the matrix, (with a high communication cost) or a heavy load imbalance (if no
+redistribution is done).
+We propose to compute the DWT directly over the matrix distributed with
+the 2DBC distribution. As an application study, we have applied it to the parallelization of a multilevel preconditioner proposed by T. Chan and K. Chen in [2],
+based on the DWT and the Schur complement method.
+The paper starts by giving a small review of the DWT and its application
+to solution of linear systems. In that section, the multilevel preconditioner is
+described. Then starts the main part of paper, where the results about parallel
+DWT are presented. Finally, the code implementing the parallel version of the
+preconditioner is described, and some numerical results are given.
+
+2
+
+Discrete Wavelet Transform
+
+The theoretical background of the DWT is based on the concept of Multiresolution analysis and is already quite well known. However, these concepts are not
+useful when considering the implementation details and the parallelization, so
+that we will refer to the interested reader to the following references: [4,5].
+The DWT applied over a signal or vector is obtained through digital ﬁlters,
+D
+a lowpass ﬁlter G determined by the coeﬃcients {gi }i=1 and a highpass ﬁlter H
+{hi }D
+i=1 .
+Not all pairs of highpass and lowpass ﬁlters are valid for a DWT; however,
+there are many such pairs. This means that the DWT is not a single, unique
+operation, since it depends on the ﬁlters. The orthogonal wavelets are the most
+popular group of wavelets. In this case, to obtain a reversible DWT the ﬁlter
+coeﬃcients must satisfy hi = (−1)i gi . The length D of the ﬁlter is called the
+”order” of the wavelet. For simplicity, we shall concentrate only on orthogonal
+wavelets, and, among these, only on the wavelets depending on short ﬁlters, since
+these will minimize the communications in the parallel DWT.
+A single stage of the DWT (or a one-level DWT) over a vector v of length
+n = 2k is performed, ﬁrst, convolving both ﬁlters with the vector v, obtaining two
+sequences of length n. Next, every even element of these sequences is discarded,
+and the resulting sequences (of length n2 ) are assembled together.
+These two steps are equivalent to the multiplication of the data vector by the
+H
+, where H and G (of dimension n2 × n ) are
+matrix Wn =
+G
+⎛
+⎞
+h1 h2 ... hD 0 · · · · · · · · · · · · 0
+⎜ 0 0 h1 h2 ... hD 0 · · · · · · 0 ⎟
+⎜
+⎟
+(1)
+H =⎜
+⎟
+..
+.. ..
+⎝ 0 · · · · · · ...
+. .
+. 0 ⎠
+h3 h4 · · · hD 0 · · ·
+
+0 h1 h2
+
+154
+
+L. Acevedo, V.M. Garcia, and A.M. Vidal
+
+The matrix G has the same structure. This product would result in
+⎛
+⎞
+d1
+⎜ .. ⎟
+⎜ . ⎟
+⎜
+⎟
+⎜ dn/2 ⎟
+H ·v
+⎜
+⎟
+Wn · v =
+=⎜
+⎟
+G·v
+⎜ s1 ⎟
+⎜ . ⎟
+⎝ .. ⎠
+sn/2
+
+(2)
+
+where the di are the high frequency (or ”detail”) components and the si are the
+low frequency (or ”smooth”) components. If the wavelet is orthogonal, then the
+matrix Wn must be orthogonal as well. The orthogonal wavelets with shorter
+√
+√
+ﬁlters are the Haar wavelet, with coeﬃcients g1 = 22 , g2 = 22
+The L-Level DWT (or, simply, the DWT) is obtained applying L times the
+one-level DWT over the low frequency part of the data vector.
+The two-dimensional wavelet transform is applied to a matrix by applying
+1-D transforms along each dimension. So, a one-level 2-D DWT applied over a
+matrix T0 ∈ n,n can be written as T˜0 = Wn T0 WnT , with Wn deﬁned as above.
+In this case, we obtain the following partition:
+T˜0 = Wn T0 WnT =
+
+A1 B1
+C1 T1
+
+,
+
+(3)
+
+where T1 = GT0 GT , A1 = HT0 H T , B1 = HT0 GT and C1 = GT0 H T .
+If, as usual, we want to apply more than one DWT level, at least two diﬀerent
+possibilities appear. The so-called ”Standard” DWT form of a matrix is obtained
+applying the L-level DWT over the columns, and then applying the L-level DWT
+over the rows. The Non-Standard form [6] is obtained applying a one level DWT
+over the rows, and one over the columns (obtaining a partition as in (3). Then,
+T
+) and another DWT by columns (Wn/2 )
+another one-level DWT by rows (Wn/2
+are applied over the low-frequency submatrix T1 , and this is repeated L times,
+always over the low frequency submatrix.
+When working with matrices, the choice usually is the Non-Standard form
+or some slightly diﬀerent version, such as the level-by level form, proposed
+in [2]. Therefore, all the considerations from now on will be referred to the
+Non-Standard version.
+2.1
+
+Wavelets and Linear Systems
+
+There are several research lines, oriented towards eﬃcient solution of linear systems using wavelets [6,7]. One of these is based on the decomposition shown in
+equation (3). The main algorithm of interest for us is the recursive Wavelet-Schur
+preconditioner proposed by Chan and Chen in [2].
+It is not possible for us, due to space reasons, to give an appropriate description of the algorithm. Therefore we will only give a brief outline; all the details
+can be found in [2].
+
+Compatibility of Scalapack with the Discrete Wavelet Transform
+
+155
+
+This algorithm uses the block decomposition (3) produced by the DWT. To
+build a preconditioner, the submatrices A1 , B1 and C1 are approximated by
+”band approximations” (all the elements except those on the desired band are
+set to zero), and the Schur complement method is used to solve, approximately,
+a linear system with this new matrix. Combining this technique with standard
+iterative methods (GMRES, Richardson)[8] a multilevel algorithm for solution
+of linear systems is built.
+The implementation of this algorithm requires the computation of several
+DWT levels of a matrix, the computation of matrix-vector products of DWTtransformed matrices, and, in the inner level, needs the solution of a linear
+system through LU decomposition, where the coeﬃcient matrix is again a DWTtransformed matrix.
+2.2
+
+Parallel DWT; Data Distributions
+
+The parallel DWT of a matrix is relatively simple to implement [3]. The most
+critical issue is the data distribution to avoid communications. The scheme with
+seemingly better properties is the ”Communication-eﬃcient” (C-E) DWT proposed by Nielsen and Hegland [3], in which the matrix is distributed by block of
+contiguous columns.
+On the other hand (as mentioned above), if the matrix should be used as
+coeﬃcient matrix for solution of linear systems, it would be better to use a
+2DBC distribution, the used as basis of the Scalapack library. The ScaLAPACK
+data distribution is described in detail in [1]. Here we only show an example.
+Let us consider the bidimensional grid of processors of Figure 1.
+
+Fig. 1. Bidimensional processor mesh
+
+Figure 2 shows how a matrix would be distributed over the processor mesh in
+Fig.1. The distribution for C-E DWT is displayed on the left, while the ﬁgure on
+the right shows a possible two dimensional cyclic distribution, suitable for use
+with Scalapack.
+We will examine now which are the communications needed for the computation of a single wavelet level, using both distributions. Let us start with the
+C-E distribution.
+
+156
+
+L. Acevedo, V.M. Garcia, and A.M. Vidal
+
+Fig. 2. Matrix on the left, distributed by columns (for C-E DWT); on the right, a
+possible two-dimensional cyclic distribution
+
+Using basic results from the Nielsen-Hegland paper [3], we have that with the
+column distribution every processor will need, for each row, D − 2 elements from
+the processor holding the columns on the right. These elements are needed to
+compute the row-oriented 1D DWT. (Since in this distribution each processor
+holds complete columns, there is no need of communications for the columnoriented 1D DWT). The only exception is the last processor (P11 in the ﬁgure),
+which must receive these elements form the ﬁrst processor (P00 in the Figure).
+Therefore, considering all rows, each processor will need N · (D − 2) elements,
+and the total number of words to be transferred is P · N · (D − 2), where P is
+the number of processors.
+Using a 2DBC distribution, the communications are somewhat more involved.
+Let us assume
+√ ﬁrst that the matrix is distributed over a square processor mesh
+of diameter P , and that the block size, Nb divides exactly the dimension of
+the matrix n. So,if k = NNb , then the total number of blocks in the matrix is k 2 .
+Let us consider now a single block, located, for the example, in the processor
+P00 . Using the same result from [3] mentioned above, we obtain that to complete
+the DWT of that block, the processor P00 should receive Nb ·(D−2) elements from
+the processor P01 (needed for the row-oriented DWT) and another Nb · (D − 2)
+elements from the processor P10 (for the column-oriented DWT). If we consider
+the last row of blocks, these should be receiving the same amount of data, but
+from the processor(s) holding the ﬁrst row of blocks, like in the CE distribution.
+If we consider the last column of blocks, it would happen exactly the same.
+It turns out that every block (no matter in which processor are they located)
+requires a communication of 2Nb · (D − 2) words . Therefore, for a single DWT
+level, the total number of words to be transferred shall be k 2 · 2Nb · (D − 2) =
+2N · k · (D − 2). Clearly, for ”normal” values of P and Nb , more communications
+are needed with the 2DBC distribution.
+Of course, if we were interested only in computing the DWT, it would not be
+sensible to consider a Scalapack-like distribution, since it is simpler and more
+eﬃcient to compute the DWT with the communication-eﬃcient strategy. Nevertheless, the situation changes when, as in this case, some linear algebra tasks
+must be performed in parallel with the transformed matrices.
+
+Compatibility of Scalapack with the Discrete Wavelet Transform
+
+3
+
+157
+
+Example of Application: Parallel Implementation of
+the Wavelet-Schur Preconditioner
+
+The Wavelet-Schur preconditioner, described brieﬂy above, is a good example of
+algorithm which might beneﬁt of the use of the ScaLAPACK library. It needs to
+compute several matrix-vector products and, above all, it needs to solve a dense
+linear system.
+To test the performance of the data distributions considered, we have written
+a parallel linear system iterative solver, based on GMRES and preconditioned
+with the Wavelet-Schur preconditioner.
+The GMRES method for dense matrices in a 2DBC distribution is implemented easily using the PBLAS and ScaLAPACK functions for the matrix-vector
+product, saxpy update, dot product and 2-norm: pdgemv, pdaxpy, pddot and
+pdnorm2. In the coarsest level where the direct method is used, the LU decomposition of ScaLAPACK pdgesv is used.
+The band approximations of the A, B and C matrices have been chosen as
+diagonal matrices.
+The linear systems used to evaluate the parallel algorithm proposed were
+generated with the following matrices:
+ai,j =
+
+2
+1
+|i−j|
+
+if i = j
+otherwise
+
+(4)
+
+For simplicity, the sizes of the matrix have been chosen as powers of two:
+768, 1152, · · · , 4024. All the tests were carried out in a cluster with 20 2GHz
+Intel Xeon biprocessors, each one with 1 Gbyte of RAM, disposed in a 4x5
+mesh with 2D torus topology and interconnected through a SCI network. The
+processor grids used have sizes 2 × 2 , 3 × 3 and 4 × 4 and the block size was 32.
+3.1
+
+Numerical Results
+
+The table 1 and 2 shows the CPU times of the algorithm in sequential and
+parallel versions, using 1 and 2 wavelet levels in the proposed processor meshes
+with the 2DBC Distribution.
+The same algorithm was implemented as well computing the parallel DWT
+with the CE distribution. It would have been interesting to apply directly the
+algorithm for solution of linear systems to the CE distribution, but the ScaLAPACK routine for the LU decomposition request that the matrix is distributed
+using square blocks, so that it cannot be used with the distribution by blocks of
+columns used for the communication-eﬃcient DWT. Therefore, the matrix had to
+be redistributed to a 2DBC distribution after computing the DWT (The redistribution was done using the ScaLAPACK redistribution subroutine pdgemr2d).
+So, the diﬀerence between execution times for both distributions can be assigned
+entirely to the redistribution of the matrix form the CE (column) distribution to
+a 2DBC distribution. The results in that case can be seen in Tables 3 and 4.
+
+158
+
+L. Acevedo, V.M. Garcia, and A.M. Vidal
+
+Table 1. CPU time (sec.) for the algorithm with 1 wavelet level, Scalapack distribution
+N
+1 Processor
+2 × 2 Processors
+3 × 3 Processors
+4 × 4 Processors
+
+768
+0.15
+0.13
+0.08
+0.05
+
+1152
+0.36
+0.29
+0.14
+0.10
+
+1536
+0.68
+0.40
+0.20
+0.12
+
+1920
+1.14
+0.62
+0.29
+0.18
+
+2304
+1.76
+0.80
+0.42
+0.25
+
+2688
+2.45
+1.07
+0.52
+0.32
+
+3072
+3.41
+1.40
+0.69
+0.43
+
+3456
+4.76
+1.80
+0.93
+0.56
+
+3840
+6.19
+2.29
+1.17
+0.72
+
+4224
+7.93
+2.76
+1.42
+0.85
+
+Table 2. CPU time (sec.) for the algorithm with 2 wavelet level, Scalapack distribution
+N
+1 Processor
+2 × 2 Processors
+3 × 3 Processors
+4 × 4 Processors
+
+768
+0.13
+0.12
+0.07
+0.05
+
+1152
+0.26
+0.23
+0.12
+0.08
+
+1536
+0.47
+0.30
+0.14
+0.09
+
+1920
+0.76
+0.47
+0.21
+0.13
+
+2304
+1.13
+0.64
+0.29
+0.17
+
+2688
+1.65
+0.78
+0.39
+0.23
+
+3072
+1.96
+0.98
+0.43
+0.27
+
+3456
+2.80
+1.17
+0.61
+0.35
+
+3840
+3.37
+1.37
+0.66
+0.40
+
+4224
+4.22
+1.63
+0.79
+0.46
+
+Table 3. CPU time (sec.) for the algorithm with 1 wavelet level, Communicationeﬃcient distribution
+N
+1 Processor
+2 × 2 Processors
+3 × 3 Processors
+4 × 4 Processors
+
+768
+0.15
+0.22
+0.25
+0.26
+
+1152
+0.36
+0.49
+0.38
+0.40
+
+1536
+0.68
+0.70
+0.58
+0.52
+
+1920
+1.14
+1.08
+0.87
+0.77
+
+2304
+1.76
+1.50
+1.13
+0.98
+
+2688
+2.45
+2.03
+1.47
+1.33
+
+3072
+3.41
+2.62
+1.92
+1.66
+
+3456
+4.76
+3.30
+2.44
+2.13
+
+3840
+6.19
+4.14
+3.07
+2.64
+
+4224
+7.93
+4.98
+3.66
+3.15
+
+Table 4. CPU time (sec.) for the algorithm with 2 wavelet level, Communicationeﬃcient distribution
+N
+1 Processor
+2 × 2 Processors
+3 × 3 Processors
+4 × 4 Processors
+
+768
+0.13
+0.14
+0.18
+0.27
+
+1152
+0.26
+0.27
+0.25
+0.34
+
+1536
+0.47
+0.38
+0.31
+0.41
+
+1920
+0.76
+0.59
+0.42
+0.52
+
+2304
+1.13
+0.81
+0.56
+0.53
+
+2688
+1.65
+1.04
+0.70
+0.60
+
+3072
+1.96
+1.31
+0.85
+0.69
+
+3456
+2.80
+1.54
+1.07
+0.86
+
+3840
+3.37
+1.83
+1.20
+0.99
+
+4224
+4.22
+2.21
+1.43
+1.15
+
+It is quite clear (and obvious) that the times using directly the ScaLAPACK
+distribution are signiﬁcantly better than the sequential times and the times obtained with the C-E distribution. Considering that the parallel computation of
+the DWT is faster with the CE distribution than with the 2DBC distribution,
+this means that the time needed to redistribute the matrix (from the CE distribution to the 2DBC distribution) is quite large. The eﬃciencies obtained are not
+very good in any case, due to the high communications requirements of the LU
+decomposition and the matrix-vector products. However, the eﬃciency improves
+when the number of processors and the size of the problem increases; in the case
+of the 2DBC distribution, the improvement is more pronounced.
+
+Compatibility of Scalapack with the Discrete Wavelet Transform
+
+4
+
+159
+
+Conclusions
+
+In this paper we have considered the computation of the parallel DWT of a
+matrix, and specially to its application in numerical linear algebra applications.
+We have shown that the 2DBC distribution is an interesting distribution for
+computing the parallel DWT, since it would allow the direct use of ScaLAPACK
+routines. As an example, the Wavelet-Schur preconditioner has been parallelized
+with good results with respect to the sequential versions, and with respect to
+the same algorithm using the C-E DWT proposed by Nielsen and Hegland.
+
+Acknowledgement
+This work has been supported by Spanish MCYT and FEDER under Grant
+TIC2003-08238-C02-02.
+
+References
+1. L.S. Blackford et al., Software, Enviroment, Tools. ScaLAPACK Users Guide, SIAM
+(1997).
+2. T.F. Chan, K. Chen, On Two Variants of an Algebraic Wavelet Preconditioner,
+SIAM J. Sci. Comput.,24 (2002),260–283
+3. O.M. Nielsen, M.A. Hegland, A Scalable Parallel 2D Wavelet Transform
+Algorithm. REPORT TR-CS-97-21, Australian National University, 1997.
+http://cs.anu.edu.au/techreports.
+4. I. Daubechies, Ten Lectures on Wavelets, CBMS-NSF Regional Conference Series
+In Applied Mathematics, Vol. 61. Society for Industrial and Applied Mathematics
+Philadelphia, 1992.
+5. M. V. Wickerhauser, Adapted Wavelet Analysis from Theory to software. A.K.
+Peters, IEEE Press, 1994.
+6. G. Beylkin, R. Coifman, V. Rokhlin, Fast Wavelet Transforms and Numerical algorithms I, Commun. Pure Appl. Math., XLIV (1991), pp. 141-183.
+7. T.F. Chan, W.P. Tang, W.L. Wan, Wavelet sparse approximate inverse preconditioners, BIT, 37 (1997), pp. 644-660.
+8. R. Barrett, M. Berry, T. Chan, J. Demmel, J. Donato, J. Dongarra, V. Eijkhout,
+R. Pozo, C. Romine, H. Vorst, Templates for the Solution of Linear Systems: Building Blocks for Iterative Methods, Society for Industrial and Applied Mathematics,
+Philadelphia, 1993.
+
+

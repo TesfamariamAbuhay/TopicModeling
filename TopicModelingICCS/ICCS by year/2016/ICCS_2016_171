@@ -1,0 +1,718 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 212–221
+ICCS 2016. The International Conference on Computational
+Science
+
+Tuning the Coarse Space Construction
+in a Spectral AMG Solver∗
+Osni Marques1 , Alex Druinsky1 , Xiaoye S. Li1 , Andrew T. Barker2 , Panayot
+Vassilevski2 , and Delyan Kalchev3
+1
+2
+
+Lawrence Berkeley National Laboratory, [oamarques,adruinsky,xsli]@lbl.gov
+Lawrence Livermore National Laboratory, [barker29,vassilevski1]@llnl.gov
+3
+University of Colorado Boulder, delyank@gmail.com
+
+Abstract
+In this paper, we discuss strategies for computing subsets of eigenvectors of matrices corresponding to subdomains of ﬁnite element meshes achieving compromise between two contradicting
+goals. The subset of eigenvectors is required in the construction of coarse spaces used in algebraic multigrid methods (AMG) as well as in certain domain decomposition (DD) methods.
+The quality of the coarse spaces depends on the number of eigenvectors, which improves the
+approximation properties of the coarse space and impacts the overall performance and convergence of the associated AMG or DD algorithms. However, a large number of eigenvectors
+aﬀects negatively the sparsity of the corresponding coarse matrices, which can become fairly
+dense. The sparsity of the coarse matrices can be controlled to a certain extent by the size
+of the subdomains (union of ﬁnite elements) referred to as agglomerates. If the size of the
+agglomerates is too large, then the cost of the eigensolvers increases and eventually can become
+unacceptable for the purpose of constructing the AMG or DD solvers. This paper investigates
+strategies to optimize the solution of the partial eigenproblems of interest. In particular, we
+examine direct and iterative eigensolvers for computing those subsets. Our experiments with a
+well-known model of an oil-reservoir simulation benchmark indicate that iterative eigensolvers
+can lead to signiﬁcant improvements in the overall performance of an AMG solver that exploits
+such spectral construction of coarse spaces.
+Keywords: spectral algebraic multigrid, interpolator, eigenvectors
+
+∗ This material is based upon work supported by the US Department of Energy (DOE), Oﬃce of Science, Oﬃce
+of Advanced Scientiﬁc Computing Research (ASCR), Applied Mathematics program under contract number
+DE-AC02-05CH11231. This work was performed under the auspices of the DOE under Contract DE-AC5207NA27344, and used resources of the National Energy Research Scientiﬁc Computing Center, which is supported
+by ASCR under contract DE-AC02-05CH11231.
+
+212
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.311
+
+Tuning components of spectral AMG
+
+1
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+Introduction
+
+Multigrid is probably the only class of algorithms suitable for solving extreme-scale problems
+thanks to its potential for optimal computational complexity. This is certainly the case when
+we consider problems arising from the discretization of elliptic partial diﬀerential equations
+(PDEs) with some extensions to Darcy and Maxwell equations. When targeting unstructured
+meshes, i.e., problems for which we do not have access to a hierarchy of discretizations, the
+choice is to consider algebraic versions of multigrid, such as classical AMG and aggregationbased AMG, which rely only on the matrix problem to generate the hierarchy needed in the
+multilevel algorithm.
+To make the methods more robust and handle problems with high variation and anisotropy
+of the PDE coeﬃcients, one may use AMG methods that utilize additional (ﬁne-grid only)
+problem information, such as the topology of the mesh; for ﬁnite element problems one may
+utilize the local element matrices. These AMG methods are referred to as element-based AMG,
+or AMGe for short. In this paper, we are concerned with the Smoothed Aggregation Spectral
+Element Agglomeration Algebraic Multigrid algorithm, in the form introduced in Brezina and
+Vassilevski [5], for solving diﬃcult elliptic PDEs with variable coeﬃcients that can be resolved
+only using a ﬁne-grained discretization. We focus on the two-level variant of the method,
+implemented in the serial C++ code SAAMGe [11, 12]. The method requires the computation of
+subsets of eigenvectors on subdomains (union of ﬁne-grid elements) of the ﬁne discretization
+that are then used for constructing the coarse-grid. More speciﬁcally, we are interested in a
+portion of the lower part of the spectrum of these local subproblems. The computed eigenvectors
+are used to form the coarse-to-ﬁne interpolation matrix (prolongator). In many cases, these
+preliminary computations are very time consuming, in part because the dimensions of the
+subsets are diﬃcult to determine a priori. Therefore, speeding up these computations can have
+a signiﬁcant impact in the overall performance of the multigrid solver. (The impact of the
+coarse-grid solver on the performance of the algorithm has been studied in [8].)
+Our main contributions are the following. First, we examine diﬀerent strategies for computing eigenvectors in the context of SAAMGe, using direct and iterative algorithms. Second,
+we examine alternatives to determine appropriate dimensions for the subsets of eigenvectors in
+iterative algorithms which is needed to provide guidance for optimizing the setup while maintaining the quality of the coarse spaces. The rest of the paper is organized as follows. We start
+by explaining how the SAAMGe algorithm works, and the mechanism for building a prolongator
+operator from subsets of eigenvectors on subdomains of a ﬁne mesh (Section 2). We discuss
+the characteristics of the eigenvalue problems to be solved, algorithms that can be used for
+that purpose, and observations that motivated our quest for a strategy to adaptively compute
+eigenvectors of those subdomains (Section 3). We then discuss the experiments that we have
+performed, and the results for the diﬀerent eigensolution strategies (Section 4). Finally, we
+summarize our conclusions and potential future work (Section 5).
+
+2
+
+Smoothed Aggregation Spectral Element-Based Algebraic Multigrid
+
+In this section, we outline brieﬂy the AMG method that we consider. We are given a symmetric
+positive deﬁnite matrix A that is assembled from local element matrices {Aτ }, where τ runs
+over the elements from a ﬁnite element mesh Th . The local matrices are symmetric but can
+be semi-deﬁnite. We have vT Av = τ ∈Th vτT Aτ vτ , for any vector v, and vτ = v|τ is the
+213
+
+Tuning components of spectral AMG
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+restriction of v to the element τ viewed as a set of degrees of freedom (DOF). For example,
+if τ is a triangle, then vτ can be the restriction of v to the set of vertices of τ . A main step
+in AMG is the construction of an interpolation matrix P . It is a rectangular matrix whose
+number of columns equals the dimension of the coarse vector space. The coarse matrix Ac
+is obtained via the triple-matrix product P T AP . There are several requirements on P to
+have an eﬃcient two-level (or two-grid, TG) algorithm. They relate the coarse space and the
+smoothing process, which is deﬁned from a stationary iteration such as Jacobi or Gauss-Seidel.
+For a parallel multigrid, the smoother has to be well-parallelizable, which is ensured if the
+respective smoothing matrix M is diagonal, or the smoothing iteration can be represented as a
+sequence of sparse matrix vector products. This is the case of polynomial smoothers, i.e., when
+M −1 = (I − pν (D−1 A))A−1 , where pν (t) is a polynomial (pν (0) = 1) and D is diagonal. Once
+the matrices P and Ac are constructed, to solve Ax = b, the TG-solver iterates by alternating
+between the ﬁne and coarse spaces. Speciﬁcally, cycle k transforms the current iterate xk into
+xk+1 using the following steps:
+1.
+2.
+3.
+4.
+5.
+
+Pre-smoothing: yk ← xk + M −1 (b − Axk )
+Restriction: rc ← P T (b − Ayk )
+Coarse solution: xc ← A−1
+c rc
+Interpolation: zk ← yk + P xc
+Post-smoothing: xk+1 ← zk + M −1 (b − Azk )
+
+In a convergent TG method, the matrix D and the interpolation matrix are related via an
+important weak approximation property, v − P vc D ≤ ηw v A , which says that every ﬁne-grid
+vector v can be approximated well from the coarse space, i.e., there is a coarse vector vc such
+that its interpolant P vc is close to v in the norm deﬁned from the smoother (D). The constant
+ηw is related to the convergence factor of the TG iteration.
+In the element-based AMG, we build P by solving local eigenproblems using the locally
+assembled matrices AT and the restriction of the smoothing matrix D, DT , to the set of ﬁne
+DOFs associated with T . T is a subdomain formed of ﬁne-grid elements. The computational
+domain is covered by the sets {T }, which form a non-overlapping partition of the ﬁne-grid
+element mesh. However, as sets of DOF of two neighboring elements have shared DOFs, the
+sets {T } are overlapping in terms of DOFs. The shared DOFs are assigned uniquely to one
+set called aggregate A, and an aggregate is contained in a unique agglomerate T . The set of
+aggregates {A} forms a non-overlapping partition of the ﬁne DOFs.
+To build P , we select a set of eigenvectors that we compute on each T , a rectangular matrix
+from each aggregate, and build ﬁrst the so-called tentative prolongation operator P¯ . More
+speciﬁcally, P¯ is obtained from the eigenvectors associated with the smallest eigenvalues of the
+local stiﬀness matrices of the agglomerates. They are chosen, so that a local version of the above
+weak approximation property holds. We set P¯ = diag( P¯1 P¯2 . . . P¯na ) where the columns
+of P¯i contain a subset of eigenvectors of agglomerate i, and na is the number of agglomerates.
+To obtain the ultimate prolongator P , in smoothed aggregation (SA) methods, we premultiply
+P¯ by a matrix polynomial smoother S: P = S P¯ . The composite smoother S is of the form
+S = s(D−1 A), where s( · ) is a polynomial that is deﬁned by its roots and D is a diagonal
+matrix that comes from A. To premultiply P¯ by S, we explicitly form the sparse matrices
+that represent the polynomial factors of S and premultiply P¯ with each of these matrices. The
+resulting P is a tall-and-skinny sparse matrix. Therefore, the column dimension of P is a
+function of the number of agglomerates and the number of eigenvectors that are selected from
+each agglomerate, both determined by parameters of the algorithm. Finally, the coarse-space
+214
+
+Tuning components of spectral AMG
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+matrix is computed as Ac = P T AP , where A is the ﬁne-grid sparse matrix. Details are given
+in [5, 12].
+The performance of the algorithm is strongly inﬂuenced by how we choose its parameters.
+To solve the local eigenvalue problems, we use a tolerance θ. This spectral tolerance determines
+the number of eigenvectors we select from each agglomerate: we select the eigenvectors whose
+corresponding eigenvalues are smaller than θ. Larger θ implies more eigenvectors in each P¯i ,
+a larger coarse problem and an improved convergence rate. The downside is greater operator
+complexity and lower computational performance. In turn, a small number of elements per
+agglomerate leads to a larger number of agglomerates of smaller size, a larger coarse problem,
+and a potentially higher operator complexity, all without guaranteeing improvements in the
+convergence rate. The other relevant parameters are the polynomial degrees of the smoother
+S and of the relaxation operator M . The former is related to the number of elements per
+agglomerate. It should increase with the number of elements per agglomerate to guarantee the
+necessary approximation properties of the coarse space. The latter should also increase with
+the number of elements per agglomerate, but large values imply more relaxation and therefore a
+higher computational cost for each AMG iteration. A small degree (2 or 3) for both polynomials
+is suﬃcient in most cases. In the present paper, we focus on optimizing the way we solve the
+local eigenvalue problems depending on their size and the imposed spectral tolerance.
+
+3
+
+The Eigenvalue Problems in SAAMGe
+
+For each agglomerated element T we form a non-overlapping subset of its degrees of freedom, and call this non-overlapping subset A. That is, we partition each agglomerate T into
+degrees of freedom that it owns and degrees of freedom that it shares with its neighbors,
+so we can write the stiﬀness matrix of the agglomerated element T as (in Matlab notation)
+AT = [ AA AAφ ; AφA Aφ ] . The local eigenvalue problems we want to solve are of the form
+SA q = λDA q
+
+(1)
+
+where DA is a diagonal matrix (a weighted smoother obtained from AA ) and SA is the Schur
+complement of the agglomerate stiﬀness matrix AT with respect to its subset A, i.e., SA =
+AA − AAφ A−1
+φ AφA .
+
+3.1
+
+Direct eigensolvers
+
+To avoid explicitly forming SA (which is dense), the original approach used in SAAMGe for
+solving (1) is to deﬁne
+AT q = λDT,0 q
+(2)
+where DT,0 is just DA extended with zeros to be the size of AT . This form has the advantage
+that all the matrices involved are sparse and easy to compute, but the potential disadvantage
+that the right-hand side matrix DT,0 is singular. For simplicity, from now on we drop the
+subindexes of A and D. We then rewrite (2) as
+Dq =
+
+1
+(A + D)q,
+1+λ
+
+(3)
+
+ˆ = 1 lay in the interval [0.5, 1] and small λ’s correspond to
+such that the eigenvalues λ
+(1+λ)
+ˆ
+large λ’s.
+Problem (3) can be transformed from sparse to dense and solved with LAPACK’s
+215
+
+Tuning components of spectral AMG
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+agglomerateswithnumberofeigenvalues=eigenvaluecount
+
+dsygvx, which computes selected eigenvalues and, optionally, eigenvectors of a real generalized
+ˆ is assumed to be positive deﬁnite1 . A direct
+ˆ = λBx,
+ˆ where B
+symmetric-eigenvalue problem Ax
+ˆ
+ˆ
+ˆ −T )y = λy, where L is
+eigensolver ﬁrst transforms Ax = λBx into the standard form (L−1 AL
+T
+T
+ˆ
+ˆ −T )y = λy is
+obtained from the Cholesky factorization B = LL and y = L x. Then, (L−1 AL
+ˆ −T ) is
+mapped into a tridiagonal eigenvalue problem, where the tridiagonalization of (L−1 AL
+typically the most time consuming part of the eigensolution.
+In dsygvx, eigenvalues (and corresponding eigenvectors) to be computed can be speciﬁed
+through a range of values, i.e., an interval (VL,VU], or a range of indexes (i.e., IL-th through
+1
+and VU to a number
+IU-th eigenvalues). We use the interval option, setting VL to (1+θ)
+slightly bigger than 1. With the transformation in (3), the eigenvalues become closer to each
+other, potentially in tight clusters. dsygvx uses bisection to compute eigenvalues and inverse
+iteration to compute eigenvectors [3]; it may may require additional work to reorthogonalize
+the computed eigenvectors associated with tight clusters of eigenvalues.
+For large ﬁne grids, problem (2) needs
+1000
+to be solved thousands of times by calling
+900
+I,ɽ=0.001
+dsygvx to compute from a few to tens of
+800
+I,ɽ=0.005
+eigenvectors depending on the spectral tolerA,ɽ=0.001
+700
+ance θ. To illustrate, Fig. 1 shows a hisA,ɽ=0.005
+600
+togram of the number of eigenvectors (x-axis)
+500
+versus the number of agglomerates that re400
+quire that number of eigenvectors (y-axis),
+300
+for isotropic (I) and anisotropic (A) models
+200
+of the spe10 benchmark (see Section 4), us100
+ing 400 ﬁnite elements per agglomerate, and
+0
+θ equal to 0.001 and 0.005. A very large frac0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+eigenvaluecount(<ș)
+tion of the agglomerates requires just a few
+eigenvectors; some agglomerates require several, and ten or more, depending on θ. Ad- Figure 1: Number of eigenvectors per agglomditional experiments (not shown) with larger erate for the isotropic (I) and anisotropic (A)
+agglomerates (e.g. 1000 ﬁnite elements per models of the spe10 benchmark, with 400 ﬁnite
+agglomerate) revealed that some agglomer- elements per agglomerate, and θ equal to 0.001
+ates required more than 20 eigenvalues for the and 0.005. More than 90% of the agglomerates
+θ’s used in the Fig. 1.
+require less than 5 eigenvectors if θ = 0.001.
+
+3.2
+
+Iterative eigensolvers
+
+Alternatively to the mapping (3), one can solve (2) through a projection-based method, e.g.
+through Arnoldi, Lanczos or Jacobi-Davidson type algorithms [7]. In this case, a shift-and-invert
+is needed, i.e., (2) needs to be rewritten as
+(A − σD)−1 Dq = μq,
+
+(4)
+
+1
+. If σ is near the origin, small λ’s become large and better separated in μ’s,
+where μ = λ−σ
+which favors the convergence of projection methods. With Lanczos or Arnoldi, the eﬀect of
+(A − σD)−1 can be realized through a LU or LDLT factorization of (A − σD) and subsequent
+solutions of systems of equations. With Jacobi-Davidson, the eﬀect of (A − σD)−1 can be
+realized with iterative solvers and preconditioners [15].
+1 For
+
+216
+
+ˆ = D and B
+ˆ = A + D.
+solving (3), we invoke dsygvx with A
+
+Tuning components of spectral AMG
+
+3.3
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+Direct versus iterative eigensolvers at a glance
+
+Iterative eigensolvers can take advantage of the sparsity of the matrices in Equation (2). Given
+the size of the eigenproblems that need to be solved in SAAMGe, the question is whether an
+iterative solver could outperform a direct solver. To help ﬁnding the answer, we took two agglomerates of dimensions 612 and 1373 from the spe10 benchmark, and computed an increasing
+number of eigenvalues and eigenvectors using Matlab’s eigs and LAPACK’s dsygvx (through
+a Matlab’s MEX ﬁle). We recall that eigs is an interface for ARPACK, with provides an implementation of the Arnoldi Algorithm with implicit restarts [13]. Although not shown here, the
+timings for these experiments revealed that for the small problem the break-even point is about
+13, while for the large problem ARPACK is consistently faster. (The timings for ARPACK include
+the transformation discussed in the previous subsection.) This simple experiment encouraged
+us to investigate the potential impact of an iterative eigensolver in the overall performance of
+SAAMGe. Hence, we started by adding an interface for JADAMILU in SAAMGe. JADAMILU provides an implementation of the Jacobi-Davidson method that uses a general preconditioner or
+a multilevel incomplete LU preconditioner [4]2 . Given a preconditioner, JADAMILU requires only
+matrix-vector multiplications with A and D. We then added an interface for ARPACK, using
+SuperLU [14] to factor and solve systems of equations involving the shifted operator in (4).
+
+3.4
+
+Early termination for iterative eigensolvers
+
+While dsygvx allows us to use a cutoﬀ (the spectral tolerance θ) for the number of eigenvectors
+to be taken into account in each agglomerate, a similar feature is not available in JADAMILU and
+ARPACK, which take as input a ﬁxed number of eigenpairs, neig, to be computed. In fact, this
+is the case of most implementations of projection-based methods. However, in our interface for
+ARPACK, we added a mechanism that mimics a cutoﬀ, by monitoring the convergence externally
+to ARPACK. We recall that for symmetric matrices Arnoldi behaves like Lanczos: it projects the
+original eigenvalue problem into a smaller one, involving a symmetric tridiagonal matrix T .
+The accuracy of approximate solutions for the original problem can be measured through the
+bottom entries of the normalized eigenvectors of T [17]. In other words, for an approximate
+ˆ qˆ) of (2) by means of (4), at the j-the step of the Lanczos algorithm we have
+solution (λ,
+Tj s = μs, qˆ = Pj s, PjT DL Pj = I, where Pj = [p1 , p2 , . . . pj ] contains the vectors generated
+ˆ L qˆ = βj+1 |s(j) |, where βj+1 is a
+by the Lanczos algorithm. It can be shown that AL qˆ − λD
+normalization factor related to pj+1 (the vector that would expand Pj ) and s(j) is the bottom
+ˆ qˆ). It is also
+entry of s. This means that at step j we can check the accuracy of j pairs (λ,
+possible to use more sophisticated ways of monitoring convergence in the Lanczos algorithm [18]
+but in our implementation we have adopted a modiﬁed version of the implicit QL method for
+tridiagonals implemented in [9], as also discussed in [10], to compute only the bottom entries of
+the eigenvectors s of Tj . (The plane rotations used in the implicit QL method can be rearranged
+to compute only those entries.) We have incorporated this strategy externally to ARPACK to
+monitor Tj , check whether there are eigenvalues below the cutoﬀ (θ), whether the corresponding
+eigenpairs have converged, and then trigger an early termination of ARPACK. This also allows us
+to use a tolerance for convergence diﬀerent than the one set for ARPACK at the beginning.
+The caveat of the early termination strategy is that neig (the ﬁxed number of eigenpairs)
+may conﬂict with θ, i.e., we may set neig to be smaller than the number of eigenvalues below
+θ. Based on our experiments and the results shown in Fig. 1, we estimate that neig = 10
+should suﬃce for most cases. A more robust strategy could consist of allowing for restarts of
+2 The
+
+version of JADAMILU prepared to solve generalized eigenvalue problems is available only in binary form.
+
+217
+
+Tuning components of spectral AMG
+
+eigensolver
+dsygvx
+JADAMILU (diag)
+JADAMILU (ILU)
+ARPACK (1)
+ARPACK (2)
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+problem and approach
+(3)): (λi , qi ), λi < θ; bisection plus inverse iteration [3]
+(4): (λi , qi ), i = 1, 2, . . . neig, λi ≤ λi+1 ; JADAMILU with diag. precond.
+(4): (λi , qi ), i = 1, 2, . . . neig, λi ≤ λi+1 ; JADAMILU with ILU precond.
+(4): (λi , qi ), i = 1, 2, . . . neig, λi ≤ λi+1 ; ARPACK+SuperLU
+(4): (λi , qi ), i = 1, 2, . . . neig, λi ≤ λi+1 < θ; ARPACK+SuperLU
+
+Table 1: Summary of eigensolvers used in the tests; ARPACK (1)-(2) in shift-invert mode.
+the eigensolver, to compute additional eigenvectors, if neig is determined not to be enough.
+
+4
+
+Numerical experiments
+
+In this section, we show performance results using the eigensolvers summarized in Table 1:
+dsygvx, JADAMILU with a diagonal preconditioner, JADAMILU with incomplete LU preconditioner, ARPACK in shift-invert mode, and ARPACK in shift-invert mode with the early termination
+strategy discussed in section 3.4 We show results related to a real problem3 , on a Cray XC
+system, a parallel system based on 2.3 GHz 16-core Haswell processors per node, and 128 GB
+of memory per node. On this system we use the Intel compiler suite, and -O2 as the level of
+optimization for the compiler. We use LAPACK 3.5.0, SuperLU 4.3, and the most recent version
+of ARPACK. We use σ = −0.0001 and SuperLU in symmetric mode to perform the factorization
+(A − σD) = LU in problem (4).
+
+SPE10 benchmark
+This is an oil reservoir simulation benchmark from the SPE Comparative Solution Project [2].
+The benchmark is related to ﬂuid ﬂow in porous media described by the Darcy equation (in
+primal form), −∇ · (κ(x)∇p(x)) = f (x), where p(x) is the pressure ﬁeld and κ(x) is the
+permeability of the medium. The challenge arises when the coeﬃcient κ(x) admits a wide
+range of variation. The particular test case we use is the spe10 (model 2) [6], which is a
+3D waterﬂood of a 1.1-million-cell geostatistical model. At the ﬁne geological model scale,
+the model is described on a regular Cartesian grid, with dimensions 1200 × 2200 × 170 cubic
+feet. The top 70 feet (35 layers) represent the Tarbert formation, and the bottom 100 feet (50
+layers) represent Upper Ness. The ﬁne-scale cell size is 20 × 10 × 2 cubic feet, with a total of
+60 × 220 × 85 cells. The porosity of the model is shown in Fig. 2a. The model admits jumps of
+several orders of magnitude between distinct horizontal layers of the medium. Using the ﬁniteelement discretization library MFEM [1], we obtained a ﬁne-grid matrix with dimension 1.16M
+and 30.6M nonzero entries. The model has an isotropic variant, in which the permeability is a
+scalar, and an anisotropic one, in which it is a tensor. The matrix A has the same structure
+in both cases, with an average of 26.4 nonzero entries per row (see Fig. 2(b). The dimensions
+and the sparsity pattern of the coarse-space matrix depend on the SAAMGe parameters (see
+Section 2). An example of a coarse-grid matrix is shown in Fig. 2(c).
+Figure 3 shows timings for the eigensolvers in Table 1 for 6 conﬁgurations of the algorithm
+SAAMGe for spe10. For conﬁgurations 1-3 we used 300, 400, and 500 ﬁnite elements per agglomerate, respectively; similarly for conﬁgurations 4-6. These values lead to 3740 agglomerates of
+average size 483 for conﬁguration 1, 2805 agglomerates of average size 619 for conﬁguration
+3 The
+
+218
+
+results are also representative for a variety of meshes that we have experimented with.
+
+Tuning components of spectral AMG
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+(a) porosity model
+
+(b) ﬁne-grid matrix
+
+(c) coarse-grid matrix
+
+Figure 2: (a) porosity of model 2 in spe10 (source: http://www.spe.org); (b) sparsity pattern
+of the ﬁne-grid matrix; (c) example of a coarse-grid matrix.
+
+JADAMILU (diag)
+
+JADAMILU (ILU)
+
+ARPACK (1)
+
+DSYGVX
+
+ARPACK (2)
+
+1.0
+
+1.0
+
+0.9
+
+0.9
+
+0.8
+
+0.8
+
+0.7
+
+0.7
+
+0.6
+
+0.6
+
+0.5
+
+0.5
+
+normalized time
+
+normalized time
+
+DSYGVX
+
+0.4
+0.3
+0.2
+0.1
+
+JADAMILU (diag)
+
+JADAMILU (ILU)
+
+ARPACK (1)
+
+ARPACK (2)
+
+0.4
+0.3
+0.2
+0.1
+
+0.0
+
+0.0
+
+1
+
+2
+
+3
+
+4
+
+configuration
+
+(a) isotropic model
+
+5
+
+6
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+configuration
+
+(b) anisotropic model
+
+Figure 3: Timings for eigenvalue calculations for 6 conﬁgurations of spe10: dsygvx (blue),
+JADAMILU (diag) (red), JADAMILU (ILU) (yellow), ARPACK (1) (green), and ARPACK (2) (purple). The timings are normalized with respect to dsygvx in each conﬁguration.
+2, and 2244 agglomerates of average size 752 for conﬁguration 3. For conﬁgurations 1-3 we
+used θ = 0.001 and for conﬁgurations 4-6 we used θ = 0.005. For these θ’s, dsygvx computes
+between 2.3 to 3 eigenvectors (in average) per agglomerate for conﬁgurations 1-3, and 7.5 to
+10.5 for conﬁgurations 4-6. Given these numbers, we set neig to 5 for the iterative solvers in
+conﬁgurations 1-3, and to 10 for conﬁgurations 4-6. The maximum number of matrix vector
+multiplications for JADAMILU was set to 10 times the number of DOFs of the agglomerate, with
+a tolerance for the eigenvector residual (tolerance for convergence) equal to 10−10 . The maximum basis size to be computed by ARPACK before an eventual restart was set to (neig + 10) × 2,
+and the tolerance for convergence to machine epsilon, ε ≈ 1.11 × 10−16 . As can be seen in the
+ﬁgure, the reduction in time ranges from 50% to almost 80% for the iterative solvers, depending
+on the size of the agglomerates.
+Finally, Table 2 shows the total time to solution (setup phase, eigenvalue calculations plus
+AMG cycles) for the anisotropic model of spe10 using the eigensolvers listed in Table 1. For
+some conﬁgurations, the use of dsygvx leads to a smaller time to solution than JADAMILU
+(diag,ILU) and ARPACK (1). This is because the coarse grids obtained with these iterative
+eigensolvers are bigger, since they compute a ﬁxed number of eigenvectors per agglomerate,
+without necessarily reducing the number of AMG cycles. In contrast, ARPACK (2) consistently
+leads to the smaller time to solution, from 26% to 58% gains, with coarse grid sizes and number
+219
+
+Tuning components of spectral AMG
+conﬁg.
+1
+2
+3
+4
+5
+6
+
+dsygvx
+655
+790
+838
+1219
+998
+1203
+
+JADAMILU (diag)
+820
+507
+422
+1810
+952
+762
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+JADAMILU (ILU)
+531
+607
+725
+1135
+1354
+1769
+
+ARPACK (1)
+467
+563
+452
+780
+1297
+883
+
+ARPACK (2)
+365
+395
+359
+512
+739
+623
+
+Table 2: Total time to solution (seconds) for the six conﬁgurations of spe10, anisotropic model.
+The largest times in each conﬁguration is in red; the smallest is in blue, i.e., ARPACK (2).
+of AMG cycles (not shown) that are similar to the ones obtained with dsygvx.
+
+5
+
+Conclusions
+
+In this paper we showed that iterative eigensolvers can lead to signiﬁcant time savings in the
+computation of subsets of eigenvectors that are needed for the computation of the prolongator in
+a TG algebraic multigrid solver. Given the size of the eigenvalue problems to be solved, a shiftand-invert strategy for a Krylov-based eigensolver outperformed a preconditioned eigensolver
+for all cases examined. We showed that additional savings can be obtained with a strategy that
+allows for an earlier stop of the Krylov-based eigensolver. Overall, the eigenvalue calculation
+phase has been sped up more than 4x in comparison with the original baseline implementation,
+depending on the problem and conﬁguration. This speed up has been reﬂected in the total time
+to solution in the TG solver, i.e., setup phase, eigenvalue calculations plus AMG cycles: the
+total time to solution can be up to 2x faster.
+Although not shown in this paper, preliminary experiments with a parallel multi-level AMG
+have also shown very promising savings when using a Krylov-based eigensolver. However, in
+this version of the solver the agglomerates become denser and potentially larger as we compute
+a sequence of denser and smaller coarse grids (i.e., as a consequence of Ac = P T AP , as discussed
+in Section 2). Our experiments have revealed that some of the larger agglomerates may require
+a disproportionate large number of eigenvectors (a trend that can be observed in Fig. 1 if
+we increase θ), without signiﬁcantly improving the convergence of the multi-level solver, but
+with a negative eﬀect in terms of load balancing. As future work, we plan to investigate a
+strategy for obtaining agglomerates of similar sizes (in each level), which in turn will lead to a
+better distribution of the time required for the computation of eigenvectors and a better overall
+performance of the multi-level solver.
+Also as future work, we plan to investigate how the tolerance for convergence in iterative
+eigensolvers might aﬀect the number of AMG cycles. In [16, 19], the authors propose the use
+of alternative sets of vectors (Ritz or Lanczos), cheaper to compute than eigenvectors, for the
+dynamic analysis of structures. In these approaches, a “participation factor”, based on the
+loading the structures are subject to, is used to determine how many vectors to be taken into
+consideration in the analyses. Although such a factor may not make sense in AMG, it may
+still be possible to use alternative sets of vectors, not so strongly dependent on a ﬁxed spectral
+tolerance, in the construction of the prolongator.
+
+References
+[1] MFEM. http://mfem.org.
+
+220
+
+Tuning components of spectral AMG
+
+Marques, Druinsky, Li, Barker, Kalchev and Vassilevski
+
+[2] SPE comparative solution project. http://www.spe.org/web/csp.
+[3] E. Anderson, Z. Bai, C. Bischof, L. S. Blackford, J. Demmel, Jack J. Dongarra, J. Du Croz,
+S. Hammarling, A. Greenbaum, A. McKenney, and D. Sorensen. LAPACK Users’ Guide (Third
+Ed.). SIAM, Philadelphia, PA, USA, 1999.
+[4] Matthias Bollh¨
+ofer and Yvan Notay. JADAMILU: a software code for computing selected eigenvalues of large sparse symmetric matrices. Computer Physics Communications, 177:951–964, 2007.
+[5] Marian Brezina and Panayot S. Vassilevski. Smoothed aggregation spectral element agglomeration
+AMG: SA-ρAMGe. In Ivan Lirkov, Svetozar Margenov, and Jerzy Wa´sniewski, editors, Large-Scale
+Scientiﬁc Computing, volume 7116 of LNCS, pages 3–15. Springer Berlin Heidelberg, 2012.
+[6] M. A. Christie and M. J. Blunt. Tenth SPE comparative solution project: Comparison of upscaling
+techniques. SPE Reserv. Eval. Eng., 4(4):308–317, 2001.
+[7] James Demmel, Jack Dongarra, Axel Ruhe, and Henk van der Vorst. Templates for the Solution
+of Algebraic Eigenvalue Problems: A Practical Guide. SIAM, Philadelphia, PA, USA, 2000.
+[8] Alex Druinsky, Peter Ghyels, Xiaoye Li, Osni Marques, Samuel Williams, Andrrew Barker, Delyan
+Kalchev, and Panayot Vassilevski. Comparative performance analysis of coarse solvers for algebraic
+multigrid on leading multicore architectures. pages 1–2, 2015.
+[9] Burton Garbow, James Boyle, Jack Dongarra, and Cleve Moler. Matrix Eigensystem Routines EISPACK Guide Extension, volume 51 of Lecture Notes in Computer Science, Volume 6. Springer
+Verlag, 1977.
+[10] R. G. Grimes, J. G. Lewis, and H. D. Simon. A shifted block Lanczos algorithm for solving sparse
+symmetric eigenvalue problems. SIAM J. Matrix Anal. Appl., 15:228–272, 1994.
+[11] D. Kalchev, C. Ketelsen, and P. S. Vassilevski. Two-level adaptive algebraic multigrid for a
+sequence of problems with slowly varying random coeﬃcients. SIAM J. Sci Comput., 35(6):B1215–
+B1234, 2013.
+[12] Delyan Kalchev. Adaptive algebraic multigrid for ﬁnite element elliptic equations with random
+coeﬃcients. Master’s thesis, Soﬁa University, Bulgaria, 2012.
+[13] Richard Lehoucq, Danny Sorensen, and Chao Yang. ARPACK Users’ Guide: Solution of LargeScale Eigenvalue Problems with Implicitly Restarted Arnoldi Methods. SIAM, 1998.
+[14] Xiaoye Li, Jim Demmel, John Gilbert, Laura Grigori, Meiyue Shao, and Ichitaro Yamazaki. SuperLU Users’ Guide. Technical Report LBNL-44289, Lawrence Berkeley National Laboratory,
+September 1999. http://crd.lbl.gov/~xiaoye/SuperLU/. Last update: August 2011.
+[15] Y. Notay. Combination of Jacobi-Davidson and conjugate gradients for the partial symmetric
+eigenproblem. Numerical Linear Algebra with Applications, 9:21–44, 2002.
+[16] Bahram Nour-Omid and Ray W. Clough. Dynamic analysis of structures using Lanczos coordinates. Earthquake Engineering & Structural Dynamics, 12:565–577, 1984.
+[17] Beresford Parlett. The Symmetric Eigenvalue Problem. SIAM (Classics in Applied Mathematics),
+Philadelphia, USA, 1998.
+[18] Beresford Parlett and Bahram Nour-Omid. The use of a reﬁned error bound when updating
+eigenvalues of tridiagonals. Linear Algebra and its Applications, 68:179–219, 1985.
+[19] Edward L. Wilson, Ming-Wu Yuan, and John M. Dickens. Dynamic analysis by direct superposition
+of Ritz vectors. Earthquake Engineering & Structural Dynamics, 10:813–821, 1982.
+
+221
+
+

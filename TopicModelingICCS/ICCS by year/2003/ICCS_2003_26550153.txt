@@ -1,0 +1,1079 @@
+Eliminating Redundant Range Checks in GNAT
+Using Symbolic Evaluation
+Johann Blieberger and Bernd Burgstaller
+Department of Computer-Aided Automation
+Technical University Vienna
+A-1040 Vienna, Austria
+{blieb,bburg}@auto.tuwien.ac.at
+
+Abstract. Implementation of a strongly typed language such as Ada95
+requires range checks in the presence of array index expressions and
+assignment statements. Range checks that cannot be eliminated by the
+compiler must be executed at run-time, inducing execution time and code
+size overhead. In this work we propose a new approach for eliminating
+range checks that is based on symbolic evaluation. Type information
+provided by the underlying programming language is heavily exploited.
+
+1
+
+Introduction
+
+Strongly typed programming languages impose non-trivial requirements on an
+implementation in order to ensure the properties of the type system as speciﬁed
+by the language semantics. For discrete types these properties are often expressed
+as range constraints that must be met by values of a given type. For example,
+[Ada95] requires for signed integer types that Constraint Error is raised by the
+execution of an operation yielding a result that is outside the base range of the
+respective type. In the case of constrained subtypes the constraints imposed by
+the requested ranges have to be enforced. In the case of array access, [Ada95]
+requires that each index value belongs to the corresponding index range of the
+array. Integrity of a given program with respect to type system properties is
+usually enforced through checks performed for each program statement that
+can potentially violate them. Every check that cannot be proved redundant
+at compile-time has to be postponed until run-time involving two additional
+comparison and conditional branch instructions that need to be executed in order
+to ensure that a given value is within a required range. The resulting impact both
+in execution time and code size is high enough to justify the existence of compiletime options and language constructs that allow (partial) suppression of checks
+but open up a potential backdoor to erroneous program execution in turn.
+On the contrary, an approach that increases the number of checks that can
+be proved redundant at compile-time aids in avoiding this backdoor by reducing
+run-time overhead and thus supporting “acceptance” of those checks for which
+either no proof of redundancy can be found or no such proof exists at all.
+J.-P. Rosen and A. Strohmeier (Eds.): Ada-Europe 2003, LNCS 2655, pp. 153–167, 2003.
+c Springer-Verlag Berlin Heidelberg 2003
+
+154
+
+J. Blieberger and B. Burgstaller
+
+It is the goal of our range check elimination method to identify redundant
+range checks that cannot be spotted by existing state-of-the-art compiler technology.
+The outline of this paper is as follows. In Section 2 we present the notions
+of the symbolic data ﬂow analysis framework used. In Section 3 we demonstrate
+the eﬀectiveness of our framework through an example. Section 4 is devoted to
+the implementation of our dataﬂow framework within GNAT. Section 5 presents
+the experimental results gathered so far. In Section 6 we survey related work.
+Finally we draw our conclusion in Section 7.
+
+2
+
+Symbolic Evaluation
+
+2.1
+
+Motivation
+
+Consider the code fragment given in Fig. 1 which swaps the values stored in u
+and v in place. It contains standard Ada95 code except for the numbered curly
+braces “{. . . }R<number> ” around those expressions for which GNAT will issue a
+range check (cf., for instance, line 5).
+Fig. 1 shows the intervals that GNAT derives by the standard interval arithmetic ([Hag95]) of Fig. 2‡ . Three range checks, one for each assignment, are
+necessary because the computed intervals of the expressions on the right hand
+side exceed the range of subtype sint.
+
+1
+2
+3
+
+subtype sint is integer range -10 .. +10;
+...
+procedure Swap (u, v : in out sint) is
+
+4
+
+begin
+
+5
+6
+7
+8
+
+Interval
+Arithmetic
+u
+v
+[−10, +10] [−10, +10]
+
+u := {u+v}R1 ;
+v := {u−v}R2 ;
+u := {u−v}R3 ;
+
+u
+
+[−20, +20] [−10, +10] u + v
+[−10, +10] [−20, +20] u + v
+[−20, +20] [−10, +10]
+v
+
+end Swap;
+
+Fig. 1. Swapping the contents of two variables
+
+[a, b] + [c, d] = [a + c, b + d]
+[a, b] − [c, d] = [a − d, b − c]
+[a, b] ∗ [c, d] = [min(ac, ad, bc, bd), max(ac, ad, bc, bd)]
+[a, b]/[c, d] = [a, b] ∗ [1/d, 1/c], 0 ∈ [c, d]
+Fig. 2. Interval Arithmetic
+‡
+
+Symbolic
+Values
+u
+v
+
+In fact GNAT applies simpliﬁed rules for [a, b] ∗ [c, d] and [a, b]/[c, d].
+
+v
+v
+u
+u
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+155
+
+In contrast, the symbolic values in Fig. 1 show that range checks R2 and
+R3 are redundant. In line 6 variable v is assigned the value of the actual parameter of u, namely u, and in line 7 u is assigned v. If one of u or v would
+not be in the range of subtype sint, the range checks due to the Ada95 parameter passing mechanism would raise exception Constraint Error and control ﬂow
+would not reach the body of procedure Swap. It is this property, denoted as
+u, v ∈ [−10, +10], together with the fact that the values for u and v are computed symbolically, that lets us actually derive that range checks R2 and R3
+are redundant.
+As can be seen by this introductory example symbolic analysis derives tighter
+bounds for the ranges of expressions and thus reduces the number of necessary
+range checks. The underlying theory of this approach is sketched in the remaining
+part of this section.
+2.2
+
+Preliminaries
+
+Symbolic evaluation is an advanced static program analysis in which symbolic
+expressions are used to denote the values of program variables and computations (cf. e.g. [CHT79]). A path condition describes the impact of the program’s
+control ﬂow onto the values of variables and the condition under which control
+ﬂow reaches a given program point. In the past, symbolic evaluation has already
+been applied to the reaching deﬁnitions problem [BB98], to general worst-case
+execution time analysis [Bli02], to cache hit prediction [BFS00], to alias analysis [BBS99], to optimization problems of High-Performance Fortran [FS97], and
+to pointer analysis for detecting memory leaks [SBF00].
+The underlying program representation for symbolic evaluation is the control
+ﬂow graph (CFG), a directed labeled graph. Its nodes are basic blocks containing
+the program statements, whereas its edges represent transfers of control between
+basic blocks. Each edge of the CFG is assigned a condition which must evaluate
+to true for the program’s control ﬂow to follow this edge. Entry (e) and Exit (x)
+are distinguished nodes used to denote the start and terminal node.
+In the center of our symbolic analysis is the program context, which includes
+states Si and path conditions pi . A program context completely describes the
+variable bindings at a speciﬁc program point together with the associated path
+conditions and is deﬁned as
+k
+
+[Si , pi ],
+
+(1)
+
+i=1
+
+where k denotes the number of diﬀerent program states. State S is represented
+by a set of pairs {(v1 , e1 ), . . . , (vm , em )} where vs is a program variable, and es is
+a symbolic expression describing the value of vs for 1 ≤ s ≤ m. For each variable
+vs there exists exactly one pair (vs , es ) in S. A path condition pi speciﬁes a
+condition that is valid for a given state Si at a certain program point.
+Example 1. The context
+[{(x, n2 − 1), (y, n + 3)}, x = y − 2]
+
+(2)
+
+156
+
+J. Blieberger and B. Burgstaller
+
+consists of two variables x and y with symbolic values n2 − 1 and n + 3, respectively. Variable n denotes some user input. The path condition ensures that
+x = y − 2 at the program point where the context is valid.
+2.3
+
+Type System Information and Range Checks
+
+Informally a type T is characterized by a set T of values and a set of primitive
+operations. To denote the type of an entity j we write T (j ), to denote the set of
+values for T (j ) we write T (j ). The fact that a given value e ∈ Z is contained in
+the set T (j ) of a (constrained) integer type§ is written as
+e ∈ T (j ) ⇔ e ∈ T (j )’First, T (j )’Last
+
+(3)
+
+where T (j )’First and T (j )’Last denote the language-deﬁned attributes for scalar
+types (cf. [Ada95]). A range check is a test of Equation (3) and is denoted as
+e ∈? T (j ) .
+
+(4)
+
+In general the test is not performed on a value e but on an expression E. Predicate val evaluates range checks symbolically within program contexts, which
+means that the check E ∈? T (j ) is evaluated for each pair [Si , pi ]:
+val(E ∈? T (j), [S1 , p1 ] ∪ · · · ∪ [Sk , pk ]) →
+[S1 , p1 ∧ val(E ∈? T (j ), [S1 , p1 ])] ∪ · · · ∪ [Sk , pk ∧ val(E ∈? T (j ), [Sk , pk ])].
+This evaluation involves the symbolic evaluation of E for [Si , pi ], denoted as
+val(E, [Si , pi ]). If the result of this evaluation can be shown to be contained in
+the set T (j ), then the evaluation of check E ∈? T (j ) yields true, which means
+that the check is redundant for [Si , pi ]:
+val(E ∈? T (j), [Si , pi ]) =
+
+true ⇔ val(E, [Si , pi ]) ∈ T (j )
+
+(5)
+
+false else.
+
+Otherwise the range check is required or cannot be proved to be redundant.
+Deciding on the truth value of the above equation represents the center-piece
+of our range check elimination method. It depends on the data ﬂow framework
+presented in Section 2.4, its exact treatment is thus deferred until Section 2.5.
+Based on Equation (5) we deﬁne the necessity of a range check at a given
+program context via predicate ?rc. It evaluates to false only iﬀ the range check
+is redundant for every pair [Si , pi ] of the program context:
+k
+
+?rc E ∈? T (j),
+
+[Si , pi ] =
+i=1
+
+false ⇔
+
+∀
+
+1≤i≤k
+
+val(E ∈? T (j), [Si , pi ]) = true
+
+true else.
+(6)
+
+For the compiler backend we map predicate ?rc to the node-ﬂag Do Range Check
+of GNAT’s abstract syntax tree (cf. also Section 4).
+§
+
+In Ada terms [Ada95] a combination of a type, a constraint on the values of the
+type, and certain speciﬁc attributes is called subtype.
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+2.4
+
+157
+
+A Data-Flow Framework for Symbolic Evaluation
+
+We deﬁne the following set of equations for the symbolic evaluation framework:
+SymEval(Bentry ) = [S0 , p0 ]
+where S0 denotes the initial state containing all variables which are assigned
+their initial values, and p0 is true,
+PrpgtCond(B , B, SymEval(B )) | LocalEval(B)
+
+SymEval(B) =
+B ∈Preds(B)
+
+(7)
+where LocalEval(B) = {(vi1 , ei1 ), . . . , (vim , eim )} denotes the symbolic evaluation local to basic block B. The variables that get a new value assigned in the
+basic block are denoted by vi1 , . . . ,vim . The new symbolic values are given by
+ei1 , . . . ,eim . The propagated conditions are deﬁned by
+PrpgtCond(B , B, PC) = Cond(B , B)
+
+PC,
+
+where Cond(B , B) denotes the condition assigned to the CFG-edge (B , B).
+Denoting by PC a program context, the operation is deﬁned as follows:
+Cond(B , B)
+
+PC = Cond(B , B)
+
+[S1 , p1 ] ∪ · · · ∪ [Sk , pk ]
+
+= [S1 , Cond(B , B) ∧ p1 ] ∪ · · · ∪ [Sk , Cond(B , B) ∧ pk ]
+The following deﬁnition gives rewrite rules for the | operator, which integrate
+local changes of a basic block into the program state and path conditions.
+Deﬁnition 1. The semantics of the | operator is as follows:
+1. We replace {. . . , (v, e1 ), . . . }|{. . . , (v, e2 ), . . . } by {. . . , (v, e2 ), . . . }.
+2. Furthermore
+{. . . , (v1 , e1 ), . . . }|{. . . , (v2 , e2 (v1 )), . . . },
+where
+e(v) is an expression involving variable v, is replaced by
+{. . . , (v1 , e1 ), . . . , (v2 , e2 (v1 )), . . . }.
+For the above situations it is important to apply the rules in the correct order,
+which is to elaborate the elements of the right set from left to right.
+3. If a situation like [{. . . , (v, e), . . . }, C(. . . , v, . . . )] is encountered during symbolic evaluation, we replace it with [{. . . , (v, e), . . . }, C(. . . , e, . . . )].
+This data-ﬂow framework has been introduced in [Bli02].
+Solving the Data-Flow Problem We solve the equation system deﬁning the
+data-ﬂow problem using an elimination algorithm for data-ﬂow analysis [Sre95].
+It operates on the DJ graph (DJG), which essentially combines the control ﬂow
+graph and its dominator tree into one structure. Node n dominates node m, if
+every path of CFG edges from Entry to m must go through n. Node n is the
+immediate dominator of m if n = m, n dominates m, and n does not dominate
+
+158
+
+J. Blieberger and B. Burgstaller
+
+any other dominator of m. The dominator tree is a graph containing every node
+of the CFG, and for every node m an edge from its immediate dominator n to m.
+The elimination algorithm given in [Sre95] consists of two phases. The ﬁrst
+phase performs DJ graph reduction and variable substitution of the equation
+system until the DJ graph is reduced to its dominator tree. Cycles (e.g. due to
+loops) are treated by the loop-breaking rule [RP86], [Bli02]. After the ﬁrst phase
+the equation at every node is expressed only in terms of its parent node in the
+dominator tree. After determining the solution for the equation of Node Entry,
+the second phase of the algorithm is concerned with propagation of this information in a top-down fashion on the dominator tree to compute the solution
+for the other nodes. Every node corresponds to a basic block of the program
+under investigation, and its solution is expressed in terms of a program context
+as stated by Equation (1). By its deﬁnition such a context describes the possible
+variable bindings valid at this program point, and in this way it provides the
+information required for the range check elimination decision of Section 2.5.
+
+Hierarchical Data-Flow Frameworks Since range checks are part of certain programming language constructs such as array access or assignment statements, a program analysis method that incorporates these checks has to be
+aware of control ﬂow occurring on intra-statement level. The abstraction level
+of intra-statement control ﬂow is in the same order of magnitude lower than
+inter-statement control ﬂow as assembly language is compared to high-level language code. It is not desirable to spend the complete analysis of a program
+on intra-statement level since one gets easily overwhelmed by the amount of
+detail and tends to loose the view of the “big picture”. For this reason we introduce a two-level hierarchy in our data-ﬂow framework where the two levels
+correspond to analysis incorporating intra- and inter-statement control ﬂow. We
+avoid intra-statement control ﬂow as much as possible, which means that it is
+only considered for statements for which the compiler inserts a range check.
+As a notational convenience we collapse the intra-statement control ﬂow subgraph into one single compound node of the inter-statement CFG. In this way
+Fig. 3 depicts the code associated with Node 4 of Fig. 4 as a collapsed compound node (left) and as a compound node expanded to its subgraph (right).
+Note that we use circular shapes for ordinary nodes and boxes for compound
+nodes to distinguish between the two.
+
+41
+4
+
+⇐⇒
+
+J + 1 ∈ T (J)
+
+43
+
+J + 1 ∈ T (J)
+
+42
+4
+
+Fig. 3. Levels of Abstraction: Inter-Statement ⇔ Intra-Statement
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+2.5
+
+159
+
+The Range Check Elimination Decision
+
+Consider Equation (8) which is an example of a valid symbolic equation according to the symbolic data-ﬂow framework introduced in Section 2.4. Construction
+of an input program yielding this equation is straight-forward and suppressed
+for space considerations. The types of the used variables are T (c) = Boolean,
+and T (n, x , y, z ) = Positive.
+[{(c, ⊥), (n, n), (x, x), (y, y), (z, z)}, xn + y n = z n ] | {(c, 3 − n ∈? T (x))}.
+
+(8)
+
+The proposed range check can only be removed, if, according to Equation (5),
+val 3 − n, [{(c, ⊥), (n, n), (x, x), (y, y), (z, z)}, xn + y n = z n ] ∈ T (x ) .
+This formula is valid if it it can be shown that n ≤ 2, which requires a proof of
+(∀n)(∀x)(∀y)(∀z)[xn + y n = z n ⇒ n ≤ 2],
+also known as Fermat’s last theorem. While for this speciﬁc theorem our dataﬂow framework could be aware of the recently discovered proof, in general there
+exists no algorithm capable of determining the validity of a formula such as
+Equation (5) stated in elementary arithmetic built up from +, ∗, =, constants,
+variables for nonnegative integers, quantiﬁers over nonnegative integers, and the
+sentential connectives ¬, ∧, ∨, ⇒, ⇔ subject to the requirement that every
+variable in such a formula be acted on by some quantiﬁer. This follows from
+a conclusion from G¨
+odel’s incompleteness theorem, [Rog87, p. 38] contains the
+corresponding proof.
+However, for a subclass of elementary arithmetic called Presburger arithmetic, validity is decidable [Sho79]. Presburger formulas are those formulas that
+can be constructed by combining ﬁrst degree polynomial (aﬃne) constraints on
+integer variables with the connectives ¬, ∧, ∨, and the quantiﬁers ∀ and ∃. Constraints are aﬃne due to the fact that Presburger arithmetic permits addition
+and the usual arithmetical relations (<, ≤, >, ≥, =), but no arbitrary multiplication of variables¶ .
+The Omega test [Pug92] is a widely used algorithm for testing the satisﬁability of arbitrary Presburger formulas. We can use it as a range check elimination
+decision procedure if we are able to translate Equation (5) into such a formula.
+We split this translation into two steps, each yielding a conjunction Γ of constraints. Initially we set Γ1 = Γ2 = true.
+Step 1: We derive constraints from the path-condition pi of state Si as follows.
+The path-condition essentially is a conjunction of predicates Pl that are true for
+state Si :
+pi = P1 ∧ · · · ∧ PN .
+Each predicate Pl corresponds to a CFG condition C that is an expression involving program variables vc ∈ Vc , where Vc denotes the set {v1 , . . . , vm } of possible
+¶
+
+Although it is convenient to use multiplication by constants as an abbreviation for
+repeated addition.
+
+160
+
+J. Blieberger and B. Burgstaller
+
+program variables (cf. also Equation (1)). This can be written as Pl = C(Vc ).
+Once we evaluate C(Vc ) for state Si (cf. Deﬁnition 1), we get Pl = C(Ec ) as
+a condition over symbolic expressions. Solving C(Ec ) yields the solution Ll (Vc )
+for which Pl = true. Thus each predicate Pl yields a constraint for Γ1 :
+Γ1 ::= Γ1 ∧
+
+Ll (Vc ).
+
+(9)
+
+1≤l≤N
+
+Example 2. Starting from the context given in Equation (2), we have predicate
+P1 = C(Vc ) : x = y − 2, and C(Ec ) : n2 − 1 = n + 1 which yields the solutions
+n1 = 2, and n2 = −1 resulting in the constraint (n = 2 ∨ n = −1).
+Example 3. Another example involves a predicate that arises from iterationschemes of for and while loops. Context [{(x, 1), (y, 1), (z, z)}, x in y..z], yields
+the constraint C(Ec ) : 1 ≤ x ≤ z.
+Step 2: While the previous step dealt with the information captured in the path
+condition pi of Equation (5), Step 2 addresses the translation of the proposed
+range check val(E ∈? T (j)) into a conjunction Γ2 of constraints. Like the conditions C of Step 1, expression E is a symbolic expression involving program
+variables vc ∈ Vc . Again we evaluate E(Vc ) for state Si to get E(Ec ). We can
+now set up a constraint that requires E(Ec ) to be outside the range of type T (j ):
+Γ2 ::= Γ2 ∧ j = E(Ec ) ∧ j < T (j )’First ∨ j > T (j )’Last .
+
+(10)
+
+We then check by means of the Omega test whether there exists a solution
+satisfying the conjunction Γ1 ∧Γ2 . Non-existence of such a solution means that for
+[Si , pi ] the expression E(Ec ) will be within the range of type T (j ). Completing
+Equation (5), we ﬁnally get
+val(E ∈? T (j), [Si , pi ]) =
+
+true ⇔ val(E, [Si , pi ]) ∈ T (j ) ⇔ Γ1 ∧ Γ2 = false
+false else.
+(11)
+
+Non-aﬃne Expressions and Conservative Approximations A method
+capable of transforming certain classes of general polynomial constraints into a
+conjunction of aﬃne constraints has been presented by Maslov [MP94].
+For non-transformable nonaﬃne expressions that are part of (the solution
+of) a predicate Pl (cf. Step 1 above), we can omit the constraint imposed by
+Pl and hence generate a conservative approximation for Γ1 for the following
+reason: given the set {v1 , . . . , vm } of possible program variables, the mapping
+of the symbolic expression E(Ec ) to its value can be regarded as a function
+f : T (v1 ) ×, . . . , × T (vm ) → Z. Each predicate Pl potentially constrains the mdimensional domain of f , which, depending on E(Ec ), potentially constrains the
+range of f . The smaller the range of f , the more likely it is that we can derive
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+161
+
+that the proposed range check of E(Ec ) is redundant. Omission of Pl results in a
+conservative approximation of the range of f in the sense that we might generate
+a false positive claiming that the proposed range check is needed whereas it is
+actually redundant (cf. also Equation (6)). False negatives are not possible since
+Pl cannot widen the range of f .
+
+3
+
+Example
+
+We demonstrate our range check elimination technique by an example for which
+it can be shown manually that no range check is needed. Therefore every
+language-deﬁned range check is redundant and should be identiﬁed as such. Fig. 4
+shows our example taken from the Heapsort algorithm as presented in [Sed88].
+Fig. 5 shows the control ﬂow graph of our example. It contains three compound
+nodes (3, 4, and 5) which correspond to the intra-statement analysis necessary to
+treat range checks R1, R2, and R3 (cf. Fig. 4). Compound Node 3 is expanded
+whereas compound Nodes 4 and 5 are collapsed due to space considerations.
+CFG edges are labelled with their associated conditions, edges without labels
+denote “true” conditions. The edge e → x is artiﬁcial in the sense that it is
+required by our elimination algorithm but does not correspond to “real” control
+ﬂow. Symbol denotes CFG edges that correspond to control ﬂow of a Constraint Error exception taken due to failure of a range check. Since procedure
+Siftdown contains no exception handler and since we assume there is no calling
+1
+2
+3
+4
+
+Max: constant Positive := ??;
+-subtype Index is Positive range 1 .. Max;
+type Sort Array is array(Index) of Integer;
+Arr : Sort Array;
+
+Number of elements to be sorted
+
+5
+procedure Siftdown (N,K:Index) is
+6
+J, H : Index;
+7
+V : Integer;
+8
+begin
+9
+V := Arr(K);
+10
+H := K;
+11
+while H in 1..N/2 loop
+12
+J := {2∗H}R1 ;
+13
+if J<N then
+14
+if Arr(J)<Arr({J+1}R2 ) then
+15
+J := {J+1}R3 ;
+16
+end if ;
+17
+end if ;
+18
+if V >= Arr(J) then
+19
+Arr(H) := V;
+20
+exit;
+21
+end if ;
+22
+Arr(H) := Arr(J);
+23
+Arr(J) := V;
+24
+H := J;
+25
+end loop;
+26
+return;
+27 end Siftdown;
+
+Fig. 4. Example: Procedure Siftdown
+
+---
+
+Node 1
+Node 1
+
+--------
+
+Node
+Node
+Node
+Node
+Node
+Node
+Node
+
+----
+
+Node 6
+Node 7
+Node 7
+
+----
+
+Node 8
+Node 8
+Node 8
+
+--
+
+Node 9
+
+1
+1
+2
+3
+3
+4
+5
+
+162
+
+J. Blieberger and B. Burgstaller
+e
+
+2
+
+1
+
+1 ≤ H ≤ N/2
+
+¬(1 ≤ H ≤ N/2)
+
+31
+
+2 ∗ H ∈ T (J)
+
+33
+
+2 ∗ H ∈ T (J)
+
+32
+3
+¬(J < N )
+f alse
+
+J <N
+
+4
+Arr(J) < Arr(J + 1)
+¬(Arr(J) < Arr(J + 1))
+
+5
+
+ce
+
+6
+¬(V ≥ Arr(J))
+8
+
+V ≥ Arr(J)
+7
+
+9
+
+x
+
+Fig. 5. Example: CFG of Procedure Siftdown
+
+procedure with our example, these edges are simply “collected” by Node ce that
+is connected to the procedure’s exit node.
+Table 1 shows the set of SymEval equations for our example procedure.
+The symbol ⊥ is used to denote undeﬁned values. p1 denotes the predicate
+N ∈ T (N ) ∧ K ∈ T (K ) that is due to the parameter association mechanism of
+[Ada95]. Table 2 shows the sequence of elimination steps performed during the
+elimination phase in order to reduce the system of equations so that each equation depends only on its immediate dominator. For the purpose of our example
+it suﬃces to consider the result of the application of the loop-breaking rule at
+Step 23, where each induction variable is replaced by an (indirect) recursion:
+2
+
+: X2 =X1 | {(Arr, Arr(⊥, ν)), (H, H(⊥, ν)), (J, J(⊥, ν)), (C1...7 , C1...7 (⊥, ν))}.
+
+For the purpose of our example it is furthermore suﬃcient to collapse all array
+assignments into one recursion Arr(⊥, ν).
+In the propagation phase we propagate data ﬂow information in a top-down
+manner on the dominator tree after the solution of the root node has been
+determined. Table 3 enumerates those steps for our example procedure.
+For the sake of brevity we will focus on the examination of range check R1
+located in Equation X31 . For this reason we are concerned with propagation
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+Table 1. Set of SymEval Equations for Example Siftdown
+Xe = [{(Arr, Arr), (N, N ), (K, K), (J, ⊥), (V, ⊥), (H, ⊥), (C1...7 , ⊥)}, p1 ]
+X1 = Xe | {(V, Arr(K)), (H, K)}
+X2 = (X1 ∪ X8 ) | {(C1 , (H in 1 .. N/2))}
+X31 = C1
+
+X2 | {(C2 , (2 ∗ H ∈? T (J))}
+
+X32 = C2
+
+X31 | {(J, 2 ∗ H), (C3 , (J < N ))}
+
+X33 = ¬C2
+
+X31 | {(J, ⊥)}
+
+X41 = C3
+
+X32 | {(C4 , (J + 1 ∈? T (Index))}
+
+X42 = C4
+
+X41 | {(C5 , (Arr(J) < (Arr(J + 1))))}
+
+X43 = ¬C4
+
+X41
+
+X51 = C5
+
+X42 | {(C6 , (J + 1 ∈? T (J))}
+
+X52 = C6
+
+X51 | {(J, J + 1)}
+
+X53 = ¬C6
+
+X51 | {(J, ⊥)}
+
+X6 = ¬C3
+X7 = C7
+
+X32 ∪ ¬C5
+
+X42 ∪ X5 | {(C7 , (V ≥ Arr(J))}
+
+X6 | {(Arr(H), V )}
+
+X8 = ¬C7
+
+X6 | {(Arr({H}), Arr(J)), (Arr(J), V ), (H, J)}
+
+X9 = ¬C1
+
+X2 ∪ X7
+
+Xce = X33 ∪ X43 ∪ X53
+Xx = X9 ∪ Xce
+
+Table 2. Elimination: from DJ-Graph to Dominator Tree
+1.)
+2.)
+3.)
+4.)
+5.)
+
+53 → ce
+52 → 12
+51 → ce
+51 → 6
+8→2
+
+6.)
+7.)
+8.)
+9.)
+10.)
+
+7→9
+43 → ce
+42 → 6
+42 → ce
+41 → ce
+
+11.)
+12.)
+13.)
+14.)
+15.)
+
+41 → 6
+6→2
+6→9
+33 → ce
+32 → ce
+
+16.)
+17.)
+18.)
+19.)
+20.)
+
+32
+32
+ce
+31
+31
+
+→2
+→9
+→x
+→2
+→9
+
+21.)
+22.)
+23.)
+24.)
+25.)
+
+31 → x
+9→x
+2
+2→x
+1→x
+
+Table 3. Propagation of the DFA-Solution
+1.) e → x
+2.) e → 1
+3.) 1 → 2
+
+4.) 2 → 31
+5.) 31 → 33
+6.) 31 → 32
+
+7.) 32 → 41
+8.) 41 → 43
+9.) 41 → 42
+
+10.) 42 → 51
+11.) 51 → 53
+12.) 51 → 52
+
+13.) 32 → 6
+14.) 6 → 7
+15.) 6 → 8
+
+16.) 31 → ce
+17.) 2 → 9
+
+steps 2, 3, and 4 of Table 3:
+e → 1, 1 → 2, 2 → 31
+X31 =[{
+
+(Arr, Arr(Arr, ν)), (N, N ), (K, K), (H, H(K, ν)), (J, J(⊥, ν)),
+(C1...7 , C1...7 (⊥, ν))}, p1 ∧ H in 1 .. N/2] | {(C2 , (2 ∗ H ∈? T (J))}.
+
+163
+
+164
+
+J. Blieberger and B. Burgstaller
+
+In order to compute the solution for Node X31 , we evaluate predicate val according to Equation (5):
+val 2 ∗ H ∈? T (J),[{(Arr, Arr(Arr, ν)), (N, N ), (K, K), (H, H(K, ν)),
+(J, J(⊥, ν)), (C1...7 , C1...7 (⊥, ν))}, p1 ∧ H in 1 .. N/2] .
+
+(12)
+
+Range check R1 is redundant if Equation (11) evaluates to true. From Equation (9) we get
+Γ1 ::= true ∧ 1 ≤ N ≤ Max ∧ 1 ≤ K ≤ Max ∧ 1 ≤ H ≤ N /2,
+where “/” denotes integer division and where the second conjunct is due to
+predicate p1 and the third conjunct is due to predicate “H in 1 .. N/2”. From
+Equation (10) we get
+Γ2 ::= true ∧ J = 2 ∗ H ∧ J < 1 ∨ J > Max .
+As expected the Omega test conﬁrms that Γ1 ∧ Γ2 = false which, according to
+Equation (11), means that the range check 2 ∗ H ∈? T (J) is redundant. Similarly
+we can derive at propagation steps 7 and 10 that range checks R2 and R3 are
+redundant.
+
+4
+
+Implementation
+
+Fig. 6 is an extension of the structure of the GNAT compiler as explained
+in [SB94]. Our data-ﬂow framework is situated between the frontend and the
+backend of the GNAT compiler. Its input is an abstract syntax tree (AST ) that
+has been syntactically and semantically analyzed and expanded (cf. [SB94]).
+Every tree expression for which node ﬂag Do Range Check is set requires the
+backend to generate a corresponding run-time check. The frontend makes use
+of this signaling mechanism for each range check that cannot be proved redundant at compile-time. When we build the CFG from the AST we generate an
+intra-statement control ﬂow subgraph for every statement containing such an
+expression.
+
+Ada
+Term
+Rewriting
+
+Syntax
+Analysis
+
+Semantic
+Analysis
+
+AST
+
+Data-Flow
+Framework
+
+Expander
+
+decorated AST
+
+rc
+
+Extension
+
+C
+λ
+
+Gigi
+
+modified
+decorated AST
+
+Fig. 6. Integration of the Data-Flow Framework Within GNAT
+
+GCC
+Back-End
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+165
+
+Once the CFG is extended by immediate domination edges, it is passed to
+the elimination algorithm which determines the sequence of equation insertion
+and loop-breaking steps in order to transform the DJG to its dominator tree
+(cf. e.g. Table 2). Equation insertion and loop-breaking itself is handled by the
+term rewriting component which, due to the nature of its requirements, depends
+on pattern matching and expression transformation capabilities available mainly
+in functional programming languages. An early prototype of this component has
+already been implemented as a Mathematica package [Mae90].
+In order to compute the data-ﬂow solution for each CFG node the elimination algorithm instructs the term rewriting component to perform the necessary
+propagation steps (cf. e.g. Table 3). If we can derive at a given CFG node that
+according to Equation (6) a given range check is redundant, we reset the AST
+ﬂag Do Range Check which prevents the backend from generating the corresponding run-time check.
+
+5
+
+Experimental Results
+
+In order to demonstrate the eﬀectiveness of our approach we have considered several examples for which it can be manually proved that no range checks are necessary. The following programs have been examined so far: “Siftdown” (cf. Fig. 4)
+and the corresponding driver program “Heapsort” (cf. [Sed88]), “Mergesort”,
+and “Quicksort”. Table 4 compares the number of range checks required by the
+GNAT frontend to the number of checks that remain after symbolic analysis of
+the example programs. The number of assembler statements and the stripped
+object code size of the resulting executables are also given. For procedure “Siftdown” we have also measured the execution time overhead for range checks. We
+have found that the removal of superﬂuous range checks yields on average a
+performance increase of 11.7 percent, whereas the decrease in object code size
+is more than 24 percent. The performance ﬁgures given in Fig. 7 have been
+obtained on an ix86 Linux PC, based on GNAT 3.2 20020814. The left-hand
+picture shows absolute execution times, while the right-hand picture shows the
+relative performance gain and the decrease in object size.
+
+Table 4. Experimental Results
+Post-GNAT
+Post-Symbolic Evaluation
+Source Range-Checks Asm-Stmts Obj.-Size Range-Checks Asm-Stmts Obj.-Size
+Siftdown
+3
+89
+800
+0
+55
+604
+Heapsort
+2
+73
+736
+0
+51
+596
+Quicksort
+4
+122
+908
+2
+100
+824
+Mergesort
+6
+183
+1128
+0
+119
+812
+
+J. Blieberger and B. Burgstaller
+percentage of gain,red.
+
+execution time T (sec)
+
+166
+150
+130
+110
+90
+70
+50
+
+range checks
+30
+
+pruned
+
+10
+7 10
+
+15 20 25 30 35 40 45 50
+problem size N (x10^6)
+
+55
+
+25
+20
+15
+10
+code size
+5
+
+execution time
+7 10
+
+15
+
+20 25 30 35 40 45
+problem size N (x10^6)
+
+50
+
+55
+
+Fig. 7. Execution Times and Performance Gain/Obj. Code Size Reduction
+
+6
+
+Related Work
+
+Determining how and when array items are accessed is of vital importance for
+parallelizing compilers. For this reason this problem has been studied extensively
+(see [Hag95] for a survey). Even symbolic approaches have been employed (again
+compare [Hag95]). On the other hand eliminating range checks has not been
+studied in this domain. Nevertheless it has been shown that expressions used for
+array indexes are linear expressions in most cases (cf. [SLY90]).
+In [RR00] some kind of symbolic analysis is employed to determine upper
+and lower bounds of memory regions accessed by procedures and other pieces of
+programs. Linear programming is used to solve the problem. This approach can
+also be applied to our problem but it has some severe deﬁciencies; for example
+our procedure Swap (Fig. 1) cannot be handled correctly. In addition, if the sign
+of a variable is not constant (i.e., the variable does not assume only positive or
+negative values), the approach presented in [RR00] cannot be applied.
+
+7
+
+Conclusion and Future Work
+
+We have presented a new method of range check elimination based on symbolic evaluation that incorporates type information provided by the underlying
+programming language. Our experiments showed that aﬃne constraints can be
+handled without problems by the Omega test. As a next step we will conduct
+investigations on large Ada code bases in order to back the assumption that
+most constraints are aﬃne in nature.
+In addition, we will study validity checks which requires a delicate interprocedural analysis, and overﬂow checks which are very costly and for this reason
+turned oﬀ by GNAT in its default settings.
+
+References
+[Ada95] ISO/IEC 8652. Ada Reference Manual, 1995.
+[BB98] J. Blieberger and B. Burgstaller. Symbolic Reaching Deﬁnitions Analysis
+of Ada Programs. In Proc. of the Ada-Europe International Conference on
+Reliable Software Technologies, pages 238–250, Uppsala, Sweden, June 1998.
+
+Eliminating Redundant Range Checks in GNAT Using Symbolic Evaluation
+
+167
+
+[BBS99] J. Blieberger, B. Burgstaller, and B. Scholz. Interprocedural Symbolic Evaluation of Ada Programs with Aliases. In Proc. of the Ada-Europe International Conference on Reliable Software Technologies, pages 136–145, Santander, Spain, June 1999.
+[BFS00] J. Blieberger, T. Fahringer, and B. Scholz. Symbolic Cache Analysis for RealTime Systems. Real-Time Systems, Special Issue on Worst-Case Execution
+Time Analysis, 18(2/3):181–215, 2000.
+[Bli02] J. Blieberger. Data-Flow Frameworks for Worst-Case Execution Time Analysis. Real-Time Systems, 22(3):183–227, May 2002.
+[CHT79] T.E. Cheatham, G.H. Holloway, and J.A. Townley. Symbolic Evaluation and
+the Analysis of Programs. IEEE Trans. on Software Engineering, 5(4):403–
+417, July 1979.
+[FS97] T. Fahringer and B. Scholz. Symbolic Evaluation for Parallelizing Compilers.
+In Proc. of the ACM International Conference on Supercomputing, July 1997.
+[Hag95] M.R. Haghighat. Symbolic Analysis for Parallelizing Compilers. Kluwer Academic, 1995.
+[Mae90] R. Maeder. Programming in Mathematica. Addison-Wesley, Reading, MA,
+USA, 1990.
+[MP94] V. Maslov and W. Pugh. Simplifying Polynomial Constraints Over Integers
+to Make Dependence Analysis More Precise. In Proc. of the International
+Conference on Parallel and Vector Processing, pages 737–748, Linz, Austria,
+1994.
+[Pug92] W. Pugh. The Omega Test: A Fast and Practical Integer Programming
+Algorithm for Dependence Analysis. Communications of the ACM, 35(8):102–
+114, August 1992.
+[Rog87] H. Rogers Jr. Theory of Recursive Functions and Eﬀective Computability.
+MIT Press, Cambridge, MA, 1987.
+[RP86] B. G. Ryder and M.C. Paull. Elimination Algorithms for Data Flow Analysis.
+ACM Computing Surveys (CSUR), 18(3):277–316, 1986.
+[RR00] R. Rugina and M. Rinard. Symbolic Bounds Analysis of Pointers, Array
+Indices, and Accessed Memory Regions. In Proc. of PLDI, pages 182–195,
+2000.
+[SB94] E. Schonberg and B. Banner. The GNAT Project: A GNU-Ada 9X Compiler.
+In Proc. of the Conference on TRI-Ada ’94, pages 48–57. ACM Press, 1994.
+[SBF00] B. Scholz, J. Blieberger, and T. Fahringer. Symbolic Pointer Analysis for Detecting Memory Leaks. In ACM SIGPLAN Workshop on ”Partial Evaluation
+and Semantics-Based Program Manipulation”, Boston, January 2000.
+[Sed88] R. Sedgewick. Algorithms. Addison-Wesley, Reading, MA, USA, 2nd edition,
+1988.
+[Sho79] R. E. Shostak. A Practical Decision Procedure for Arithmetic with Function
+Symbols. Journal of the ACM, 26(2):351–360, April 1979.
+[SLY90] Z. Shen, Z. Li, and P.-C. Yew. An Empirical Study of Fortran Programs
+for Parallelizing Compilers. IEEE Transactions on Parallel and Distributed
+Systems, 1(3):356–364, July 1990.
+[Sre95] V.C. Sreedhar. Eﬃcient Program Analysis Using DJ Graphs. PhD thesis,
+School of Computer Science, McGill University, Montr´eal, Qu´ebec, Canada,
+1995.
+
+

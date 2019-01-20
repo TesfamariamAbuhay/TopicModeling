@@ -1,0 +1,569 @@
+A Case Study in Distributed Locking Protocol
+on Linux Clusters
+Sang-Jun Hwang1 , Jaechun No1 , and Sung Soon Park2
+1
+Dept. of Computer Software,
+College of Electronics and Information Engineering,
+Sejong University, Seoul, Korea
+2
+Dept. of Computer Science & Engineering,
+College of Science and Engineering,
+Anyang University, Anyang, Korea
+
+Abstract. Today’s scientiﬁc simulations often generate huge amounts
+of data for data archival, data analysis, and visualization. These data are
+stored in high-performance distributed storages that consist of a networkoriented computing environment. In such a computing environment, one
+of the major issues aﬀecting in achieving substantial I/O performance
+and scalability is to build an eﬃcient locking protocol. In this paper, we
+present a distributed locking protocol that enables multiple client nodes
+to simultaneously write their data to distinct data portions of a ﬁle, while
+providing the consistent view of client cached data, and conclude with an
+evaluation of the performance of our locking protocol on a Linux cluster.
+
+1
+
+Introduction
+
+Today’s scientiﬁc simulations often generate huge amounts of data for data
+archival, data analysis, and visualization, and then these data are stored in
+high performance distributed storages that consist of a network-oriented computing environment. The common network-oriented storage architecture designates a few number of network-attached servers as a data storage pool and
+connects the clients to the servers via network, like GigaEthernet or Fibre Channel [1, 2, 3, 5, 6]. In such a storage architecture, a critical issue aﬀecting in achieving high I/O bandwidth and scalability for the scientiﬁc simulations is to build
+an eﬃcient locking protocol which is used for providing the coordinated accesses to remotely stored data and for providing the consistent views of client
+cached data. The reason is that, in order to produce high I/O bandwidth, many
+scientiﬁc simulations use parallel I/O packages where multiple client nodes simultaneously perform their I/O operations. MPI-IO is among those parallel I/O
+packages. MPI-IO [8, 10] is speciﬁcally designed to enable the optimizations that
+are critical for generating high-performance I/O. These optimizations include
+collective I/O and the ability to access noncontiguous data sets. However, in
+order to achieve high I/O performance using MPI-IO on a network-oriented
+distributed storage, the distributed ﬁle system which is running on top of the
+V.S. Sunderam et al. (Eds.): ICCS 2005, LNCS 3514, pp. 380–387, 2005.
+c Springer-Verlag Berlin Heidelberg 2005
+
+A Case Study in Distributed Locking Protocol on Linux Clusters
+
+381
+
+storage must provide the ability to lock a ﬁle per data section to have multiple
+concurrent writers. However, many of the locking protocols integrated with distributed ﬁle systems are based on a coarse-grained method [1, 2, 3] where only
+a single client at any given time is allowed to write its data to a ﬁle, while the
+other clients are waiting for the current node to ﬁnish its write operation even
+when the others would write to the diﬀerent data portions of the same ﬁle. This
+drawback signiﬁcantly degrades I/O performance in many scientiﬁc simulations
+where supporting parallel write operations happens to be proved generating high
+I/O bandwidth [4, 7].
+In this paper, we present a distributed locking protocol based on multiple
+reader/single writer semantics for a data portion to be accessed. In this scheme,
+a single lock is used to synchronize concurrent accesses to a data portion of a
+ﬁle. But, several nodes can simultaneously run on the district data sections in
+order to support data concurrency. We conclude our paper by discussing the
+performance evaluation of our locking protocol on a Linux cluster.
+
+2
+
+Design Motivation
+
+Our main objectives in developing a distributed locking protocol were to provide
+high-performance parallel I/O, to minimize the communication latency occurred
+during the lock negotiation steps, and to utilize local lock services as much as
+possible.
+– High-performance I/O We designed the distributed locking protocol capable of allowing multiple concurrent writers to the same ﬁle to achieve
+high performance I/O. Also, the locking protocol provides data consistency
+between the data stored in the storage device and the data stored in the
+client-side cache.
+– Low communication latency We designed the locking protocol to reduce
+the network overhead taking place during the lock negotiation steps with
+Global Lock Manager (GLM). All the lock requests coming from the client
+nodes are evenly distributed on multiple GLMs. Moreover, in order to minimize the number of callback messages necessary to revoke and release a lock,
+we grouped all the client nodes into several node groups. If GLM ﬁnds the
+node group where the lock holder belongs to it then sends a lock revocation
+message to the node group.
+– Use of local lock service we designed the locking protocol to utilize local
+lock service to the maximum extents in order not to incur communication
+overhead with GLM and remote lock holders. By retaining the privileges on
+data sections even in the absence of active processes on a client, we eliminated
+the need to communicate with GLM repeatedly for the same data section,
+and thus can minimize the network latency.
+
+382
+
+3
+3.1
+
+S.-J. Hwang, J. No, and S.S. Park
+
+Implementation Details
+Overview
+
+Figure 1 illustrates the distributed lock interface that is integrated with distributed ﬁle systems. Applications issue I/O requests using local ﬁle system
+interface, on top of VFS layer. Before performing an I/O request, each client
+should acquire an appropriate distributed lock from GLM in order to maintain
+data consistency between the cached data on clients and the remote, shared data
+on servers. The lock request is initiated by calling the lock interface, snq clm lock.
+As mentioned in section 2, in order to reduce the communication latency
+occurring in the lock acquire step, we grouped the client nodes into several node
+groups. In the current implementation, an eight bit integer is used to denote node
+groups. When a client acquires an appropriate lock to perform I/O operation,
+the bit corresponding to the node group where the client belongs to is set to 1.
+Also, if a client requests a lock to GLM, GLM ﬁrst locates the node group where
+the lock holder belongs to and then sends a callback message to the nodes of the
+node group. When the lock holder receives the callback message, it releases the
+requested lock and sends back an acknowledge to GLM to grant the lock to the
+requester.
+Figure 2 represents a hierarchical overview of the locking construct with two
+client nodes and one GLM. The lock modes that we provide for are SHARED
+
+NODE GROUP
+NODE 0
+
+NODE k-1
+
+application
+application
+application
+
+application
+application
+application
+
+.....
+
+VFS Layer
+
+Network
+Interface
+
+Local Lock
+Table
+
+Network
+Interface
+
+VFS Layer
+
+Client Lock Interface
+(snq_clm_lock)
+
+Client Lock Interface
+(snq_clm_lock)
+
+Local Lock
+Table
+
+INTERCONNECTION NETWORK
+
+GLMn-1
+
+GLM0
+
+Network
+Interface
+
+Global Lock
+Table
+
+Server Lock Interface
+glm_lock
+
+Global Lock
+Table
+
+Network
+Interface
+
+Server Lock Interface
+
+.....
+
+glm_lock
+
+glm_unlock
+
+glm_unlock
+
+glm_promote
+
+glm_promote
+
+glm_demote
+glm2llm_callback
+
+glm_demote
+glm2llm_callback
+
+Fig. 1. A distributed lock interface
+
+A Case Study in Distributed Locking Protocol on Linux Clusters
+NODE A
+
+NODE B
+
+inode0
+
+0
+999
+
+0
+100
+
+100
+199
+
+383
+
+metalock
+
+1000
+1999
+
+inode1
+
+800
+899
+
+3000
+5999
+
+0
+2999
+
+datalock
+
+0
+100
+
+childlock
+
+100
+599
+
+600
+699
+
+GLM (Global Lock Manager)
+inode1
+
+inode0
+
+0
+999
+
+1000
+1999
+
+0
+2999
+
+3000
+5999
+
+Fig. 2. A hierarchical overview of distributed locking protocol
+
+for multiple read processes and EXCLUSIVE for a single write process. The lock
+structure consists of three levels: metalock, datalock, and childlock. The metalocks, inode0 on node A and inode1 on node B in Figure 2, synchronize accesses
+to ﬁles and the value of a metalock is an inode number of the corresponding ﬁle.
+Below the metalock is a datalock responsible for coordinating accesses to a data
+portion. For example, on node A, metalock inode0 is split into two datalocks
+associated with the data sections 0-999 and 1000-1999 in bytes and, on node
+B, two datalocks below inode1 are associated with the data sections 0-2999 and
+3000-5999 in bytes. In order to grant a datalock, the lock mode of the higher lock
+(metalock) must be SHARED, meaning that a ﬁle is shared between multiple
+clients.
+The lowest level is a childlock that is of a split datalock. As mentioned in
+section 2, given that a datalock is granted, the datalock can be split further
+to maximize local lock services as long as the data section to be accessed by a
+requesting process does not exceed the data section of the datalock held. In other
+words, in Figure 2, the datalock for the data portion 0-999 is split into three
+childlocks that control accesses to the data portion 0-100, 100-199, and 800899, respectively. The childlock is locally granted and therefore the requesting
+process needs not communicate with GLM to obtain the childlock. However, the
+childlock is granted only when the lock mode of a childlock is compatible with
+that of the higher datalock. The datalock and childlock are found by comparing
+the starting ﬁle oﬀset and data length being passed from the local ﬁle interface.
+GLM contains the global lock information consisting of a list of locks that
+each GLM is responsible for serving. In Figure 2, GLM contains the metalocks,
+
+384
+
+S.-J. Hwang, J. No, and S.S. Park
+
+inode0 and inode1, and the datalocks of the data portions 0-999, 1000-1999, 02999, and 3000-5999 held by node A and node B. GLM also contains the node
+group information indicating those groups where the lock holders belong to.
+
+4
+
+Performance Evaluation
+
+20
+
+16
+
+16
+
+12
+EXCLUSIVE
+SHARED
+
+8
+4
+0
+
+4
+
+8
+
+16
+
+Number of clients
+Fig. 3. Time overhead to acquire a distributed lock using one GLM. Each client
+read or wrote 1Mbytes of data to the distinct section of the same ﬁle
+
+(msec)
+
+20
+
+Time
+
+Time
+
+(msec)
+
+We measured the performance of the distributed locking protocol on the machines that have Pentium3 866MHz CPU, 256 MB of RAM, and 100Mbps of
+Fast Ethernet. The operating system installed on those machines was RedHat
+9.0 with Linux kernel 2.4.20-8. The performance results focused on the time
+to obtain locks by performing lock revoke, downgrade, and upgrade operations.
+The time to invalidate client cached data and to write dirty data to disk was
+not included in the evaluation.
+Figures 3 and 4 represent the time to obtain the locks with the exclusive
+mode in write operations and with the shared mode in read operations, as the
+number of clients increases from 4 to 16. Also, in Figure 3, one machine was
+conﬁgured as a GLM and, in Figure 4, four machines were conﬁgured as GLMs.
+When four machines were conﬁgured as GLMs, each lock request is given to a
+GLM, according to round robin fashion. All clients read or wrote 1Mbytes of
+data to the distinct portions of the same ﬁle. In this case, the lock requested
+by each client is newly created on GLM and returned to the requesting client,
+causing no callback message to be sent to the remote lock holder. Figures 3 and
+4 show that if there is no lock revocation occurred with the remote lock holder,
+then the communication overhead necessary for acquiring a new lock becomes
+
+12
+EXCLUSIVE
+SHARED
+
+8
+4
+0
+
+4
+
+8
+
+16
+
+Number of clients
+Fig. 4. Time overhead to acquire a distributed lock using four GLMs. Each
+client read or wrote 1Mbytes of data to
+the distinct section of the same ﬁle
+
+A Case Study in Distributed Locking Protocol on Linux Clusters
+
+385
+
+60
+
+50
+
+50
+
+40
+EXCLUSIVE
+SHARED
+
+30
+20
+10
+0
+
+(msec)
+
+60
+
+Time
+
+Time (msec)
+
+small both with the exclusive mode and with the shared mode. Also, changing
+the number of GLMs from one to four doesn’t aﬀect the performance.
+Figures 5 and 6 show the time to obtain the locks with the exclusive mode
+and with the shared mode, while moving each client’s data section to access to
+the one given to the neighbor at the previous step. For example, at the ﬁrst
+step, the ﬁrst client accesses to the ﬁrst 1Mbytes of data section of a ﬁle and the
+second client accesses to the second 1Mbytes of data section of the same ﬁle. At
+the second step, the ﬁrst client’s data section changes to the second 1Mbytes of
+data section for which the second client has already acquired the lock at the ﬁrst
+step. Therefore, at the second step, the second client should yield the lock held
+to the ﬁrst client, while taking a new lock from the third client. Also, Figure 5
+shows the time taken by using one GLM and Figure 6 shows the time taken by
+using four GLMs.
+Figures 5 and 6 both illustrate that the overhead of the lock revocation is
+signiﬁcant with the exclusive mode because only a single client is allowed to
+write to a data section at any given time. With the shared mode, there is no
+need to contact the remote lock holder since a single lock can be shared between multiple nodes. With the shared lock mode, GLM just increases a counter
+denoting the number of shared lock holders before granting the lock. Finally,
+the communication overhead is decreased when the number of GLMs is changed
+from one to four since the lock requests issued by the clients can be distributed
+on the multiple GLMs.
+In order to ﬁgure out how much the network latency occurred at the lock
+negotiation step dominates the performance, we changed the number of clients
+running on each node, while keeping the total number of clients as 16. If the
+
+40
+
+EXCLUSIVE
+SHARED
+
+30
+20
+10
+
+4
+
+8
+
+16
+
+Number of clients
+Fig. 5. Time to acquire a distributed lock
+using one GLM. A client’s data section is
+shifted to the one given to the neighbor at
+the previous step
+
+0
+
+4
+
+8
+
+16
+
+Number of clients
+Fig. 6. Time to acquire a distributed
+lock using four GLMs. A client’s data
+section is shifted to the one given to the
+neighbor at the previous step
+
+S.-J. Hwang, J. No, and S.S. Park
+
+60
+
+60
+
+50
+
+50
+
+40
+
+EXCLUSIVE
+SHARED
+
+30
+20
+
+40
+
+EXCLUSIVE
+SHARED
+
+30
+20
+10
+
+10
+0
+
+Time (msec)
+
+Time (msec)
+
+386
+
+1(1x16) 2(2x8)
+
+4(4x4)
+
+Number of clients per node
+Fig. 7. Time overhead to acquire a distributed lock using one GLM as a function
+of number of clients running on each node.
+A client’s data access range is shifted right
+at each step
+
+0
+
+1(1x16) 2(2x8)
+
+4(4x4)
+
+Number of clients per node
+Fig. 8. Time overhead to acquire a distributed lock using four GLMs as a
+function of number of clients running
+on each node. A client’s data access
+range is shifted right at each step
+
+number of clients on a node is one, then every 16 clients runs on the diﬀerent
+node. If the number of clients is two, then two clients run on each node and so 8
+diﬀerent nodes are needed to have 16 clients as total. Also, as did in Figures 5 and
+6, we changed the data access range of each client to the one given to the neighbor
+at the previous step. With two clients running on the same node, the callback
+message is sent to the remote lock holder every two I/O operations to revoke a
+lock. With four clients, the callback message is sent to the remote lock holder
+every four I/O operations, resulting in the lock negotiation overhead decrement,
+compared to two clients on each node. According to this experiment, we could see
+that the dominating performance factor with 16 clients is the network overhead
+to contact the remote lock holder.
+
+5
+
+Conclusion
+
+Concurrent accesses to the same ﬁle frequently occur in modern scientiﬁc simulations where allowing parallel write operations signiﬁcantly improves I/O bandwidth. However, most distributed client-server ﬁle systems support a coarsegrained locking protocol in which all the concurrent write operations to a ﬁle
+are serialized even when the data sections being written are diﬀerent between
+writers. In this paper, we presented a distributed locking protocol with which several nodes can simultaneously write to the distinct data portions of a ﬁle, while
+guaranteeing a consistent view of client cached data. The distributed locking
+protocol has also been designed to exploit locality of lock requests to minimize
+communication overhead with GLM and remote lock holders.
+
+A Case Study in Distributed Locking Protocol on Linux Clusters
+
+387
+
+References
+1. Murthy Devarakonda, Bill Kish, and Ajay Mohindra. Recovery in the Calypso ﬁle
+system. ACM Transactions on Computer Systems, 14(3):287–310, August 1996
+2. Chandramohan A. Thekkath, Timothy Mann, and Edward K. Lee. Frangipani: A
+Scalable Distributed File System. In Proceedings of the Symposium on Operating
+Systems Principles, 1997, pages 224–237
+3. Kenneth W. Preslan, Andrew P. Barry, Jonathan E. Brassow, Grant M. Erickson,
+Erling Nygaard, Christopher J. Sabol, Steven R. Soltis, David C. Teigland, and
+Matthew T. O’Keefe. A 64-bit Shared Disk File System for Linux. In Proceedings
+of Sixteenth IEEE Mass Storage Systems Symposium Seventh NASA Goddard
+Conference on Mass Storage Systems & Technologies, March 15-18, 1999
+4. Jean-Pierre Prost, Richard Treumann, Richard Hedges, Bin Jia, Alice Koniges.
+MPI-IO/GPFS, an Optimized Implementation of MPI-IO on top of GPFS. In
+Proceedings of Supercomputing, November 2001
+5. F. Schmuck and R. Haskin. GPFS: A Shared-Disk File System for Large Computing Clusters. In Proceedings of the First Conference on File and Storage Technologies(FAST), pages 231–244, Jan. 2002
+6. P. J. Braam. The Lustre stroage architecture. Technical Report available at http://www.lustre.org, Lustre, 2002
+7. Jaechun No, Rajeev Thakur, and Alok Choudhary. High-Performance Scientiﬁc Data Management System. Journal of Parallel and Distributed Computing,
+(64)4:434-447, April 2003
+8. Jean-Pierre
+Prost.
+MPI-IO/PIOFS.
+World-Wide
+Web
+page
+at
+http://www.research.ibm.com/people/p/ prost/sections/mpiio.html, 1996
+9. MacroImpact Inc., SANique CFS. A SAN Based Cluster File System, Version 2.1,
+Technical Report, August 2002
+10. William Gropp and Ewing Lusk and Rajeev Thakur. Using MPI-2: A dvanced
+Features of the Message-Passing Interface, MIT Press, 1999, Cambridge, MA
+
+

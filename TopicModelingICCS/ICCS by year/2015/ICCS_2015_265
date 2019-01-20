@@ -1,0 +1,866 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 1433–1442
+ICCS 2015 International Conference On Computational Science
+
+A Case Study on Using a Proto-Application as a Proxy for
+Code Modernization
+Nathalie M¨oller1 , Eric Petit1 , Lo¨ıc Th´ebault1 , and Quang Dinh2
+1
+
+PRISM - University of Versailles, Versailles, France
+{forename}.{surname}@prism.uvsq.fr
+2
+Dassault Aviation, Saint-Cloud, France
+Quang.Dinh@dassault-aviation.com
+
+Abstract
+To take full advantage of future HPC systems, hybrid parallelization strategies are required.
+In a previous work, we demonstrated the Divide and Conquer, D&C, approach for eﬃcient
+parallelization of ﬁnite element methods on unstructured meshes. In this paper we experiment
+the concept of proto-application as a proxy between computer scientists and application developers on a real industrial use-case. The D&C library has been entirely developed on the
+proto-application and then validated on the original application. We also ported the D&C
+library to another ﬂuid dynamic application, AETHER, developed by Dassault Aviation. The
+results show that the speed-up validated on the proto-application can be reproduced on other
+full scale applications using similar computational patterns.
+Keywords: Proto-application, Many-core, Hybrid programming, MPI, Cilk, OpenMP
+
+1
+
+Introduction
+
+With the increasing requirement for energy eﬃciency and performance of new HPC system
+architectures, recent advances in hardware design result in an increasing number of nodes and
+cores, and an increasing usage of heterogeneous architectures. Most of the applications and
+runtimes currently in use struggle to scale with the present trend. Evolutions are requested for
+applications, runtimes and programming models.
+Solely relying on domain decomposition and distributed memory parallelism can limit the
+performance on current supercomputers. When using a ﬁner domain decomposition, the ratio
+of frontier elements which are duplicated and communicated is growing and thus, the memory
+and bandwidth consumption rises. This limits the scalability when the communications become
+predominant [12]. A popular alternative is to use shared memory parallelism in addition to
+domain decomposition. However, eﬃcient parallelization in shared memory is a challenging
+and error prone task. According to Amdahl’s law, by increasing the number of cores, the time
+proportion of the sequential part increases. Therefore, the traditional loop approach for shared
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.333
+
+1433
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+memory parallelization fails to scale eﬃciently and recent many-core architectures exacerbate
+this problem.
+Very large industrial codes cannot be rewritten from scratch. To cope with the rapid evolution of the underlying hardware, these legacy codes need a profound refactoring, known as
+the code modernization issue. We want to explore the possibility of using proto-applications to
+allow early phase exploration of technologies and design options, in order to make better and
+safer choices.
+In previous works [13, 12], we proposed an original approach for eﬃcient matrix assembly
+in Finite Element Method, FEM, applications. This approach has been developed in a library,
+called DC-lib, and validated on Mini-FEM, a proto-application extracted from the DEFMESH
+application from Dassault Aviation. Porting back the results in the original code was successful [12]. It produced impressive results in terms of speed-up and eﬃciency on both superscalar
+multi-core clusters and Xeon Phi many-cores. However, it does not demonstrate the ability
+of a proto-application to generate generic approaches for a class of applications. In this work,
+we experiment the proto-application approach as a methodology for large HPC application
+modernization on a real use-case scenario.
+We ﬁrst validate the performance gain of porting the DC-lib to the AETHER industrial
+code, a very large computational ﬂuid dynamics, CFD, application from Dassault Aviation.
+This leads us to interesting discussions and ﬁndings about eﬃcient task-based parallelization
+of legacy Fortran codes in shared memory.
+In a second step, we make a new experiment which consists in replacing the Cilk Plus
+runtime by OpenMP. The proto-application allows a quick prototyping, implementation, and
+debugging of the OpenMP version.
+Finally, we experiment this new version in the AETHER application to measure the optimization portability from the proto-application to a real application.
+The paper is organized as follows. Section 2 describes the existing methods of FEM matrix
+assembly parallelization and their drawbacks. Section 3 presents the proto-application concept
+and our implementation. Section 4 presents the AETHER application use-case and the porting
+of the optimizations demonstrated on the proto-application. Section 5 describes the OpenMP
+implementation of the D&C approach. Section 6 evaluates our work on various platforms before
+concluding on the lessons learned in Section 7.
+
+2
+
+FEM Matrix Assembly on Unstructured Meshes
+
+Shared memory matrix assembly parallelization, illustrated in Figure 1, is a challenging step.
+It consists in building from the mesh the matrix describing the linear system of equations to
+solve. The FEM assembly is the ﬁrst step of many applications such as seismic, metal forming,
+or crash test simulations. Depending on the application, it can represent more than 80% of
+the execution time. Figure 1b illustrates the assembly step principle. Non-zero values are the
+reduction of the neighboring elements contribution to the edges. Due to the irregularity of the
+structure and the serialization of the reduction, the FEM assembly cannot be parallelized using
+a simple parallel loop.
+In the literature, we identify ﬁve main methods for mesh assembly parallelization in shared
+memory.
+Assembly by mesh element with coloring [7]. Elements sharing a reduction variable are
+attributed to diﬀerent colors. Since all the elements in a same block are independent, they
+can be processed in parallel by SIMD units with no risk of race conditions. Coloring has two
+main drawbacks. First, diﬀerent colors share edges, faces, and vertices in the domain and thus,
+1434
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+(b) Mesh assembly
+(a) 3D unstructured Mesh
+
+Figure 1: Unstructured mesh example and 2D illustration of the matrix assembly step.
+
+most of the mesh is reloaded multiple times from the memory. This multiplies the bandwidth
+requirement by a factor proportional to the number of colors. Second, neighboring colors cannot
+be executed in parallel, resulting in a costly synchronization between them.
+Local assembly by mesh element followed by global assembly in a reduction step [4]. In this
+approach, all elements are computed in parallel without synchronization. To avoid data races,
+coeﬃcients are duplicated and reduced in parallel during a second phase. Since each coeﬃcient
+needs to be stored multiple times, this approach may be limited by the available memory.
+Moreover, bandwidth requirements are increased since the data have to be accessed twice.
+Assembly by non-zero coeﬃcient [3, 4]. This method has a very ﬁne grain thread parallelism
+and thus is better suited to GPUs. Moreover, it introduces a large amount of redundant
+computations.
+The local matrix approach [10]. In this approach, the reduction is deported to the solver
+phase. It requires no synchronization during the assembly but increases the bandwidth requirements and the amount of computation in the solver.
+The D&C approach [13, 12]. We recently proposed an approach based on a Divide and
+Conquer algorithm. In this method, we recursively bisect the mesh and permute the elements,
+resulting in a parallel and recursive tree of tasks, as shown in Figure 2. We use the Intel
+Cilk Plus task-based runtime to take beneﬁt from work-stealing and dynamic load balancing.
+This method allows shared memory parallelism while preserving data locality and reducing
+synchronization costs. We also propose a coloring algorithm to enable vectorization at leaf
+level. This approach has been developed as an open source library, namely DC-lib. Further
+explanation can be found in [12].
+
+Figure 2: D&C recursive bissection and reordering. The left and right partitions are executed in
+parallel before the separator elements on the cut.
+
+1435
+
+FEM proto-application
+
+3
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+The Proto-Application Concept
+
+This section presents the proto-application concept [5, 9], also known as proxy-app (e.g. NERSC
+trinity, Argonne CESAR). The objective of a proto-application is to reproduce, at scale, a
+speciﬁc behavior of a set of HPC applications and support the development of optimizations
+that can be translated into the original applications. It should be easier to execute, modify,
+and re-implement than the original full-scale applications, but still be representative of the
+targeted problems. It represents a key opportunity to simplify the performance analysis and
+accelerate the decision making process. Barret et al. [2] give an overview of successful uses of
+this approach. For instance, MiniFE is a mini application representing ﬁnite element methods
+on GPUs on which a register spilling issue has been identiﬁed and solved. However, the feedback
+to the end-user has not yet been clearly identiﬁed and demonstrated.
+The process of building a proto-application is based on an intensive proﬁling of the original
+application to be able to localize and characterize the targeted issues to optimize. Then, either
+we strip-down the original application to the essence of the problem, or we build-up a synthetic
+benchmark that exposes the same behavior. The idea is to support research on representative
+use-cases of actual applications instead of generic benchmarks. The message to the application
+developers is the following: ”if you cannot open your applications and use-cases, you can open
+the problems”. It will leverage:
+Community engagement, by providing up-to-date realistic use-cases.
+Reproducible and comparable results on a common reference set of applications.
+Direct valorisation of the community improvements by providing a close to application
+code interface between the community and the application developers. They will be able to
+implement the relevant improvements to their codes.
+The proto-application concept is central in the european EXA2CT project [6]. Our MiniFEM proto-application, used in this paper, is a collaboration between UVSQ and Dassault
+Aviation. It is a strip-down version of the DEFMESH application from Dassault Aviation. The
+latter is an unstructured mesh deformation code for CFD applications using Finite Element
+Method, FEM. The Mini-FEM proto-application consists of the ﬁrst step of DEFMESH: the
+FEM assembly. It captures the input data of the DEFMESH assembly step and changes its
+internal computation to remove the exact physical model while keeping its complexity and data
+parallelism. In addition to the initial MPI domain decomposition version, the algorithm is
+parallelized with the D&C library. An open-source use-case from Dassault Aviation called EIB
+is shared with the proto-application.
+
+4
+
+AETHER and Current Parallelization Strategies
+
+AETHER is a large CFD simulation framework, developed for more than 30 years. It roughly
+contains 130 000 lines of code, combining diﬀerent versions of Fortran and diﬀerent programming
+styles. It solves Navier-Stokes equations with a ﬁnite element method on unstructured meshes.
+Like DEFMESH, it is composed of three main steps which consist in building the linear system
+of equations, solving it, and updating the mesh values for the next iteration.
+AETHER is parallelized using MPI domain decomposition. For each domain, the frontier
+values are duplicated in a buﬀer exchanged after each computation phase. At scale, a larger
+number of smaller subdomains leads to an increased communication volume and to load balancing issues. For instance, on the 512 subdomains decomposition of our 1 million vertices EIB
+test case, the ratio of values to duplicate and to communicate at each iteration reaches 40%.
+1436
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+To take beneﬁt from the SIMD architectures, AETHER is vectorized using a traditional coloring technique. In order to mitigate the data locality issue of the coloring approach, AETHER
+uses a function which retrieves data from a main global array and transfer them into a local
+and smaller block. This data block is temporarily stored in a contiguous layout in order to be
+treated vectorially. Results are then written back to the global structure. This method requires
+a lot of redundant random data accesses and leads to a signiﬁcant overhead.
+A preliminary version of hybrid parallelization using MPI and OpenMP has been proposed
+by Dassault. It reuses the blocks obtained with the coloring algorithm initially developed for
+vectorization. The main assembly loop is parallelized using the omp parallel do pragma.
+Since only loops are parallelized, the sequential part remains large. Thus, the parallel eﬃciency
+is very low and cannot compete with the pure MPI version.
+
+4.1
+
+D&C Library Integration in AETHER
+
+Integrating the D&C library into an application consists in two main steps: calling the
+dc partitioning and dc assembly functions. First, the dc partitioning function handles
+the recursive domain decomposition, the nodes and elements permutations, and the D&C task
+tree creation. Then, the dc assembly function replaces the initial assembly loop by the recursive and parallel tree traversal which calls the initial assembly function on each leaf of the
+tree.
+Integrating the D&C library into the AETHER code is straightforward. Nevertheless, two
+main issues relative to the Fortran programming model have been encountered. We propose
+the associate workarounds and discuss a future strategy to generalize them.
+The ﬁrst issue concerns parallel programming in Fortran language. Early Fortran was designed to allow the memory requirements of the entire program to be determined at compile
+time. All variables, including function frames, are static and shared. Thus, if they are instantiated twice using parallel calls, it will cause race conditions. The recursive keyword provides
+a solution. It informs the compiler that the function may call itself and that the frame has to
+be handled dynamically on the stack. This solution was initially intended to allow recursion by
+solving the multiple function instantiations problem. When used in a parallel context, the use
+of the recursive keyword results in storing all the variables on the threads’ private stack.
+The second issue concerns the use of common variables. In Fortran, the common block is
+a piece of shared memory widely used for passing information between program units. In
+AETHER, since dynamic allocation did not exist in Fortran 77, local common blocks are used
+to dynamically allocate memory with a limited liveness. In shared memory, the problem is that
+the temporary common blocks are a unique static memory location shared by all the threads
+and causing many race conditions. Therefore, it is necessary to refactor this local memory
+allocation.
+The ﬁrst solution consists in using dynamic allocation with the Fortran 90 allocate function. Unfortunately, even if the race conditions are eliminated and the computation results are
+correct, the performance does not scale. To ﬁgure out the bottleneck, we analyze the code scalability with CilkView [8] provided in the Intel Cilk Plus Software Development Kit. CilkView
+monitors a Cilk Plus binary application and reports parallel statistics and performance prediction on multi-processor systems. We run our tests on the 6M elements, 1M nodes, F7X mesh
+and compare our results with those previously obtained with Mini-FEM on the EIB mesh.
+These two meshes are comparable in size and structurness and thus we expect similar parallel
+characteristics.
+Figure 3 shows the reports obtained on the assembly code section. Work corresponds to the
+1437
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+Work: 72,508,999,092
+Span: 273,655,307
+Burdened Span: 275,295,307
+Parallelism: 264.96
+Number of spawns/syncs: 7,901
+Average instructions/strand: 3,098,145
+Strands along span: 66
+Average instructions on span: 4,146,292
+Total number of atomic inst.: 1,957,609
+Frame count: 30,174,937
+
+Work: 2,886,380,280 instructions
+Span: 10,734,061 instructions
+Burdened Span: 12,261,716 instructions
+Parallelism: 268.90
+Number of spawns/syncs: 7,515
+Average instructions/strand: 128,021
+Strands along span: 61
+Average instructions on span: 175,968
+Total number of atomic inst.: 7,518
+Frame count: 22,659,845
+
+(a) F7X - AETHER
+
+(b) EIB - Mini-FEM
+
+Figure 3: Comparison between CilkView scalability reports.
+number of instructions and is much higher in AETHER than in mini-FEM. This is logical given
+the higher computation ratio. The span and burdened span indicate the number of instructions
+on the critical path. The second one includes the runtime’s overhead for scheduling, stealing
+and synchronization. Due to the more complex computation, the runtime overhead is more
+than 25x smaller in AETHER than in Mini-FEM. The number of spawns, synchronizations and
+strands, sequences of sequential instructions, are similar. It makes sense since the meshes have
+similar sizes and the tree topologies are analogous. The larger diﬀerence involves the number
+of atomic operations. The ratio between these atomic operations and the amount of work is 10
+times higher for AETHER than Mini-FEM. A rapid experiment putting some local variables
+on the stack by using local static declarations in conjunction with the recursive keyword,
+drastically reduces the number of atomic operations. We deduce that the high number of
+atomic operations is the result of the high number of dynamic allocations involved.
+Based on this observation, we privatized all the shared variables using the threads’ private
+stack. Nevertheless, increasing meshes imply increasing number of variables to store, which
+can lead to stack overﬂows. This problem can be temporarily solved by unsafely adjusting the
+thread’s stack size limit. However, estimating the size and setting it at compile time is not a
+viable solution for long term code maintainability.
+The global variables commonly used in Fortran have led us to the problem of parallel memory
+allocation for shared memory parallelization. In the list below, we summarize and discuss the
+diﬀerent alternatives considering the lifespan of the variables and the memory eﬃciency criteria.
+Global variables. With thread parallelism, using global variables can lead to race conditions.
+Thus, they must be protected by costly critical sections. Nevertheless, they may be used with
+no additional cost if exclusively accessed by read-only operations.
+Heap. Using the heap is a solution to privatize variables. But since it is shared by all the
+threads, allocating involves costly lock operations.
+Stack. The application thread’s private stack seems to be a better alternative, but sizelimited, and the liveness cannot exceed the function boundary. Furthermore, the task-based
+parallelism model leads to a very large number of independent tasks. An allocation at task level
+would be repeated as many times as the number of tasks. Since tasks may contain multiple
+functions to execute, allocating at function level would be even worse.
+Threads. Contrary to the number of tasks, the number of threads is usually not growing
+with the problem’s complexity and is bounded by the architecture characteristics. Therefore
+allocating at thread level drastically reduces the number of operations. The principle is that
+each worker thread owns a private space in memory, and uses it as a scratch pad to execute
+all its tasks. As a future work, we would like to consider a memory allocator library handling
+thread level dynamic allocation in the Thread Local Storage, TLS.
+1438
+
+FEM proto-application
+
+5
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+The D&C Library OpenMP Implementation
+
+OpenMP is a portable programming interface for shared memory parallel computers supported
+on many architectures. It provides a platform-independent set of compiler pragmas and directives. The execution model is based on the fork-join principle. OpenMP 2.5 is based on
+thread parallelism through work-sharing. This mechanism of work distribution is enabled by
+two methods: loop parallelization and parallel sections. In both cases, work units are static and
+distributed to assigned threads which will execute them from the beginning to the end [1]. As
+shown in Figure 4a, OpenMP 2.5 allows recursive parallelism by nested declarations of parallel
+regions. Unfortunately, this approach leads to overhead due to the cost of creating new parallel
+regions and to load balancing issues [1].
+OpenMP 3.0 introduces the task proposal to enable dynamic work unit generation [1],
+irregular parallelism, and recursivity. OpenMP 3.0 tasks allow to express the same recursive
+parallelism replacing the nested parallel regions by tasks spawning other tasks. The tasks are
+added to a pool of tasks executed by the team of threads from the parallel region. Tasks are
+guaranteed to be executed at the end of the parallel region, but it is possible to synchronize
+at ﬁner grain using the keyword taskwait. The taskwait construct suspends the execution of a
+task until all the children tasks are completed.
+In the D&C library, tasks are spawned during the recursive D&C tree traversal. Figure 4b
+shows how the assembly step has been parallelized using OpenMP tasks. Only one parallel
+region is created and the recursive algorithm spawns the tasks. All new tasks are added to the
+pool of work and there is only one team of threads.
+void recursive_assembly(tree_t &tree){
+#pragma omp parallel section
+{
+#pragma omp section
+recursive_assembly (*tree.left);
+#pragma omp section
+recursive_assembly (*tree.right);
+#pragma omp barrier
+if (tree.sep != nullptr)
+recursive_assembly (*tree.sep);
+}
+}
+
+(a) Recursivity with nested parallel sections
+
+void recursive_assembly(tree_t &tree){
+#pragma omp task default(shared)
+recursive_assembly (*tree.left);
+#pragma omp task default(shared)
+recursive_assembly (*tree.right);
+#pragma omp taskwait
+if (tree.sep != nullptr)
+recursive_assembly (*tree.sep);
+}
+void DC_assembly(){
+#pragma omp parallel
+#pragma omp single nowait
+recursive_assembly (*treeHead);
+}
+
+(b) Recursivity with nested tasks
+
+Figure 4: Comparison between nested tasks and nested regions recursivity
+
+6
+
+Experiments
+
+We evaluate D&C on Mini-FEM and on AETHER, the industrial CFD code from Dassault
+Aviation. We compare three versions of the matrix assembly step: Ref, the original pure
+MPI version, D&C Cilk, the hybrid version using the D&C library with Cilk Plus, and D&C
+OpenMP, the alternative version of the D&C library using OpenMP tasks. The experiments
+are performed on three diﬀerent platforms. The ﬁrst one is the Anselm cluster from the IT4I
+computing center. Its nodes are composed of two Intel Sandy Bridge E5-2665 (8 cores@2.4GHz).
+The second platform is a cluster from Dassault Aviation with similar nodes as Anselm. We
+1439
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+use a maximum of 1024 cores (64 nodes). The third platform is a cluster of Intel Xeon Phi
+(KNC). The KNC are composed of 60 in-order cores (240 threads) clocked at 1GHz and 8 Go
+of GDDR5 physical memory. To exploit instruction-level parallelism, ILP, despite the in-order
+architecture, the cores support 4 hyper-threads.
+The results are presented both with relative speedup compared to the best sequential time
+and parallel eﬃciency. In the following ﬁgures, the x axis represents the number of cores.
+The y axis represents either the relative speed-up, or the parallel eﬃciency EP = P T∗TS P on
+P processors, with TS the sequential time, and TP the time on P processors. The white
+background part corresponds to the physical cores and the grey one to the hyperthreads.
+
+6.1
+
+Evaluation on the Proto-Application
+
+On the Sandy Bridge nodes, we use 1 to 16 MPI processes for Ref and 1 MPI process per node
+with 1 to 16 threads per process for the D&C versions. Sandy Bridge experiments take place on
+the Anselm cluster and the application is compiled with Intel 14 and MPI 4.1. Figure 5 shows
+the comparison between the three versions of the code on the EIB use-case. The D&C Cilk
+version shows the best performance, both in terms of speedup and eﬃciency. However, there is
+only 6% improvement over OpenMP on 16 cores.
+16
+
+D&C OpenMP
+
+1.0
+●
+
+Ref
+
+12
+
+●
+
+Ideal scaling
+8
+
+●
+
+●
+
+●
+
+●
+
+●
+
+0.6
+D&C OpenMP
+0.4
+
+● D&C Cilk
+
+Ref
+
+0.2
+
+●
+
+4
+
+●
+
+0.8
+
+Efficiency
+
+Speedup
+
+● D&C Cilk
+
+Ideal scaling
+0.0
+
+●
+
+1
+
+1
+
+4
+
+8
+
+12
+
+16
+
+1
+
+4
+
+Number of Cores
+
+8
+
+12
+
+16
+
+Number of Cores
+
+Figure 5: Intra-node scalabity on the EIB use-case
+
+●
+
+●
+
+1.0
+
+●
+
+0.8
+
+●
+
+Hyper−threading
+Hyper
+Hyper−thre
+yp
+per−threadin
+e threading
+a g
+
+0.6
+
+●
+
+0.4
+0.2
+
+Parallel Efficiency
+
+Parallel Efficiency
+
+1.0
+
+0.0
+240
+30
+60
+D&C OpenMP
+
+120
+
+180
+
+●
+●
+
+Hyper−threading
+Hyper
+yper−threadin
+yper−threa
+threading
+a g
+
+0.6
+
+●
+
+0.4
+
+●
+
+0.2
+
+240
+
+Ideal scaling
+120
+
+Hyper−threading
+ype
+per−th
+e
+ead
+a g
+●
+
+●
+
+60
+●
+
+60
+
+120
+
+180
+
+240
+
+Number of Cores
+
+(a) 1 KNC on EIB use-case
+
+Figure 6: Strong scaling scalability on Xeon Phi
+1440
+
+Ideal scaling
+480
+
+960
+
+Hyper−threading
+ype
+per−th
+e
+ead
+a g
+●
+
+4
+30
+
+720
+
+Ref
+
+●
+
+●
+
+720
+
+960
+
+●
+
+120
+
+●
+
+480
+
+Number of Cores
+
+D&C Cilk
+
+240
+
+●
+
+1
+
+120
+240
+D&C OpenMP
+●
+
+720
+
+Ref
+
+30
+
+4
+
+Number of Cores
+
+D&C Cilk
+
+Speed−Up
+
+●
+
+180
+
+Speed−Up
+
+●
+
+0.0
+960
+1
+
+1
+
+●
+
+0.8
+
+●
+●
+
+4
+
+120
+
+240
+
+480
+
+Number of Cores
+
+(b) 4 KNC on FGN use-case
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+Figure 6a represents the results on one Intel Xeon Phi KNC. On the 60 physical cores,
+represented in the white background part of the graph, Cilk Plus scales almost ideally with
+97% eﬃciency. The OpenMP version suﬀers from the runtime overhead and achieves 81%
+parallel eﬃciency. In Figure 6b, we evaluate the strong scalability up to 960 threads on 4 Intel
+Xeon Phi nodes using the larger 7M nodes FGN use-case. On the physical cores, we obtain
+similar results. However, using hyperthreading, it is possible to mitigate the OpenMP runtime
+overhead. Indeed, since the OpenMP version’s eﬃciency is far from optimal, this leaves more
+improvement opportunities to the hyperthreads.
+
+6.2
+
+Evaluation on AETHER
+
+The experiments on AETHER are performed on the Sandy Bridge cluster from Dassault Aviation with the F7X use-case. AETHER is compiled with Intel 11, while the D&C library is
+compiled with Intel 13 due to the Intel Cilk Plus requirements. We use Intel MPI 4.1.0 and
+Intel 13 OpenMP. We fully use the 16 cores of a node and increase the nodes count from 1 to 64.
+To measure and compare the Cilk Plus and OpenMP runtime overhead, we measure the computation time without any MPI communication in a strong scaling experiment. Indeed, since
+the mesh contains 1 million elements and is partitioned until all leaves contain 200 elements,
+we obtain 5000 tasks spread over 1024 cores. This results in less than 5 tasks per core. Figure
+7 shows a speedup and an eﬃciency comparison between Ref (comm free), and the two D&C
+Cilk and D&C OpenMP versions.
+
+D&C OpenMP
+
+1.0
+
+● D&C Cilk
+
+●
+
+Ref comm free
+Ideal scaling
+16
+
+●
+
+12
+
+●
+
+●
+
+●
+
+●
+
+0.6
+0.4
+
+D&C OpenMP
+● D&C Cilk
+
+8
+4
+1
+
+● ●
+
+0.8
+
+Efficiency
+
+Speedup over 32 nodes
+
+32
+
+●
+●
+
+●
+
+0.2
+
+●
+
+3264 128
+
+0.0
+256
+
+512
+
+1024
+
+Ref comm free
+Ideal scaling
+3264 128
+
+Nb Cores
+
+256
+
+512
+
+1024
+
+Nb Cores
+
+Figure 7: Speedup and eﬃciency on AETHER with F7X mesh on 1024 Sandy Bridge cores.
+
+At 1024 cores, Cilk speedup overpasses OpenMP by 9%. The Cilk Plus implementation of
+task parallelism beneﬁts of lighter overhead and dynamic load balancing via work-stealing. As
+a result, Cilk Plus shows a better scalability than OpenMP, which is consistent with the results
+previously obtained on the proto-application in Section 6.1.
+
+7
+
+Conclusion and Lessons Learned
+
+In this article, we experiment the concept of proto-application as a proxy for complex scientiﬁc
+simulation codes optimization. The D&C library development based on the Mini-FEM protoapplication has been successfully integrated into AETHER, and the D&C library performance
+results are conﬁrmed on the industrial test case. Secondly, we used the proto-application as a
+basis for the development of an OpenMP version of the D&C library and conﬁrmed the results
+obtained with the porting of the OpenMP version of the D&C library to AETHER. OpenMP
+tasks are simple to program and provide comparable but sensibly lower performance than the
+1441
+
+FEM proto-application
+
+M¨
+oller, Petit, Th´ebault, Dinh
+
+Cilk implementation. As conﬁrmed in the literature [11], this comes from the lower overhead of
+the Cilk Plus runtime and from the scheduler which provides eﬀective dynamic load balancing
+with work-stealing. These experiments lead us to the conclusion that proto-applications are a
+great opportunity to develop and validate code optimization while preserving the portability
+into large industrial applications. However, we raise the problem of privatizing the shared
+variables commonly used in Fortran programming and propose a workaround. As a future
+work, we propose to improve the management of the memory allocations based on thread local
+storage.
+
+Acknowledgement
+The authors would like to thank the European FP7 Exa2ct project, and the Itea2 COLOC
+project for their support and funding, and the IT4Innovations Czech national supercomputing
+center for giving us access to the Anselm cluster.
+
+References
+[1] Eduard Ayguad´e, Nawal Copty, Ieee Computer Society, Ro Duran, Jay Hoeﬂinger, Yuan Lin,
+Federico Massaioli, Xavier Teruel, Priya Unnikrishnan, and Guansong Zhang. The design of
+openmp tasks. IEEE Trans. Parallel Distrib. Syst, pages 404–418.
+[2] R. F. Barrett, S. Borkar, S. S. Dosanjh, S. D. Hammond, M. A. Heroux, X. S. Hu, J. Luitjens, S. G.
+Parker, J. Shalf, and L. Tang. On the role of co-design in high performance computing. Advances
+in Parallel Computing, Volume 24: Transition of HPC Towards Exascale Computing:141–155.
+[3] J. Bolz, I. Farmer, E. Grinspun, and P. Schr¨
+ooder. Sparse matrix solvers on the gpu: conjugate
+gradients and multigrid. In ACM Transactions on Graphics, volume 22, pages 917–924, 2003.
+[4] Cris Cecka, Adrian J Lew, and Eric Darve. Assembly of ﬁnite element methods on graphics
+processors. International journal for numerical methods in engineering, 85(5):640–669, 2011.
+[5] Pietro Cicotti, Laura Carrington, and Andrew Chien. Toward application-speciﬁc memory reconﬁguration for energy eﬃciency. In Proceedings of the 1st International Workshop on Energy
+Eﬃcient Supercomputing, E2SC ’13, pages 2:1–2:8, New York, NY, USA, 2013. ACM.
+[6] EXA2CT. The exa2ct european project: Exascale algorithms and advanced computational techniques. http://www.exa2ct.eu, January 2015.
+[7] Charbel Farhat and Luis Crivelli. A general approach to nonlinear fe computations on sharedmemory multiprocessors. Computer Methods in Applied Mechanics and Engineering, 1989.
+[8] Yuxiong He, Charles E. Leiserson, and William M. Leiserson. The cilkview scalability analyzer.
+In SPAA, 2010.
+[9] M.A.Heroux. Mantevo home page. https://mantevo.org/, 2008.
+[10] GR Markall, A Slemmer, DA Ham, PHJ Kelly, CD Cantwell, and SJ Sherwin. Finite element assembly strategies on multi-core and many-core architectures. International Journal for Numerical
+Methods in Fluids, 71(1):80–97, 2013.
+[11] Stephen L Olivier and Jan F Prins. Comparison of openmp 3.0 and other task parallel frameworks
+on unbalanced task graphs. International Journal of Parallel Programming, 38(5-6):341–360, 2010.
+[12] Lo¨ıc Thebault, Eric Petit, Quang Dinh, and William Jalby. Scalable and eﬃcient implementation
+of 3d unstructured meshes computation: A case study on matrix assembly. In ACM SIGPLAN
+Symposium on Principles and Practice of Parallel Programming, PPoPP ’15, USA, 2015, 2015.
+[13] Lo¨ıc Thebault, Eric Petit, Marc Tchiboukdjian, Quang Dinh, and William Jalby. Divide and
+conquer parallelization of ﬁnite element method assembly. Parallel Computing: Accelerating Computational Science and Engineering (CSE), Advances in Parallel Computing 25, 2014.
+
+1442
+
+

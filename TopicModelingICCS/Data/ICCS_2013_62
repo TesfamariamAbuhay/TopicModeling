@@ -1,0 +1,523 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 18 (2013) 551 – 560
+
+International Conference on Computational Science, ICCS 2013
+
+Early experience on porting and running a Lattice Boltzmann code
+on the Xeon-Phi co-processor
+G. Crimia , F. Mantovanib , M. Pivantid , S. F. Schifanoe,1 , R. Tripiccionec
+a Universit`
+a di Ferrara, ITALY
+f¨ur Physik, Univesit¨at Regensburg, GERMANY
+c Dip. di Fisica e Scienze della Terra and CMCS, Universit`
+a di Ferrara and INFN, ITALY
+d Dip. di Fisica, Universit`
+a di Roma La Sapienza and INFN, ITALY
+e Dip. di Matematica e Informatica, Universit`
+a di Ferrara and INFN, ITALY
+b Facult¨
+at
+
+Abstract
+In this paper we report on our early experience on porting, optimizing and benchmarking a Lattice Boltzmann (LB) code on the
+Xeon-Phi co-processor, the ﬁrst generally available version of the new Many Integrated Core (MIC) architecture, developed
+by Intel. We consider as a test-bed a state-of-the-art LB model, that accurately reproduces the thermo-hydrodynamics of a 2Dﬂuid obeying the equations of state of a perfect gas. The regular structure of LB algorithms makes it relatively easy to identify a
+large degree of available parallelism. However, mapping a large fraction of this parallelism onto this new class of processors is
+not straightforward. The D2Q37 LB algorithm considered in this paper is an appropriate test-bed for this architecture since the
+critical computing kernels require high performances both in terms of memory bandwidth for sparse memory access patterns
+and number crunching capability. We describe our implementation of the code, that builds on previous experience made on
+other (simpler) many-core processors and GPUs, present benchmark results and measure performances, and ﬁnally compare
+with the results obtained by previous implementations developed on state-of-the-art classic multi-core CPUs and GP-GPUs.
+Keywords:
+Lattice Boltzmann, Many-core systems, Performance optimization
+
+1. Introduction
+The multi-core design approach is quickly becoming the preferred way to further improve processor performances in spite of the fact that current micro-electronic technologies put a practical upper limit on clock frequency
+at approximately 3 GHz. A multi-core processor is a single chip integrating two or more independent CPUs. The
+number of cores within one chip is quickly growing: processors with 100 or more cores are expected in the near
+future. The many-core approach allows processors to scale according to Moore’s law, but it bears a great impact
+on application design, further moving the challenge of sustaining performance from hardware to algorithms and
+software.
+In this paper we report on our early experience in implementing and partially optimizing a complex but highly
+parallelizable application on the Xeon-Phi processor, one of the earliest implementations of the Many integrated
+∗ Corresponding
+
+author. Tel.: +39-053-297-4614 ; fax: +39-053-297-4614.
+E-mail address: schifano@fe.infn.it.
+
+1877-0509 © 2013 The Authors. Published by Elsevier B.V. Open access under CC BY-NC-ND license.
+Selection and peer review under responsibility of the organizers of the 2013 International Conference on Computational Science
+doi:10.1016/j.procs.2013.05.219
+
+552
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+Cores (MIC) architecture designed by Intel. A MIC processor integrates several tens of CPU cores; each core is a
+lightweight X86-compatible version of the Pentium architecture not including, for example, dynamic scheduling
+of instructions.
+The ﬁrst commercially available processor in this class is the Knights Corner (KNC), that should be released
+at the beginning of 2013. So far Intel has announced two versions of this processor, with 60 or 61 cores. Each
+core performs SIMD instructions on rather long data-vectors; this feature helps improve performance at the core
+level, but relies critically on the ability of programmers and compilers to use eﬃciently these instructions.
+In this paper we focus on an early implementation, optimization and test of a production-grade Lattice Boltzmann (LB) code, that we have performed on pre-production samples of the KNC. We describe the structure of our
+program, that tries to map the available parallelism of the algorithm on the parallel features of the processor. To
+put our results in perspective, we compare with earlier implementations that we have optimized for not simpler
+many-core architectures and for GPUs. We have relied on the speciﬁc features of our algorithm to map a large
+fraction of the available parallelism onto the highly parallel data paths available on the processor; for this reason
+our approach does not easily relates to other codes relevant for the computational sciences; however, what we
+oﬀer here is an early assessment of the potential for performance of a new class of High Performance Computing
+(HPC) processing architectures.
+Our paper is structured as follows: after the present overview section, we describe the architecture of the MIC
+processor, discussing its potential for performance in HPC scientiﬁc codes; we then shortly describe the Lattice
+Boltzmann algorithm that we use as our test-bed and then present the structure of our MIC-based implementation.
+In a ﬁnal section, we collect our performance results and our comparisons with other state-of-the-art architectures
+and present our concluding remarks.
+2. The Intel Xeon-Phi co-processor
+The Xeon-Phi co-processor is an accelerator for a more traditional host system, in much the same way as
+GPUs are used in conjunction with host CPUs. It is available as a standard Pci-express add-on card for traditional
+PCs. Data transfers from host to processor and vice-versa occur over 16 Pci-express (Gen. 2) data lanes.
+The ﬁrst production version of this system, expected to be available for the mass-market at the end of January
+2013, has one Knights Corner (KNC) MIC processor and 8 GBytes of GDDR5 RAM. The KNC processor integrates up to 61 CPU cores, and runs at a frequency of ≈1 GHz. It connects to its private memory bank through 16
+memory channels, delivering a theoretical peak bandwidth of ≈320 GByte/s. The theoretical peak bandwidth to
+the host-processor is ≈ 8 GByte/s.
+Each core is based on the Pentium architecture, and includes 32 KB of L1 cache used for data and instructions,
+512 KB of L2 data-cache, and a 512-bit wide vector Floating-Point Unit (FPU). The FPU engine performs one
+fused-multiply-add instruction per clock cycle, delivering a peak performance of ≈32 GFlops in single-precision,
+and ≈16 GFlops in double-precision, if all elements of the data-vector can be used at all clock cycles. In this case,
+the whole KNC is able to deliver a peak performance of around 2 and 1 Tﬂops respectively in single and double
+precision, respectively. Within the processor, the cores are connected through a high-speed bi-directional ring,
+and data items inside all L2-caches are shared by all cores. The KNC runs a modiﬁed lightweight version of the
+Linux operating system; each core supports the execution of up-to 4 Linux threads.
+From a programming point of view, Phi systems can be programmed using two diﬀerent approaches. The
+ﬁrst approach – called native – consists in running programs directly on the KNC processor. In this case, the
+user compiles natively the program and logs onto the Linux system running on the KNC to execute it. The
+Intel compiler (the only available one, so far, supporting the KNC architecture) produces KNC native code if
+one enables the -mmic ﬂag. A second approach – usually referred to as accelerator or oﬄoading – consists in
+developing a hybrid program which runs on the host and on the KNC. Using the oﬄoad approach a program starts
+on the host and the compiler, instructed by appropriate pragmas directives, generates code that transparently
+transfers control to the MIC processor. Figure 1 shows a simple example of a program which, after initializing
+arrays A, B, C on the host, oﬄoads the execution of the vadd() function onto the MIC accelerator. The code of
+vadd will be compiled both for the host and the MIC. In the case described on the ﬁgure, the code running on the
+MIC will execute the sum of vectors A and B, while the code running on the host will print a warning message.
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+553
+
+void __attribute__ ( ( target ( mic ) ) ) vadd ( double ∗ A , double ∗ B , double ∗ C )
+int main ( ) {
+double A [ N ] , B [ N ] , C [ N ] ;
+vinit ( double ∗A , double ∗B , double ∗ C ) ;
+# pragma offload target ( mic : 0 ) in ( A , B : lenght ( N ) ) inout ( C : lenght ( N ) )
+{
+vadd ( A , B , C ) ;
+}
+vprint ( C ) ;
+}
+void vadd ( double ∗A , double ∗B , double ∗ C ) {
+# ifdef
+MIC
+int i ;
+for ( i =0; i<N ; i ++)
+C[i] = A[i] + B[i ];
+# else
+fprint ( stderr , " This code is running on the host \ n " ) ;
+# endif
+}
+Figure 1. Example of a MIC program using the oﬄoad approach: the execution of the v add function is oﬄoaded to the accelerator; a transfer
+of data from the processor to the accelerator and of results in the opposite direction is implied by the in and inout clauses.
+
+The host version of vadd will be executed if the run-time system is not able to access the MIC card. The oﬄoaded
+function can eventually spawn several threads to run on all available cores. The oﬄoad language available on the
+MIC software environment is integrated with several existing programming languages (C++, Fortran, Cilk, TBB,
+. . . ), and models (openMP and OpenCL [1, 2]).
+In quest for performance, programs should oﬄoad kernel functions which are computationally expensive if
+executed on the host. On the other hand, the performance advantages of oﬄoading a computationally intensive
+function to the co-processor must be confronted with the time necessary to move input and output data to and
+from the host using the PCI-express data link.
+Conversely, if one chooses the native approach code can be compiled and run without any changes; however
+one encounters problems associated to the relatively small size of the memory banks directly connected to the
+co-processor while at the same time input-output operations can be more cumbersome. Moreover, the serial part
+of the code, like initialization of data structures, may have very poor performance on the MIC.
+In both cases, performances heavily rely on the ability of programmers, compilers and run-time support to
+carefully exploit parallelism on all available hardware features. Optimizations areas relevant for performances
+are:
+• core parallelism: the code running on the MIC processor should allow all cores to work in parallel exploiting
+MIMD or SPMD multi-task parallelism; in the ﬁrst case the application is decomposed in several sub-tasks
+and each one is executed by a diﬀerent core; in the latter case, that can be also combined with the previous
+one, the data-set is typically partitioned among the cores, and each core executes the same task on diﬀerent
+portions of the data-set
+• vector programming: each core processes the data-set of the application using vector instructions and exploiting streaming-parallelism (SIMD); the number of data-items that can be processed by any vector instruction is up to 16 for single-precision arithmetics and up to 8 for double-precision arithmetics. This
+approach is eﬃcient for performance if a matching number of data words on which the same operation must
+be performed can be identiﬁed in the code.
+
+554
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+Figure 2. Velocity vectors for the LB populations in the D2Q37 model. Population labelling is arbitrary; populations associated to each site
+are stored at consecutive memory address in the order deﬁned by their labels.
+
+3. Lattice Boltzmann methods
+The Lattice Boltzmann method is a computational approach that describes ﬂuid dynamics by lattice discretization in position and momentum space [3]. On a discrete lattice (in D = 2 or 3 dimensions), the actual dynamics is
+replaced by a synthetic one, based on a set of lattice populations ( fl (x, t)); each population has a given ﬁxed lattice
+velocity cl , associated to the fact that, at each time step, it drifts towards a nearby lattice site; populations evolve
+in (discrete) time according to the following equation:
+fl (x + cl Δt, t + Δt) − fl (x, t) = −
+
+Δt
+fl (x, t) − fl(eq)
+τ
+
+(1)
+
+Macroscopic observables (density ρ, velocity u and temperature T ) are deﬁned in terms of the fl (x, t):
+fl ,
+
+(2)
+
+cl fl ,
+
+(3)
+
+|cl − u|2 fl ,
+
+(4)
+
+ρ=
+l
+
+ρu =
+l
+
+DρT =
+l
+
+and the equilibrium distributions ( fl(eq) ) are themselves function of these macroscopic quantities [3].
+LB models are available in many diﬀerent versions, characterized by the dimension of the lattice, the number
+of populations that they use (they are usually labelled as DnQm, where n is the number of dimensions and m is
+the number of populations) and by the explicit functional form of the equilibrium distributions fl(eq) . Starting from
+early models (e.g., D2Q9 or D3Q19), able to describe an uncompressible ﬂuids at constant temperature, recent
+LB algorithms describe the thermo-hydrodynamics of multiple-phases or correctly treat compressible ﬂuids with
+realistic equations of state.
+In the following we focus on a recently proposed D2Q37 model that correctly reproduces the equation of state
+of the ﬂuid, regarded as a perfect gas (p = ρT ); see [4, 5] for full details. For this model, one shows that, after
+appropriate shift and re-normalization of the velocity and temperature ﬁelds, one recovers, via a Taylor expansion
+in Δt, the following set of thermo-hydrodynamical equations:
+Dt ρ = −ρ∂i u(H)
+i
+
+(5)
+
+= −∂i p − ρgδi,2 + ν∂ j j u(H)
+i
+(H)
+(H)
+(H)
+ρcv Dt T + p∂i ui = k∂ii T ;
+
+(6)
+
+ρDt u(H)
+i
+
+(7)
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+555
+
+where superscripts H ﬂag renormalized (physical) quantities, Dt = ∂t + u(H)
+j ∂ j is the material derivative and we
+neglect viscous heating; cv is the speciﬁc heat at constant volume for an ideal gas, p = ρT (H) , and ν and k are the
+transport coeﬃcients; g is the acceleration of gravity. In this model, population velocities are associated to moves
+on the lattice that reach points up to three lattice points away, see ﬁgure 2.
+From the point of view of the present paper, LB algorithms are a nice test case, as they oﬀer a huge degree of
+available parallelism, that can be immediately and easily identiﬁed: deﬁning y = x + cl Δt, one rewrites the main
+evolution equation as:
+Δt
+(8)
+fl (y, t + Δt) = fl (y − cl Δt, t) −
+fl (y − cl Δt, t) − fl(eq)
+τ
+One easily identiﬁes the overall structure of the computation that evolves the system by one time step Δt; for
+each point y in the discrete grid one:
+1. gather from neighboring sites the values of the ﬁelds fl corresponding to populations that drift towards y
+with velocity cl and then
+2. perform all mathematical processing needed to compute (in a completely local fashion) the quantities appearing in the equation above. This step is slightly more complex if one wants to take into account reactive
+eﬀects (combustion); indeed, in that case the divergence of the velocity ﬁeld has to be explicitly computed.
+This means that a further gather operation must be performed midway in this (otherwise local) compute
+intensive step.
+The key remark is that both steps above are completely uncorrelated for diﬀerent points of the grid, so they can
+be parallelized according to any convenient schedule, as long as one makes sure that, for each and all grid points,
+step 1 is performed before step 2. In principle, the available parallelism is as large as the number of sites of the
+lattice (that easily grows to hundreds of millions of sites).
+4. D2Q37 LBM implementation
+A reference implementation of the LB algorithm repeatedly evolves the lattice-cells of the system for one
+time steps. For each point in the grid, data needed to compute the new value of each population at each site in
+the grid is gathered from nearby sites, and then a fully local processing step is performed. Here we describe the
+implementation of our LB algorithm, ported and optimized for the Xeon-Phi architecture. As already discussed,
+our D2Q37 model operates on a bi-dimensional lattice, and 37 populations are associated to each lattice site. The
+algorithm processes every grid-point by applying in order two critical computational kernels:
+• propagate(): this phase of the computations gathers for each site 37 populations from neighbor lattice sites,
+according to the scheme of ﬁgure 2. This process does not perform ﬂoating-point computation; rather it
+performs memory copies accessing sparse memory addresses. It collects at each site the 37 populations that
+will interact at the next step during the execution of the collide() kernel. This step requires that each site
+accesses the populations of neighbor cells at distance up to 3 in the physical grid.
+• collide(): this phase performs all the mathematical steps associated to equation 8 and needed to compute the
+population values at each lattice site at the new time step (this is called collision, in LB jargon). Input data for
+this phase are the populations gathered by propagate(). This step is the most ﬂoating point intensive section
+of the code; it uses only the population members of the site on which it operates, making the processing of
+diﬀerent sites fully uncorrelated.
+In our implementation the lattice is stored in column-major order, and we keep in memory two copies of
+it. Even if this solution allocates more memory than having a single copy it makes the implementation of the
+code much easier because each computational phase read inputs from one copy and writes results to the other;
+moreover, for the lattice sizes that we have in mind, memory size is not a critical resource on currently available
+machines. The lattice is stored in memory as an Array of Structure (AoS); we select this mapping as it is more
+eﬃcient for the collide step, that is the most expensive part of the algorithm in our model. Indeed, in this case,
+populations associated to a given site are stored at contiguous memory address, and this improves data-locality
+and better exploits cache re-use, see for example [6].
+
+556
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+struct
+__m512d
+__m512d
+__m512d
+...
+__m512d
+} vpop_t ;
+
+vp0 ;
+vp1 ;
+vp2 ;
+vp36 ;
+
+vpop_t lattice [ LX ] [ LY ] ;
+
+Figure 3. Left: data type deﬁnition used for the structure of vectors containing population data. Right: Data allocation among the threads and
+within the vector structures operated upon by each thread.
+
+Our LB code is organized using the oﬄ
+o oad programming approach. The code segment running on the host
+initializes the lattice, downloads the lattice on the memory of the MIC, and starts the execution of a kernel on the
+MIC processor. When execution of the oﬄoaded function is ﬁnished, it copies back the results on the memory on
+the host. In practice, a very large fraction of the code, including all compute-intensive sections is oﬄoaded to the
+co-processor. Control goes back to the host only after several time-step iterations, when data has to be written to
+disk; the impact on performance is therefore negligible. This favorable state-of-aﬀairs
+ﬀ
+will have to be reconsidered
+when one tries to map the code on a parallel machine of many MIC systems, and data has to be moved to/
+o from
+diﬀerent
+ﬀ
+processing nodes.
+The code running on the MIC processor is organized as a multi-thread program; each thread processes a
+partition of the lattice. A lattice of size L x × Ly is split on Nt threads along the X dimension. Each thread then
+processes a sub-lattice of size (L x /N
+Nt ) × Ly .
+Within each thread, K sites are processed in parallel, in order to exploit the data-parallelism made available
+by vector instructions. In our case K is exactly the number of data words that can be packed into a 512-bit AVX
+vector; using double-precision, we have K = 8, while we set K = 16 if single-precision are used.
+Streaming vector instructions can be automatically inserted by the compiler, or explicitly used by the programmer, by coding intrinsic functions. In the ﬁrst case the program is a scalar code (all variables are scalar), and it is
+compiled enabling an appropriate auto-vectorization ﬂag (e.g. -O2 or -O3 for the ICC compiler). The compiler
+automatically exploits data-parallelism enabling the use of streaming instructions if speciﬁc conditions are met.
+For example, if no data dependencies occur between iterations of a loop, the compiler can (partially) unroll it,
+and two or more iterations (according to the type of variables involved for which no dependencies occur), can be
+processed in parallel using vector instructions. This approach is a simple and fast option for the programmer, but
+eﬃciency can be limited by the ability of the compiler to identify all parts of the code on which vectorization can
+be applied.
+A more cumbersome but potentially more eﬃcient approach explicitly introduces vector variables and processes them by so called intrinsic functions which are mapped by the compiler directly onto the corresponding
+assembly instruction. For example a double precision sum on a vector of 8 elements can be performed by the
+code line d = mm512
+m
+fmadd pd (a, b,c) declaring a, b, c, d as vector variables of type mm512d
+m
+. In this
+case each variable holds 8 double-precision ﬂoating point numbers, and the intrinsic is directly mapped onto the
+VFMADD132PD assembly instruction.
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+557
+
+In the implementation that we describe here, we have used the approach of using vector programming and
+intrinsic functions, based on our previous experience [7] on simpler vector machines for which auto-vectorization
+yielded sub-optimal performances; future work will compare both approaches also for this class of machines. We
+have divided the lattice in K strips along the Y dimension, and we have packed together populations of sites at
+distance LY /K as shown in ﬁgure 3. Using this approach our lattice is stored as an array of vector-sites, and each
+vector-site is stored as an array of 37 AVX vectors, each holding K populations.
+5. Results and conclusions
+In this section we report our preliminary performance results. We have tested the execution of the propagate
+and collide as two separate kernels; however production codes can merge the execution of the two kernels in a
+single step, applied in sequence to all cells of the lattice, saving access to the memory and improving performances.
+This optimization step is well known in literature, see for example [11]. We have run our kernels on two diﬀerent
+versions of the MIC processor:
+• we initially developed and debugged our codes on a prototype system (so called, step D0, software stack
+release Alpha 10) using a pre-production MIC chip, the 30-core Knights Ferry (KNF) processor, running at
+a frequency of 1.050 GHz, and a memory bank of just 2 GB. This earlier version of the MIC processor supports at full speed single-precision only; ﬂoating point single-precision peak performance is 1.075 GFlops,
+while double-precision runs eight times slower; memory interface bandwidth is limited to ≈ 80 GB/s. This
+system has been made available as a platform for code development only and very poor performance is to
+be expected.
+• we then moved our program to a pre-production version of the Xeon-Phi (so called, step B0 software stack
+release 2.1.4346-16) using a 61-core Knights Corner (KNC) processor running at a frequency of 1.09 GHz.
+As already discussed, peak performances are ≈ 2 Tﬂops in single precision and ≈ 1 TFlops in double
+precision. The GDDR5 memory interface has a peak bandwidth of 320 GB/s.
+In ﬁgure 4 we collect our performance results for the propagate and collide kernels, running on both versions
+of the MIC systems.
+Let us focus separately on each of these kernels. For propagate, the following remarks are in order:
+• the propagate kernel executes memory-to-memory copies with a rather sparse addressing pattern; for this
+reason performances are strongly correlated to the performance of the processor in computing addresses
+and performing memory accesses on short data sequences.
+• On the KNF system, only up to 30 threads could be started; in this range the sustained bandwidth grows
+almost linearly with the number of threads, and reaches a peak of 8.5 GByte/s.
+• The KNC processor is able to run a much larger number of threads; Intel suggest that using up-to 4 threads
+per core may be useful to increase performance. In our tests, we have used thread-aﬃnity to deﬁne the
+map between threads and physical-CPUs; we do not use CPU-zero which is used by the operating system;
+for this reasons the number of available CPU-cores is 60. As we see from the plots, also in this case the
+sustained bandwidth scales almost linearly up to 120 threads, using one and two threads per core; running
+3 or 4 threads improves performance marginally while using more than 4 threads results in bandwidth
+degradation. The highest sustained bandwidth is ≈ 51 GByte/s, obtained running 4 threads per core for a
+total of 240 threads; the corresponding eﬃciency is around 16% of peak.
+• The eﬃciency ﬁgure cited above means that our benchmark is currently using only a small fraction of the
+available peak memory bandwidth. We believe that our results are limited by the heavy and complex set of
+memory addressing arithmetic involved in the kernel. To further understand this point we have measured
+the bandwidth for a memory-copy benchmark, that moves large sequences of contiguous data words. In this
+case, we expect that addressing has a minor impact on performance. This benchmark reaches a sustained
+bandwidth of approximately 135 GByte/s using 120 threads, that is approximately 42% of the peak. For a
+larger number of threads the bandwidth remains essentially constant. We see however that the bandwidth
+available to each thread quickly decreases – for reasons as yet unclear to us – as more and more threads
+compete to access memory;
+
+558
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+Figure 4. A summary of our benchmark results of the propagate (left) and collide (right) kernels. Starting from the top we plot the sustained
+performance (in GByte/
+e s or GFlops), the performance per thread and the eﬃciency; all ﬁgures are a function of the number of threads on
+which the kernel has been mapped. For comparison we also plot the corresponding results for a mem-copy benchmark. Data is for both the
+KNF and KNC processors and for single precision (-SP) and double precision (-DP) arithmetics.
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+propagate (GB/s)
+E
+collide (GF/s)
+E
+ξ (collide)
+
+C2050
+84
+58%
+205
+41%
+NA
+
+2-WS
+17.5
+29%
+88
+55%
+1.19
+
+2-SB
+60
+70%
+220
+63%
+1.27
+
+559
+
+KNC
+52
+16%
+274
+27%
+0.52
+
+Table 1. Performance comparison for propagate and collide among several architectures. C2050 is a NVIDIA Fermi GPU, 2-WS is a doublesocket Westmere system, 2-SB is a double socket Sandybridge platform, and KNC is the Xeon-Phi board. For each kernel and each system
+we show sustained performance, eﬃciency and the ξ parameter (deﬁned in the text), if applicable.
+
+• Summing up, there seems to be problem in obtaining a large fraction of the theoretically available bandwidth, and allocating it eﬃciently to the cores. In our code this problem is largely hidden by the overhead
+associated to computing the addresses.
+Contrary to propagate, the collide kernel is the most compute intensive part of our code. We make the following remarks:
+• On the KNF processor, the sustained performance of our benchmark using 30 threads is ≈ 98 GFlops, corresponding to ≈ 10% of the peak, and performance grows linearly (or even super-linearly) with the number
+of threads. Given the repeated warnings that the KNF processor has not been designed for performance we
+do not further elaborate on these ﬁgures.
+• On the KNC system the collide kernel scales almost linearly up-to 60 threads; going to 120 and 240 threads
+brings further sub-linear performance improvements, up to an overall sustained performance of 274 GFlops
+using 240 threads, corresponding to ≈ 27.5% of the peak in double-precision. Sustained performance in
+single precision follows the same pattern, with a top value ≈ 500 GFlops, corresponding to ≈ 24% of peak.
+• As one uses more than 240 threads performance starts to drop in absolute value. We believe that this is due
+to some eﬃciency problem within the processor when switching from one to another thread on the same
+core. We base this belief on the observation that the same pattern of performance per thread occurs in single
+and double precision, so we can rule out that the performance drop is associated to insuﬃcient memory
+bandwidth to support the processing rate.
+• One of the reasons for the measured level of performance may be associated to the fact that our computational kernel implies a mix of mathematical operations that cannot be always cast into the multiply-add
+structure, so a signiﬁcant loss of performance is expected. We are currently trying to identify other (if any)
+performance bottlenecks.
+In order to put our results in perspective, table 1 provides a comparison of performance ﬁgures for the same
+algorithm, running on two more traditional many-core systems and on a state-of-the-art GPU.
+We discuss performances for the same kernel codes measured on a 12-core system using two Westmere processors [8, 9] (with a 128-bit vector units), a 16-core system, based on the Sandybridge processor (with 256-bit
+vector units), and a NVIDIA C2050 card based on the Fermi processor [7, 10]. Inspecting this table, one might
+conclude that the KNC processor delivers more performance for this LB algorithm that all other implementation.
+Still, one has to remember that the actual eﬃciency is not very high, a situation that has to be better understood.
+In an attempt to provide a fair comparison of performances across architectures with widely diﬀerent number
+of cores and vector sizes, we deﬁne the ξ metric:
+ξ=
+
+P
+Nc × v × f
+
+where P is the measured performance of a kernel code, Nc is the number of cores on which the kernel has been
+parallelized, v is the size of vector instruction used, and f is the operating frequency of the processor. The ξ
+parameter should allow to compare how well a given architecture is able to use all its parallel features, as well as its
+sheer clock speed, to deliver performance to a given application. We see that the more traditional Intel processors
+
+560
+
+G. Crimi et al. / Procedia Computer Science 18 (2013) 551 – 560
+
+have very similar ﬁgures for ξ while the MIC system has a signiﬁcantly lower value. It will be interesting to see
+if more clever programming and optimization strategies may improve on these ﬁgures; work is in progress in this
+direction.
+Acknowledgements
+This work was performed in the framework of the COKA and Suma projects, supported by Istituto Nazionale
+di Fisica Nucleare (INFN). We would like to thank CINECA (Bologna, Italy) and the J¨ulich Supercomputer Center
+(J¨ulich, Germany) for allowing us to use their computing systems.
+References
+[1]
+[2]
+[3]
+[4]
+[5]
+[6]
+[7]
+[8]
+[9]
+[10]
+[11]
+
+Opencl, http://www.khronos.org/opencl.
+The openmp api, http://www.openmp.org.
+S. Succi, The Lattice Boltzmann Equation for Fluid Dynamics and Beyond, Oxford University Press (2001).
+M. Sbragaglia et al., Lattice Boltzmann method with self-consistent thermo-hydrodynamic equilibria, J. Fluid Mech., 628 (2009) 299.
+A. Scagliarini et al., Lattice Boltzmann methods for thermal ﬂows: Continuum limit and applications to compressible Rayleigh-Taylor
+systems, Phys. Fluids, 22 (2010) 055101.
+G. Wellein, et al., On the Single Processor Performance of Simple Lattice Boltzmann Kernels Computers & Fluids, 35 (2006) 910.
+L. Biferale et al., An optimized D2Q37 Lattice Boltzmann code on GP-GPUs, Computers and Fluids. (2012). Article in Press.
+L. Biferale et al., Optimization of Multi-Phase Compressible Lattice Boltzmann Codes on Massively Parallel Multi-Core Systems, Procedia Computer Science, 4 (2011) 994:1003.
+L. Biferale et al., A multi-GPU implementation of a D2Q37 Lattice Boltzmann Code. R. Wyrzykowski et al. (Eds.): PPAM 2011, Part I,
+LNCS 7203, pp. 640-650, Springer, Heidelberg (2012).
+A. Bertazzo et al., Implementation and Optimization of a Thermal Lattice Boltzmann Algorithm on a multi-GPU cluster, Proceedings of
+Innovative Parallel Computing (INPAR) 2012, May 13-14, 2012 San Jose, CA (USA).
+T. Pohl, et al., Optimization and Proﬁling of the Cache Performance of Parallel Lattice Boltzmann Codes, Parallel Processing Letters,
+13(4) (2003) 549.
+
+

@@ -1,0 +1,492 @@
+A GPU Implementation of Level Set
+Multiview Stereo
+Patrick Labatut1 , Renaud Keriven2 , and Jean-Philippe Pons2
+1
+
+´
+D´epartement d’Informatique, Ecole
+normale sup´erieure,
+F-75230 Paris Cedex 05, France
+patrick.labatut@ens.fr
+2
+´
+CERTIS, Ecole
+Nationale des Ponts et Chauss´ees,
+F-77455 Marne-la-Vall´ee Cedex 2, France
+keriven@certis.enpc.fr, pons@certis.enpc.fr
+
+Abstract. Variational methods that evolve surfaces according to PDEs
+have been quite successful for solving the multiview stereo shape reconstruction problem since [1]. However just like every other algorithm that
+tackles this problem, their running time is quite high (from dozens of
+minutes to several hours). Fortunately graphics hardware has shown a
+great potential for speeding up many low-level computer vision tasks. In
+this paper, we present the analysis of the diﬀerent bottlenecks of the original implementation of [2] and show how to eﬃcently port it to GPUs
+using well-known GPGPU techniques. We ﬁnally present some results
+and discuss the improvements.
+
+1
+
+Introduction
+
+Three-dimensional shape reconstruction from a set of pictures is one of the oldest
+problems in computer vision and ﬁnd its roots back in robotics. Unfortunately
+the current state-of-the-art algorithms for reconstruction from multiple views
+are typically very slow and forbid a more widespread use of this technique.
+A quite recent idea to improve the running time of many computer vision
+algorithms consists in using commodity graphics cards not for rendering fancy
+graphics but for general-purpose computations. We show how this approach was
+successful for us, allowing quality shape reconstruction within minutes.
+The ﬁrst section of this paper discusses previous work in the ﬁeld of stereo
+reconstruction and general-purpose computation on GPUs (GPGPU), the next
+section describes the shape reconstruction algorithm we used, the following section details our implementation and the ﬁnal section presents some results.
+
+2
+2.1
+
+Related Work
+Multiview Stereo Algorithms
+
+Given n (≥ 2) images of the same scene (along with the calibration parameters
+of the cameras), the goal is to build a 3D model of the scene as close as possible
+V.N. Alexandrov et al. (Eds.): ICCS 2006, Part IV, LNCS 3994, pp. 212–219, 2006.
+c Springer-Verlag Berlin Heidelberg 2006
+
+A GPU Implementation of Level Set Multiview Stereo
+
+213
+
+to the original. This goal is diﬃcult to reach because occluded parts and lighting
+can substantially change the appearance of a scene from diﬀerent viewpoints.
+Currently multiview stereo algorithms can be very roughly divided into two
+classes: on one hand, discrete methods `a la space carving derivated from [3] which
+work on an initialy whole discrete volume and incrementally remove chunks of
+voxels that do not satisfy a photo-consistency condition; on the other hand,
+variational methods based on the deformation of a surface under a PDE [1, 4].
+The algorithm considered here [2] belongs to this latter class.
+2.2
+
+General-Purpose Computation on GPUs
+
+In just a few years graphics cards have become heavily parallel processing machines with increased programming capabilities making their use possible for
+other purposes than standard real-time rendering [5]. A simplistic way to understand what a GPU actually does is to consider it as a stream processor [6]
+which executes a computational kernel over all the elements of an input stream
+(possibly accessing other streams) and puts the corresponding results into an
+output stream.
+2.3
+
+Stereo Vision Using Graphics Hardware
+
+Computer vision algorithms are nowadays often GPU-accelerated, as they work
+on the same kind of data as rendering. Recovering the disparity map of two
+images has already been thoroughly studied: from simple block matching strategy with a multiscale approach [7], to mixed CPU/GPU approach initializing a
+graph-cut optimization with crude depth maps computed on GPU [8], and parallel dynamic programming on GPU [9]. Numerical schemes for 2D level sets have
+also been implemented by brute force [10] and more recently, 3D level sets for
+segmentation [11] introduced a GPU to CPU message passing system. However,
+to our knowledge, no multiview stereo algorithm for full shape reconstruction
+has been adapted to run on GPUs.
+
+3
+
+Shape Reconstruction Method
+
+The variational method of [2] borrows from [1] but formulates the evolution of
+the surface as an image registration problem. It is thus simpler, more robust
+than most other methods and also more suitable for a GPU implementation.
+3.1
+
+Notations
+
+A surface S ⊂ IR3 models the shape of the scene being reconstructed. We note
+Pi : IP3 → IP2 the projection matrices and Ii : Ωi ⊂ IR2 → IRc the corresponding
+−1
+images. Si is the part of the surface S visible in the image Ii . Pi,S
+: Pi (S) → Si
+−1
+reprojects from the camera Pi to the surface S. Finally Ij ◦Pj ◦Pi,S : Pi (Sj ) → IRc
+is the reprojection of the image Ij in the camera Pi via the surface S.
+
+214
+
+P. Labatut, R. Keriven, and J.-P. Pons
+
+Si Sj
+
+Ii
+
+Ij
+
+Pi
+
+Pj
+
+Fig. 1. Cameras setup and notations
+
+3.2
+
+Energy to Minimize
+
+We wish to minimize a sum of dissimilarity terms between pairs of images: each
+pair is composed of one of the input images and some predicted image obtained
+by reprojecting another input image into the camera corresponding to the former
+image. This leads to the following energy (M is the dissimilarity measure between
+two areas of image):
+M(Ii , Ij )(S) =
+
+M(S) =
+i
+
+i
+
+j=i
+
+j=i
+
+−1
+M |Ωi ∩Pi (Sj ) (Ii , Ij ◦ Pj ◦ Pi,S
+)
+
+(1)
+
+The minimization of this energy results in the evolution of the surface S along
+its outward normal N, driven by the equation:
+⎡
+⎤
+d
+∂S
+i
+= ⎣−λH +
+δSi ∩Sj ∂2 M DIj DPj 3 ⎦ N
+(2)
+∂t
+z
+i
+i
+j=i
+
+where H is the mean curvature of S (which corresponds to a smoothing term
+added to the energy), D· is the Jacobian matrix of a function, δ· is the Kronecker
+symbol, di the vector from the camera Pi to the considered point, zi its depth
+and λ a smoothing coeﬃcient (λ > 0).
+3.3
+
+Similarity Measure
+
+The described method allows the use of whatever similarity measure we want:
+cross-correlation, correlation ratio, mutual information, etc. . . [12]. We limited
+ourselves to the local normalized cross-correlation cc(Ii , Ij ) (which can accomodate even non-lambertian surfaces provided the window size is small enough):
+µ(Ii ) =
+v(Ii , Ij ) =
+
+Gσ ∗Ii
+ω
+Gσ ∗Ii Ij
+ω
+
+G ∗I 2
+
+− µ(Ii ) µ(Ij )
+
+v(Ii ) = σω i − µ2 (Ii ) + τ 2
+v(I ,I )
+cc(Ii , Ij ) = √ i j
+
+(3)
+
+v(Ii ) v(Ij )
+
+where ω(x0 ) = Ω Gσ (x0 − x) dx is the spatial normalization to account for the
+shape of the correlation window, and Gσ is a gaussian kernel.
+
+A GPU Implementation of Level Set Multiview Stereo
+
+215
+
+The dissimilarity measure M cc (Ii , Ij ) between images Ii and Ij is simply the
+sum of the normalized cross-correlation over the whole domain: − Ω cc(Ii , Ij )(x)
+dx and its partial derivative needed for the minimization is:
+∂2 M cc (Ii , Ij ) = α(Ii , Ij ) Ii + β(Ii , Ij ) Ij + γ(Ii , Ij )
+
+(4)
+
+where:
+α(Ii , Ij ) = Gσ ∗
+β(Ii , Ij ) = Gσ ∗
+γ(Ii , Ij ) = Gσ ∗
+3.4
+
+√ −1
+ω v(Ii ) v(Ij )
+cc(Ii ,Ij )
+ω v(Ij )
+√ µ(Ii )
+ω v(Ii ) v(Ij )
+
+(5)
+−
+
+µ(Ij ) cc(Ii ,Ij )
+ω v(Ij )
+
+Energy Minimization
+
+The minimization of the energy by gradient descent is implemented within the
+level set framework [13] and can implicitly cope with surface topology changes.
+However this comes at a cost and to reduce the computational burden, the
+narrow band algorithm [14] is used to evolve the level sets. As the energy is
+optimized through a simple steepest gradient descent, it can easily get stuck in a
+local minimum. The algorithm therefore adopts a multi-scale approach by using
+the result of the optimization at a coarser scale to initialize the optimization at
+a ﬁner level.
+
+4
+
+Graphics Hardware Implementation
+
+Whereas other variational methods for multiview stereo are CPU-only, [2] was
+designed with classical GPU acceleration in mind. We take this one step further
+by using GPGPU techniques.
+4.1
+
+Original Implementation Analysis
+
+The main loop driving the evolution of the surface and executed at each time step
+can be decomposed as shown in Tab. 1. As all the surface points visible in image
+Ii should be points from the narrow band, the M cc derivative is computed over
+the common domain of image Ii and image Ij reprojection, allowing for stream
+computation. Items 6 and 7 actually spend most of the time doing bilinear
+interpolations. The depth computations and reprojections were already running
+on GPU. Finally the level sets computations cover only a fraction of the running
+time. We thus chose to concentrate our eﬀorts on items 5.2, 6 and 7.
+4.2
+
+Reprojection and Visibility Masks Computation
+
+The depth is computed via conventional rendering of the surface and update of
+the depth buﬀer. The visibility masks (Ωi ∩ Pi (Sj )) and the image reprojections
+are computed with the shadow mapping technique which consists in using the
+
+216
+
+P. Labatut, R. Keriven, and J.-P. Pons
+Table 1. Main loop with typical running time distribution
+0%
+10 %
+5%
+5%
+
+1
+2
+3
+4
+5
+
+0%
+20 %
+20 %
+
+6
+
+40 %
+
+7
+
+0%
+0%
+
+8
+9
+
+mesh update
+distance function update
+mesh download to the GPU
+depth computation in every camera
+similarity measure derivative update
+for each camera couple (i, j)
+5.1 reprojection of the image Ij in the camera Pi
+5.2 computation of the similarity measure derivative
+computation of band points attributes
+for each band point / for each camera
+position / visibility / intensity computation
+normal speed computation
+for each band point / for each camera pair
+if the point is visible in the two cameras
+7.1 corresponding normal speed computation
+CFL condition
+level sets update
+
+contents of the depth buﬀer we got from the Pj camera as a texture and rendering
+the surface in the camera Pi . Accessing texels in this special texture triggers a
+comparison between the current depth and the depth stored in the texture and
+returns a boolean value. The surface points are used as texture coordinates and
+the texture matrix (which is applied to the texture coordinates before accessing
+texels) is replaced by the Pj camera matrix. We can thus generate a depth mask
+using the Pj camera depth buﬀer as a texture. Then the Ij image reprojection
+is obtained by applying this image as a texture (see Fig. 2(a)).
+4.3
+
+Computation of the Similarity Measure Derivative
+
+The convolutions were originally implemented with a recursive ﬁlter [15]. IIR
+ﬁlters do not ﬁt very well in the GPU computational model constraints so it
+was replaced by a simple separable convolution. In order to mask away some
+of the input records in the stream, we take advantage of the eﬃcient Z-Culling
+technique: it consists in loading a mask in the depth buﬀer that allows masked
+records to completely skip the execution of the computational kernel. Using
+this masking technique, the computation of α, β and γ from (5) easily maps
+to successive kernels: ﬁrst compute 1, Ii , Ij , Ii Ii , Ii Ij , Ij Ij , then convolve
+the previous pass result with Gσ , then compute ω, µ(Ii ), µ(Ii ), v(Ii ), v(Ij ),
+v(Ii , Ij ), cc(Ii , Ij ) and ﬁnally convolve with Gσ to get α, β and γ.
+4.4
+
+Computation of the Points Position, Visibility, Intensity and
+Normal Speed
+
+At the ﬁnest scale, the band typically contains many dozens of thousand of
+points. An input stream containing the coordinates of the band points is ﬁrst
+created (as shown in Fig. 2(b)). Computational kernels iterate over the cameras,
+
+A GPU Implementation of Level Set Multiview Stereo
+
+217
+
+Pj
+S
+
+Ij
+Ii
+
+Pi
+
+(a) shadow mapping
+
+(b) mapping the band to a 2D stream
+
+Fig. 2. Some of the techniques used
+Table 2. Input data, parameters and running times
+
+#Images
+Resolution
+#Pairs
+
+“buddha”1
+
+“dino”2
+
+25
+
+16
+
+256 × 256 × 3
+
+256 × 256 × 3
+
+50
+
+32
+
+128 × 128 × 128
+
+192 × 192 × 192
+
+Running time (CPU/GPU)
+
+∼ 780 s
+
+∼ 860 s
+
+Running time (GPU)
+
+∼ 210 s
+
+∼ 240 s
+
+Level set volume
+
+compute the position, visibility and intensity attributes from this input stream,
+and output corresponding attributes streams. Z-Culling is once again used to
+mask away some parts of the input stream where no computation needs to be
+done.
+For the normal speed we combine visibility streams and the stream mask to
+generate a mask for Z-Culling. The camera pairs are then iterated over while
+accumulating the normal speeds computed for each points in the narrow band.
+The level sets are ﬁnally updated using this output stream.
+
+5
+
+Results
+
+The graphics hardware was programmed using the OpenGL API and its extensions mechanism. The Cg programming language was also used for prototyping.
+All the presented results (Tab. 2 and Fig. 3) were obtained on a PC with an
+Intel Xeon 2.8 GHz CPU and 1 GB of system RAM equipped with an NVIDIA
+GeForce 7800 GTX graphics card with 256 MB of video RAM.
+1
+2
+
+Intel OpenLF Mapping project: http://www.intel.com/research/mrl/research/
+lfm/
+Multiview Stereo Evaluation project: http://vision.middlebury.edu/mview/
+
+218
+
+P. Labatut, R. Keriven, and J.-P. Pons
+
+Fig. 3. “buddha” data set: ﬁrst column: some input images, second column: ground
+truth, third column: result; “dino” data set: ﬁrst column: some input images, second
+column: evolution (ﬁrst time step of each scale), third column: result
+
+The overall speed factor is almost about 4 when compared to the already GPU
+accelerated method from [2]. However the original sections of the algorithms that
+were using lots of bilinear interpolations observe an elevenfold improvement in
+general, and the computation of the measure derivative gets a ninefold decrease
+of its running time.
+
+6
+
+Conclusion
+
+The decrease of the total running time is signiﬁcative allowing shape reconstruction within minutes and it is even more impressive if we consider the CPU-only
+method from [1]: the hypothetical overall performance gain would be about 200.
+
+References
+[1] Faugeras, O., Keriven, R.: Complete dense stereovision using level set methods.
+In: European Conference on Computer Vision. Volume 1406. (1998) 379–393
+[2] Pons, J.P., Keriven, R., Faugeras, O.: Modelling Dynamic Scenes by Registering
+Multi-View Image Sequences. International Conference on Computer Vision and
+Pattern Recognition 2 (2005) 822–827
+[3] Kutulakos, K., Seitz, S.: A Theory of Shape by Space Carving. International
+Journal of Computer Vision 38(3) (2000) 199–218
+
+A GPU Implementation of Level Set Multiview Stereo
+
+219
+
+[4] Duan, Y., Yang, L., Qin, H., Samaras, D.: Shape Reconstruction from 3D and
+2D Data Using PDE-based Deformable Surfaces. In: European Conference on
+Computer Vision. Volume 3. (2004) 238–251
+[5] Owens, J.D., Luebke, D., Govindaraju, N., Harris, M., Kr¨
+uger, J., Lefohn, A.E.,
+Purcell, T.J.: A Survey of General-Purpose Computation on Graphics Hardware.
+In: Eurographics 2005, State of the Art Reports. (2005) 21–51
+[6] Buck, I., Foley, T., Horn, D., Sugerman, J., Fatahalian, K., Houston, M., Hanrahan, P.: Brook for GPUs: Stream Computing on Graphics Hardware. ACM
+Transactions on Graphics 23(3) (2004) 777–786
+[7] Yang, R., Pollefeys, M.: Multi-Resolution Real-Time Stereo on Commodity
+Graphics Hardware. In: IEEE Conference on Computer Vision and Pattern Recognition. Volume 1. (2003) 211–218
+[8] Geys, I., Koninckx, T.P., Gool, L.J.V.: Fast Interpolated Cameras by Combining
+a GPU based Plane Sweep with a Max-Flow Regularisation Algorithm. In: International Symposium on 3D Data Processing, Visualization and Transmission.
+(2004) 534–541
+[9] Gong, M., Yang, Y.H.: Near Real-Time Reliable Stereo Matching Using Programmable Graphics Hardware. In: IEEE International Conference on Computer
+Vision and Pattern Recognition. (2005)
+[10] Rumpf, M., Strzodka, R.: Level Set Segmentation in Graphics Hardware. In:
+IEEE International Conference on Image Processing. Volume 3. (2001) 1103–1106
+[11] Lefohn, A.E., Kniss, J.M., Hansen, C.D., Whitaker, R.T.: A Streaming NarrowBand Algorithm: Interactive Deformation and Visualization of Level Sets. IEEE
+Transactions on Visualization and Computer Graphics 10(40) (2004) 422–433
+[12] Hermosillo, G., Chefd’hotel, C., Faugeras, O.: Variational Methods for Multimodal Image Matching. International Journal of Computer Vision 50(3) (2002)
+329–343
+[13] Osher, S., Sethian, J.A.: Fronts Propagating with Curvature-Dependent Speed:
+Algorithms Based on Hamilton-Jacobi Formulations. Journal of Computational
+Physics 79(1) (1988) 12–49
+[14] Adalsteinsson, D., Sethian, J.A.: A Fast Level Set Method for Propagating Interfaces. Journal of Computational Physics 118(2) (1995) 269–277
+[15] Deriche, R.: Fast Algorithms for Low-Level Vision. IEEE Transactions on Pattern
+Analysis and Machine Intelligence 1(12) (1990) 78–88
+
+

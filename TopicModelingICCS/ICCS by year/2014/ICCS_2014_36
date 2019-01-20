@@ -1,0 +1,708 @@
+Procedia Computer Science
+Volume 29, 2014, Pages 40–49
+ICCS 2014. 14th International Conference on Computational Science
+
+A portable OpenCL Lattice Boltzmann code for multi- and
+many-core processor architectures
+Enrico Calore1 , Sebastiano Fabio Schifano2 , and Raﬀaele Tripiccione3
+1
+
+3
+
+INFN, Ferrara (Italy)
+enrico.calore@fe.infn.it
+2
+Dip. di Matematica e Informatica, Universit`
+a di Ferrara, and INFN, Ferrara (Italy)
+schifano@fe.infn.it
+Dip. di Fisica e Scienze della Terra and CMCS, Universit`
+a di Ferrara, and INFN, Ferrara (Italy)
+tripiccione@fe.infn.it
+
+Abstract
+The architecture of high performance computing systems is becoming more and more heterogeneous, as accelerators play an increasingly important role alongside traditional CPUs.
+Programming heterogeneous systems eﬃciently is a complex task, that often requires the use
+of speciﬁc programming environments. Programming frameworks supporting codes portable
+across diﬀerent high performance architectures have recently appeared, but one must carefully
+assess the relative costs of portability versus computing eﬃciency, and ﬁnd a reasonable tradeoﬀ
+point. In this paper we address precisely this issue, using as test-bench a Lattice Boltzmann
+code implemented in OpenCL. We analyze its performance on several diﬀerent state-of-the-art
+processors: NVIDIA GPUs and Intel Xeon-Phi many-core accelerators, as well as more traditional Ivy Bridge and Opteron multi-core commodity CPUs. We also compare with results
+obtained with codes speciﬁcally optimized for each of these systems. Our work shows that a
+properly structured OpenCL code runs on many diﬀerent systems reaching performance levels
+close to those obtained by architecture-tuned CUDA or C codes.
+Keywords: OpenCL, Lattice Boltzmann, multi- and many-core programming
+
+1
+
+Introduction
+
+High performance computers more and more often rely on accelerators. These are add-on
+processing units, attached to commodity PC nodes via standard busses such as PCI-Express.
+Systems based on accelerators are often called heterogeneous. Several accelerator architectures
+– e.g. many-core CPUs, GPUs, DSPs and FPGAs – are available, many-core CPUs and GPUs
+being more often encountered today. Virtually all accelerators have many processing cores
+and use SIMD operations on large vector-type data: eﬃcient codes for these architectures
+must be able to exploit at the same time several diﬀerent levels of parallelism. In practice,
+40
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2014
+c The Authors. Published by Elsevier B.V.
+doi:10.1016/j.procs.2014.05.004
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+each heterogeneous device often requires a speciﬁc programming language, preventing code
+portability. For example, NVIDIA GPUs adopt the CUDA language, while the Intel Xeon-Phi
+uses a more standard programming approach based on C.
+New programming environments have appeared recently, trying to ﬁnd ways to expose the
+parallelism available in the application and to enable code and performance portability across a
+wide range of accelerator architectures; examples of these environments are OpenCL, an open
+standard framework, and OpenACC. This approach is an obviously interesting one, but one
+must carefully assess the tradeoﬀ between portability and computational eﬃciency on each
+speciﬁc architecture: in other words, one must consider to which extent the eﬃciency of a
+portable version of a given code suﬀers with respect to a version speciﬁcally optimized for a
+given architecture.
+Portability and eﬃciency of OpenCL codes has been already addressed in several papers, see
+for example [1, 2]. The former paper evaluates OpenCL as a programming tool for developing
+performance-portable application kernels for GPUs, considering NVIDIA Tesla C2050 and ATI
+Radeon 5870 systems. The latter paper studies the performance portability across several
+architectures including NVIDIA GPUs, but also Intel Ivy Bridge CPUs, and AMD Fusion
+APUs. The present paper extends and updates these early studies, taking into account the
+more recent NVIDIA K20 accelerator, based on the Kepler GPU, as well as the Intel Xeon-Phi
+many-core system.
+We address the issue of portability, using as a test-bench a ﬂuid-dynamics code based on a
+state-of-the-art Lattice Boltzmann method that we have re-written using OpenCL. We describe
+the structure and implementation of the code and present our performance results measured
+on several state-of-the-art heterogeneous architectures. We then compare performances with
+codes speciﬁcally developed and optimized for each system using a more native programming
+approach, such as CUDA or C. Our results show that in most cases the performance of our
+OpenCL implementation is comparable with that of system-speciﬁc optimized codes. When
+this is not the case, we can trace the lower eﬃciency of the OpenCL implementation more to
+design decisions of the OpenCL developers than to conceptual problems.
+Our paper is structured in this way: in the next section we introduce the OpenCL framework,
+language and computational model. In section 3 we describe Lattice Boltzmann methods and
+the D2Q37 model used in this work. In section 4 we provide details of our OpenCL implementation, focusing on the architecture-independent optimization steps that we have considered;
+section 5 contains our results and compares with previous implementations of the same code
+developed using speciﬁc programming environments, such as plain C, CUDA, and OpenMP.
+Finally, section 6 contains our conclusions and perspectives for future work.
+
+2
+
+OpenCL
+
+Open Computing Language (OpenCL) is a framework for writing codes that execute on heterogeneous platforms of a host and one or more accelerators. The host is usually a commodity
+CPU, while accelerators can be multi-core CPUs, GPUs, DSPs, FPGAs, or other processors, as
+long as a compiler and a run-time support is available. OpenCL aims to provide a single framework to develop portable code; it is an open standard maintained by the Kronos Group [3] and
+supported by a large set of vendors. OpenCL includes a C-based programming language used
+in the kernels (see later), functions that execute on OpenCL devices – the OpenCL abstraction
+of actual accelerators – and a set of APIs that control the execution of kernels.
+An OpenCL program has two main parts: one running on the host and one running on
+OpenCL devices. The part running on the host usually performs initialization and launches
+41
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+and controls kernels running on devices; devices run those parts of the algorithm that have a
+large degree of parallelism. The OpenCL execution model supports both data- and task-based
+parallelism; the former organizes the computation within the kernel, while the latter manages
+parallel execution of two or more kernels. Kernels are executed by a set of work-items, and the
+kernel code speciﬁes the instructions executed by each work-item. Work-items are collected into
+work-groups and in turn each work-group executes on a compute unit, the OpenCL abstraction
+of the computing resources available on the accelerator. Each work-item has a global ID and
+a local ID. The global ID is a unique identiﬁer among all work-items of a kernel. The local ID
+identiﬁes a work-item within a work-group. Work-items in diﬀerent work-groups may have the
+same local ID, but they never have the same global ID.
+The OpenCL memory model identiﬁes four address spaces which diﬀer for size and access
+time: global memory for data mapped on the entire device, constant memory for read-only
+data mapped on the entire device, local memory for data shared only by work-items within
+a work-group, and private memory for data used only by individual work-item. When the
+host transfers data to and from the device, data is stored in and read from global memory.
+This memory is usually the largest memory region on an OpenCL device, but it is the slowest
+for work-items to access. Work-items access local memory much (e.g.,
+100×) faster than
+global and constant memory. Local memory is not as large as global and constant memory, but
+because of its access speed it is a good place for work-items to store their intermediate results.
+Finally, each work-item has exclusive access to its private memory; this is the fastest storage
+place, but it is commonly much smaller than all other address spaces, so it is important not to
+use too much of it.
+OpenCL programs generate many work-items, and usually each one processes one item of
+the data-set. At run-time each work-group is statically associated to a compute-unit. Computeunits execute one or more work-items in parallel according to the capabilities of their instruction
+sets. Let us assume that a code is broken down into Nwg work-groups and each work-group
+has Nwi work-items. When this code executes on a device with Ncu compute units, each able
+to compute on Nd data items, at any given time Ncu × Nd work-items will execute; iterations
+will be needed to handle all globally required Nwg × Nwi work-items. For example, the XeonPhi has 60 physical cores supporting each up to 4 threads, for a total of 240 virtual cores; it
+supports AVX 256-bit operations that process 8 double-precision or 16 single-precision ﬂoatingpoint data. In this case, up to 240 work-groups are executed by the cores, each core in turn
+processing up to 8 (or 16) work-items in parallel. Similar mappings of the available parallelism
+on the computing resources can be worked out for other architectures.
+
+3
+
+Lattice Boltzmann Models
+
+Lattice Boltzmann methods (LB) are widely used in computational ﬂuid dynamics, to describe
+ﬂows in two and three dimensions. LB methods (see, e.g., [4] for an introduction) are discrete
+in position and momentum spaces; they are based on the synthetic dynamics of populations
+sitting at the sites of a discrete lattice. At each time step, populations hop from lattice-site
+to lattice-site and then incoming populations collide among one another, that is, they mix and
+their values change accordingly.
+LB models in x dimensions with y populations are labeled as DxQy; we consider a state-ofthe-art D2Q37 model that correctly reproduces the thermo-hydrodynamical equations of motion
+of a ﬂuid in two dimensions and automatically enforces the equation of state of a perfect gas
+(p = ρT ) [5, 6]; this model has been extensively used for large scale simulations of convective
+turbulence (see e.g., [7, 8]).
+42
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+In this algorithm, a set of populations (fl (x, t) l = 1 · · · 37), deﬁned at the points of a
+discrete and regular lattice and each having a given lattice velocity cl , evolve in (discrete) time
+according to the following equation:
+fl (y, t + Δt) = fl (y − cl Δt, t) −
+
+Δt
+(eq)
+fl (y − cl Δt, t) − fl
+τ
+
+(1)
+
+The macroscopic variables, density ρ, velocity u and temperature T are deﬁned in terms of the
+fl (x, t) and of the cl s (D is the number of space dimensions):
+ρ=
+
+fl ,
+
+ρu =
+
+l
+
+cl fl ,
+l
+
+2
+
+DρT =
+
+|cl − u| fl ;
+
+(2)
+
+l
+
+(eq)
+
+the equilibrium distributions (fl ) are themselves function of these macroscopic quantities [4].
+In words, populations drift from lattice site to lattice site (propagation), according to the value
+of their velocities and, on arrival at point y, their values change according to Eq. 1 (collision).
+One can show that, in suitable limiting cases and after appropriate renormalizations are made,
+the evolution of the macroscopic variables deﬁned in Eq. 2 obey the thermo-hydrodynamical
+equations of motion of the ﬂuid.
+An LB code takes an initial assignment of the populations, in accordance with a given initial
+condition at t = 0 on some spatial domain, and iterates Eq. 1 for all points in the domain and
+for as many time-steps as needed; boundary-conditions at the edges of the integration domain
+are enforced at each time-step by appropriately modifying the population values at and close
+to the boundaries.
+The LB approach oﬀers a huge degree of easily identiﬁed parallelism. Indeed, Eq. 1 shows
+that the propagation step amounts to gathering the values of the ﬁelds fl from neighboring sites,
+corresponding to populations drifting towards y with velocity cl ; the following step (collision)
+then performs all mathematical processing needed to compute the quantities appearing in the
+r.h.s. of Eq. 1, for each point in the grid. Referring again to Eq. (1), one sees immediately that
+both steps above are completely uncorrelated for diﬀerent points of the grid, so they can be
+computed in parallel according to any schedule, as long as step 1 precedes step 2 for all lattice
+points.
+In practice, an LB code executes the following three main steps at each iteration of the loop
+over time:
+• propagate moves populations across lattice sites according to the pattern of Figure1
+left, collecting at each site all populations that will interact at the next phase (collide).
+Computer-wise, propagate moves blocks of memory locations allocated at sparse addresses,
+corresponding to populations of neighbor cells. propagate uses either a pull scheme or a
+push scheme; in the former case, populations are gathered at one site as shown in Figure1 while in the latter case populations are pushed from one lattice-site towards a set of
+neighbors. Which of the two approaches is faster on a given processor strongly depends
+on the architectural details of its memory interface.
+• bc adjusts the populations at the top and bottom edges of the lattice, enforcing appropriate boundary conditions (e.g., a constant given temperature and zero velocity). This is
+done after propagation, since the latter changes the value of the populations close to the
+boundary points and hence the macroscopic quantities that must be kept constant. At the
+right and left boundaries, we apply periodic boundary conditions. This is conveniently
+done by adding halo columns at the edges of the lattice, where we copy the 3 (in our case)
+43
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+Figure 1: Left: velocity vectors associated to each lattice cell in the D2Q37 model. Right:
+population labels and move patterns.
+rightmost and leftmost columns of the lattice before starting the propagate step. Points
+close to the right/left boundaries can then be processed as those in the bulk. If one wants
+to study closed ﬂuid cells, boundary conditions at the right and left edges of the cell can
+be enforced in the same way as done for the top and bottom edges.
+• collide performs all the mathematical steps associated to equation 1 and needed to compute
+the population values at each lattice site at the new time step. Input data for this phase
+are the populations gathered by the previous propagate phase. This step is the ﬂoating
+point intensive step of the code.
+We stress again that our D2Q37 LB method correctly and consistently describes the thermohydrodynamical equations of motion as well as the equation-of-state of a perfect gas; the price
+to pay is that, from a computational point of view, its implementation is more complex than
+simpler LB models. This translates into severe requirements in terms of memory bandwidth and
+ﬂoating-point throughput. Indeed, propagate implies accessing 37 neighbor cells to gather all
+populations, while collide implies ≈ 7600 double-precision ﬂoating point operations per lattice
+point, some of which can be optimized away e.g. by the compiler.
+
+4
+
+Code implementation
+
+In our implementation the lattice is stored in column-major order, and we keep in memory two
+copies of it: each kernel reads from the prv lattice copy and update results on the nxt copy; nxt
+and prv swap their roles at each iteration. This choice doubles memory usage, but allows to
+map one work-item per lattice site, and then to process many sites in parallel.
+Each lattice cell has 37 double-precision variables corresponding to population values. Data
+is stored in memory following the Structure-of-Array (SoA) scheme, where arrays of all populations are stored one after the other. This helps exploit data-parallelism and enables datacoalescing when accessing data needed by work-items executing in parallel. The physical lattice
+is surrounded by halo columns and rows: for a physical lattice of size Lx × Ly , we allocate
+N X × N Y points, with N X = Hx + Lx + Hx , and N Y = Hy + Ly + Hy . Hx and Hy are
+properly set to keep memory access aligned and the computation becomes uniform for all sites,
+avoiding work-item divergences and the corresponding bad impact on performance.
+Execution starts on the host, and at each iteration four steps are oﬄoaded onto the device:
+ﬁrst the pbc kernel exchanges y-halo columns, and then three kernels – propagate, bc and collide
+44
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+#physical cores
+#logical cores
+Frequency (GHz)
+GFLOPS (DP)
+SIMD
+cache (MB)
+Mem BW (GB/s)
+Power (W)
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+i7-4930K
+
+Tesla K20X
+
+Xeon-Phi 7120P
+
+Opteron 6380
+
+6
+12
+3.4
+163.2
+AVX 64-bit
+12
+59.7
+130
+
+14
+2688
+0.735
+1317
+N/A
+1.5
+250
+235
+
+61
+244
+1.238
+1208
+AVX2 512-bit
+30.5
+352
+300
+
+16
+32
+2.5
+160
+AVX 64-bit
+16
+51.2
+115
+
+Table 1: Hardware features of the systems that we have tested: Tesla K20X is a processor of
+the NVIDIA Kepler family, Xeon-Phi is based on the Intel MIC architecture; the i7-4930K is
+a commodity processor adopting the Intel Ivy Bridge micro-architecture; the Opteron 6380 is
+based on the AMD PileDriver micro-architecture.
+– perform the required computational tasks. Each kernel is a separate OpenCL function.
+The pbc kernel copies the three leftmost and rightmost columns of the lattice into the right
+and left halos. The kernel is conﬁgured as a grid of Ly ×37 work-items. The work-item of global
+coordinates (i, j) copies the three leftmost and rightmost j th data-populations of ith lattice-row
+respectively into the right and left halo-columns. In most of our runs the size of work-groups
+which gives the best performances is 32.
+The propagate kernel moves populations of each site according to the pattern described
+in Figure1. Two options are possible: push moves all populations of one lattice-site to the
+appropriate neighbor sites, while pop gathers populations from neighbor sites to one destination
+lattice-site. Relying on our previous experience with GPUs [11] and CPUs [12], we adopt the pop
+scheme; each work-item reads data items from 37 neighbours, using misaligned reads, and stores
+all data into one lattice site, generating aligned writes. Misaligned reads are better supported
+than misaligned writes in current processors, so our choice gives better performances. The
+kernel is conﬁgured as a grid of (Ly × Lx ) work-items; each work-group is a uni-dimensional
+array of Nwi work-items, processing data allocated at successive locations in memory.
+The bc kernel enforces boundary conditions on sites close to the top and bottom edges of the
+lattice. It uses work-items with global-IDs corresponding to sites with coordinates y = 0, 1, 2
+and y = Ly − 1, Ly − 2, Ly − 3. This causes work-item divergences, but the computational cost
+of this kernel is negligible and its impact on global performance is minor.
+The collide kernel handles the collision of populations gathered by propagate: each work-item
+reads the populations of a lattice site from the prv arrays, performs all required mathematical
+operations and stores the resulting populations onto the nxt array. Memory reads and writes
+issued by work-items are always sequential and properly aligned, enabling memory coalescing.
+Work-groups are conﬁgured as in the propagate kernel.
+
+5
+
+Results
+
+We have tested our OpenCL (OCL) code on several systems: two multi-core CPUs – an Intel
+Core i7-4930K and an AMD Opteron 6380 – and two accelerators – the Intel Xeon-Phi and the
+NVIDIA GPU K20X. Their main features are highlighted in Table 1.
+The Intel Core i7-4930K (Ivy Bridge) – a commodity processor – has six cores running at 3.4
+GHz. Each core – based on the Ivy Bridge micro-architecture – executes AVX SIMD instructions
+(one ﬂoating-point ADD and MUL per clock cycle) on 256-bit vectors, corresponding to 27.2
+45
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+Figure 2: Performance benchmarks of propagate (left) and collide (right) kernels on the Intel
+Xeon-Phi processor, as a function of the number of work-item (Nwi ) per work-group, and the
+number of work-groups (Nwg ). Units are million lattice sites processed per second.
+GFlops in double-precision. Cores share an L3 cache of 12 MB. This processor has a peak
+performance of 163.2 GFlops, and a peak memory-bandwidth of 59.7 GB/s.
+The AMD Opteron 6380 (Abu Dhabi) is a 16 core processor running at 2.5 GHz. Cores
+are based on the PileDriver micro-architecture also supporting AVX-256 operations. Groups of
+two cores share one FPU; the latter completes 4 operations (two FMA, one ADD, one MUL)
+per clock cycle on 128 bit data, corresponding to 8 double-precision operations per clock. This
+processor has two L3-caches, each shared among 8 cores, a peak ﬂoating-point throughput of
+160 GFlops and a peak memory-bandwidth of 51.2 GB/s.
+The Xeon-Phi accelerator has one Knights Corner (KNC) processor, based on the Many
+Integrated Core (MIC) architecture. The KNC integrates up to 61 cores interconnected by
+a bi-directional ring, and runs at ≈1 GHz. It connects to its private memory with a peak
+bandwidth of ≈ 320 GB/s. Each core operates on 512-bit vectors. The FPU engine performs
+one FMA instruction per clock cycle, with a peak performance of ≈32 (16) GFlops in single
+(double) precision. All in all, the KNC has a peak performance of ≈2 (1) TFlops in single
+(double) precision. For more details see [13].
+The K20X accelerator has one Kepler processor, embedding 14 Streaming Multiprocessors
+(SMXs). Each SMX has a massively parallel structure of 192 cores, able to handle up to
+2048 active threads. At each clock cycle the SMX schedules and executes warps, groups of 32
+threads which are processed in SIMD fashion. The Kepler processor has a peak performance
+of ≈ 1 TFlops in double precision and ≥ 4 TFlops in single precision. On Kepler each thread
+addresses 256 32-bit registers and there are 65536 registers for each SMX. The memory controller
+has a peak bandwidth of 250 GB/s. For more details see [14].
+Our initial step in tuning the whole code is a separate benchmark of the propagate and collide
+kernels, in order to identify the best values of the number of work-items per work-group (Nwi ),
+and the total number of work-groups (Nwg ). Indeed, the performance of propagate and collide
+depends on Nwi and Nwg . The following constraints apply to Nwi , Nwg and the lattice size:
+Ly = α × Nwi , α ∈ N;
+
+(Ly × Lx )/Nwi = Nwg ,
+
+(3)
+
+so one must identify the best values for these parameters within the allowed set. This is done
+in Figure2, that shows how performance is aﬀected as the values of Nwi and Nwg change. For
+both kernels, using small values of Nwi , e.g. 32, 64, good performance requires a large value of
+46
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+Xeon-Phi 7120
+
+Tesla K20Xm
+
+Code Version
+
+OCL
+
+C
+
+OCL
+
+T/iter propagate [msec]
+GB/s
+Ep
+
+30.46
+76.42
+22%
+
+37.67
+61.8
+17%
+
+14.89
+156.33
+62%
+
+T/iter bc [msec]
+T/iter collide [msec]
+Ec
+μJ / site
+TW C /iter [msec]
+MLUPS
+
+E. Calore, S.F Schifano, R. Tripiccione
+i7-4930K
+
+CUDA SM 20
+
+CUDA SM 35
+
+15.40
+151.16
+60%
+
+15.38
+151.36
+60%
+
+Opteron 6380
+
+OCL
+
+C
+
+OCL
+
+C
+
+186.42
+12.48
+21%
+
+162.00
+14.54
+24%
+
+251.68
+9.25
+18%
+
+160.07
+14.54
+28%
+
+3.20
+
+4.61
+
+7.08
+
+5.68
+
+5.70
+
+4.30
+
+4.87
+
+2.66
+
+10.08
+
+72.79
+34%
+5.55
+
+79.14
+31%
+6.03
+
+93.27
+24%
+5.57
+
+83.33
+27%
+4.98
+
+43.96
+52%
+2.63
+
+440.18
+42%
+14.55
+
+307.42
+59%
+10.04
+
+824.68
+23%
+24.15
+
+1030.79
+18%
+29.80
+
+106.45
+36.94
+
+121.42
+32.38
+
+115.24
+34.12
+
+104.42
+37.65
+
+65.03
+60.46
+
+630.90
+6.23
+
+489.98
+8.12
+
+1079.02
+3.64
+
+1286.65
+3.09
+
+Table 2: Performance comparison for our codes running on several accelerators and commodity
+CPUs; in all cases the lattice size is 1920 × 2048. Parameters are explained in the text.
+Nwg ; this is more evident for propagate. Conversely, if we use large values of Nwi , e.g. 512, 1024,
+the best choice is a relatively small number of work groups (Nwg ).
+Having performed this initial tuning step, Table 2 summarizes our results, showing the
+performance of our full OCL code and comparing with codes designed and optimized for each
+architecture using speciﬁc programming approaches based on CUDA or C. For the Xeon-Phi,
+i7-9340K and Opteron processors we used an OpenMP code which splits the lattice among
+all available cores of the target architectures and forces SIMD instructions by using AVX256 intrinsic functions. Details for the x86 and Xeon-Phi versions of the code are in [15, 16]
+respectively. For NVIDIA GPUs we used a CUDA implementation optimized for the Fermi and
+Kepler GPU processors [17, 18].
+Table 2 shows several performance ﬁgures for all systems that we have tested; we consider
+a lattice of 1920 × 2048 sites. We ﬁrst consider separately the three main kernels: for propagate
+we show the execution time, the memory bandwidth (taking into account that for each lattice
+site we load and store 37 double-precision numbers) and the corresponding eﬃciency Ep w.r.t.
+peak bandwidth. For bc we only show execution time, conﬁrming that it has limited impact
+on performance. For collide, we show again the execution time and the ﬂoating point eﬃciency
+Ec assuming that the kernel performs 7600 double-precision operations for each site. Finally,
+we quote the approximate energy eﬃciency (measured in μJ spent to process each lattice site)
+using the power ﬁgures of Table 1, the wall clock execution time (TW C ) of the full code, as
+well as a user-friendly performance metrics, MiLlions Update per Second (MLUPS), counting
+how many lattice sites the program handles in one second. These three parameters are global
+user-oriented ﬁgures-of-merit allowing to compare overall performance across several systems.
+For collide – the key computational kernel – some comments are in order:
+• On the Xeon-Phi, sustained performance is around 30% of peak for both C and OCL
+codes; this is signiﬁcantly less than the corresponding ﬁgure for commodity processors,
+mainly limited by data bottlenecks in the rings connecting the cores.
+• On the Intel i7-4930K the sustained performance of the OCL code is about 40% of peak,
+signiﬁcantly less than an optimized C code (59%); we stress that on the C code this result
+comes from an accurately handcrafted program that heavily uses intrinsics functions and
+explicitly invokes SIMD instructions.
+• On GPUs, the current OpenCL framework by NVIDIA does not support the SM 35
+architecture of Kepler (the earlier SM 20 architecture is supported). SM 20 has only 64
+47
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+registers, while SM 35 has 256. This has a big impact on collide, as loop unrolling has a
+strong impact on performance. For the present discussion, we note that our OCL code
+has the same performance as the CUDA code if we compile for the SM 20 architecture,
+but this is ≈ 2X slower than the same code compiled for the SM 35 architecture.
+• On the AMD Opteron 6380 the OpenCL code runs better than the C code. Since the
+latter has been very accurately optimized for the Intel Sandy Bridge architecture, we
+think that a similar eﬀort would be necessary for the PileDriver architecture.
+Concerning propagate, our OCL codes run at ≈ 20% of the available peak memory bandwidth,
+except for GPUs where the eﬃciency is ≈ 60%, in line with the CUDA code.
+
+6
+
+Conclusions and future works
+
+In this paper we have used a complete application code in order to study portability and
+performance in the OpenCL framework; we have ported, tested and benchmarked a 2D Lattice
+Boltzmann code.
+The eﬀort to port a pre-existing C code to OpenCL is roughly similar to that needed to
+port it to CUDA (so it runs on GPUs), but the added value is that now the code is portable
+to all systems for which an OpenCL compiler and run-time support exists. Moreover, as in
+CUDA, OpenCL is based on a data-parallel computing model, that makes it easier and neater
+to exploit parallelism than C-like intrinsically sequential languages. Indeed, parallelizing codes
+for multi-core CPUs and MICs using C-like languages is much harder because it is necessary to
+deal explicitly with both core and vector-instruction levels of parallelism.
+The most interesting result of this work is that our LB code has roughly the same level of
+performance as that of corresponding codes speciﬁcally optimized for each processor; when this
+is not the case, the reason can be traced to speciﬁc design decisions taken by vendors. This
+result, if conﬁrmed for other applications, reaﬃrms the value of OpenCL as a programming
+environment to develop eﬃcient codes for the swiftly evolving HPC architectural scenario.
+The bad news for programmers is that today not all vendors are fully committed to support
+OpenCL as a standard programming environment for accelerators. This can be explained by the
+diﬀerent strategies of processor vendors, but also by their diﬀerent beliefs of what will become
+the de-facto standard language for heterogeneous computing in the near future.
+If one wants to use OpenCL (or CUDA), pre-existing codes must be largely rewritten;
+moreover, both languages have a low-level approach and a lot of work is left to the programmer
+in order to exploit parallelism and to steer data transfers between host and devices. Other
+programming frameworks for heterogeneous systems – e.g., OpenACC – are emerging. With
+OpenACC, one annotates sequential C codes with directives, in much the same fashion as
+OpenMP; annotations identify those segments of the code that can be compiled and executed
+on the accelerator. The compiler automatically handles parallelization and data moves between
+host and accelerator. In a future work, we plan to compare performance and design-style
+tradeoﬀs between OpenACC and OpenCL codes for our LB application.
+
+Acknowledgements
+This work was done in the framework of the COKA and Suma projects, supported by INFN. We
+thank INFN-CNAF (Bologna, Italy), CINECA (Bologna, Italy) and the J¨
+ulich Supercomputer
+Center (J¨
+ulich, Germany) for allowing us to use their computing systems.
+48
+
+Portable OpenCL Lattice Boltzmann Simulation . . .
+
+E. Calore, S.F Schifano, R. Tripiccione
+
+References
+[1] P. Du, et al. From CUDA to OpenCL: Towards a performance-portable solution for multi-platform
+GPU programming, Parallel Computing, 38 8 (2012), doi: 10.1016/j.parco.2011.10.002
+[2] Y. Zhang, M. Sinclair II, A. A. Chien, Improving Performance Portability in OpenCL Programs,
+LNCS Springer Berlin Heidelberg 7905 (2013), doi: 10.1007/978-3-642-38750-0 11
+[3] Kronos Group, The open standard for parallel programming of heterogeneous systems,
+http://www.khronos.org/opencl
+[4] S. Succi, The Lattice Boltzmann Equation for Fluid Dynamics and Beyond, Oxford University
+Press (2001)
+[5] M. Sbragaglia et al., Lattice Boltzmann method with self-consistent thermo-hydrodynamic equilibria, J. Fluid Mech. 628, 299-309, (2009), doi: 10.1017/S002211200900665X
+[6] A. Scagliarini et al., Lattice Boltzmann methods for thermal ﬂows: Continuum limit and applications to compressible Rayleigh-Taylor systems, Phys. Fluids 22, 5, 055101 (2010), doi:
+10.1063/1.3392774
+[7] L. Biferale, et al., Second-order closure in stratiﬁed turbulence: Simulations and modeling of bulk
+and entrainment regions, Phys. Rev. E 84, 1, 2, 016305 (2011), doi: 10.1103/PhysRevE.84.016305
+[8] L. Biferale et al., Reactive Rayleigh-Taylor systems: Front propagation and non-stationarity, EPL
+94, 5, 54004 (2011), doi: 10.1209/0295-5075/94/54004
+[9] S. Succi, private communication
+[10] M. Wittmann, et al., Comparison of diﬀerent Propagation Steps for the Lattice Boltzmann Method,
+arXiv:1111.0922 [cs.DC] (2011)
+[11] L. Biferale et al,, An Optimized D2Q37 Lattice Boltzmann Code on GP-GPUs, Comp. and Fluids
+80 (2013), doi: 10.1016/j.compﬂuid.2012.06.003
+[12] L. Biferale et al., Optimization of Multi-Phase Compressible Lattice Boltzmann Codes on Massively
+Parallel Multi-Core Systems, Proc. Comp. Science 4 (2011), doi: 10.1016/j.procs.2011.04.105
+[13] Intel Corporation, Intel Xeon Phi Micro architecture,
+http://goparallel.sourceforge.net/wp-content/uploads/2013/07/Intel_-Xeon-Phi-Core-Micro-architecture.pdf
+
+[14] NVIDIA, Kepler GK110,
+http://www.nvidia.com/content/PDF/kepler/NVIDIA-Kepler-GK110-Architecture-Whitepaper.pdf
+
+[15] F. Mantovani et al. Performance issues on many-core processors: a D2Q37 Lattice Boltzmann
+scheme as a test-case, Comp. and Fluids 88 (2013), doi: 10.1016/j.compﬂuid.2013.05.014
+[16] G. Crimi et al. Early Experience on Porting and Running a Lattice Boltzmann Code on the Xeonphi Co-Processor, Proc. Comp. Science 18 (2013), doi: 10.1016/j.procs.2013.05.219
+[17] L. Biferale et al., A multi-GPU implementation of a D2Q37 Lattice Boltzmann Code, LNCS
+Springer, Heidelberg 7203 (2012), doi: 10.1007/978-3-642-31464-3 65
+[18] J. Kraus, et al., Benchmarking GPUs with a Parallel Lattice Boltzmann Code, Proc. of 25th Int.
+Symp. on Computer Architecture and High Performance Computing (SBAC-PAD) (2013), doi:
+10.1109/SBAC-PAD.2013.37
+
+49
+
+

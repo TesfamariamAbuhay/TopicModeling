@@ -1,0 +1,633 @@
+ProtoMol: A Molecular Dynamics Research
+Framework for Algorithmic Development
+T. Matthey1 , A. Ko2 , and J.A. Izaguirre2
+1
+
+2
+
+Department of Informatics
+University of Bergen
+5020 Bergen, Norway
+Thierry.Matthey@ii.uib.no
+Department of Computer Science and Engineering
+University of Notre Dame
+Notre Dame, IN, USA 46556-0309
+izaguirr@cse.nd.edu
+
+Abstract. This paper describes the design and evaluation of ProtoMol, a high
+performance object-oriented software framework for molecular dynamics (MD).
+The main objective of the framework is to provide an efficient implementation
+that is extensible and allows the prototyping of novel algorithms. This is achieved
+through a combination of generic and object-oriented programming techniques
+and a domain specific language. The program reuses design patterns without
+sacrificing performance. Parallelization using MPI is allowed in an incremental
+fashion. To show the flexibility of the design, several fast electrostatics (N -body)
+methods have been implemented and tested in ProtoMol. In particular, we show
+that an O(N ) multi-grid method for N -body problems is faster than particlemesh Ewald (PME) for N > 8, 000. The method works in periodic and nonperiodic boundary conditions. Good parallel efficiency of the multi-grid method
+is demonstrated on an IBM p690 Regatta Turbo with up to 20 processors for
+systems with N = 102 , 104 and 106 . Binaries and source code are available free
+of charge at http://www.nd.edu/˜lcls/protomol.
+
+1
+
+Introduction
+
+Molecular dynamics (MD) is an important tool in understanding properties and function
+of materials at the molecular level, including biological molecules such as proteins and
+DNA. The challenge of MD is related to the multiple length and time scales present in
+systems. For example, biological molecules have thousands of atoms and time scales
+that span 15 orders of magnitude. The MD research community continually develops
+multiscale integrators, fast N -body solvers, and parallel implementations that promise
+to bring the study of important systems within reach of computational scientists.
+Although there are many programs for MD, most are very complex and several
+are legacy codes. This makes it harder for algorithm developers to incorporate their
+algorithms and disseminate them. The complexity usually arises from parallelization
+and other optimizations.
+ProtoMol has been designed to facilitate the prototyping and testing of novel
+algorithms for MD. It provides a domain specific language that allows user prototyping of
+P.M.A. Sloot et al. (Eds.): ICCS 2003, LNCS 2659, pp. 50–59, 2003.
+c Springer-Verlag Berlin Heidelberg 2003
+
+ProtoMol: A Molecular Dynamics Research Framework
+
+51
+
+MD simulation protocols on the fly, and it sacrifices neither performance nor parallelism.
+Its sequential performance is comparable to NAMD 2 [1], one of the fastest MD programs
+available, and it has good scalability for moderate numbers of processors.
+ProtoMol combines techniques from generic and object-oriented design in C++,
+but the lessons are applicable to other object oriented languages. It uses several design
+patterns, including some for simulations of dynamics of particles. These design pattern
+implementations have been sufficiently general to be reused in another framework
+called CompuCell, which models morphogenesis and other processes of developmental
+biology at the cellular and organism level [2].
+ProtoMol has been used in several applications, including simulation of ionic
+crystals, magnetic dipoles, and large biological molecules. It has also been used in
+courses on scientific computing simulations. As a proof of its flexibility, the design
+of ProtoMol has allowed the prototyping of several new algorithms and effective
+implementation of sophisticated existing ones, cf. [3]. Substantial portions of this paper
+are in [4]. However, parallel results for multi-grid methods are reported here for the first
+time.
+
+2
+
+Physical and Mathematical Background
+
+In classical MD simulations the dynamics are described by Newton’s equation of motion
+mi
+
+d2
+xi (t) = F i (t),
+dt2
+
+(1)
+
+where mi is the mass of atom i, xi (t) the atomic position at time t and F i (t) the instant
+force on atom i. The force F i is defined as a gradient of the potential energy
+F i = −∇i U (x1 , x2 , . . . , xN ) + F extended
+,
+i
+
+(2)
+
+where U is the potential energy, F extended
+an extended force (e.g., velocity-based friction)
+i
+and N the total number of atoms in the system. Typically, the potential energy is given
+by
+U = U bonded + U non-bonded
+U
+U
+
+bonded
+
+non-bonded
+
+=U
++U
++U
++U
+electrostatic
+Lennard-Jones
+=U
++U
+.
+bond
+
+angle
+
+dihedral
+
+(3)
+improper
+
+(4)
+(5)
+
+The bonded forces are a sum of O(N ) terms. The non-bonded forces are a sum of
+O(N 2 ) terms due to the pair-wise definition. U bond , U angle , U dihedral and U improper define
+the covalent bond interactions to model flexible molecules. U electrostatic represents the
+well-known Coulomb potential and U Lennard-Jones models a van der Waals attraction and
+a hard-core repulsion.
+2.1
+
+Numerical Integrators
+
+Newton’s equation of motion is a second order ordinary differential equation. Its
+integration is often solved by the numerical leapfrog method, which is time reversible
+
+52
+
+T. Matthey, A. Ko, and J.A. Izaguirre
+
+and symplectic. Despite its low order of accuracy, it has excellent energy conservation
+properties and is computationally cheap.
+A complete MD simulation is described by Algorithm 1. It consists basically of
+the loop numerically solving the equation of motion, the evaluation of forces on each
+particle, and some additional pre- and post-processing.
+
+Algorithm 1. Pseudo-code of an MD simulation
+
+2.2
+
+Force Evaluation
+
+Force evaluation in MD typically consists of bonded and non-bonded interactions.
+Bonded interactions (U bond ) are short-range and comparable cheap to compute. Nonbonded interactions are of a long-range nature and determined at run-time. They are the
+most computationally expensive. Thus, most MD program optimizations happen here.
+One of the most common optimizations for non-bonded force computations is the
+use of cutoffs to limit the spatial domain of pairwise interactions. Closely related to this
+is the use of switching functions to bring the energy and forces smoothly to zero at the
+cutoff point. Furthermore, cutoff computation can be accelerated through the use of cell
+lists or pair lists to achieve O(N ). ProtoMol implements generic facilities supporting
+all these optimizations.
+For systems with partial charges or higher multipoles, the electrostatic interactions
+play a dominant role, e.g., in protein folding, ligand binding, and ion crystals. Fast
+algorithms for electrostatic force evaluation implemented in ProtoMol are described in
+Sects. 2.2–2.2. In particular, we describe the parallel implementation of a novel multi-grid
+summation method (MG) for O(N ) fast electrostatics in periodic boundary conditions
+or vacuum.
+Ewald Summation. A general potential energy function U of a system of N particles
+with an interaction scalar function φ(xij + n) and periodic boundary conditions can be
+expressed as an infinite lattice sum over all periodic images. For the Coulomb potential
+energy this infinite lattice sum is only conditionally convergent.
+The Ewald sum method separates the electrostatic interactions into two parts: a shortrange term handled in the direct sum and a long-range smooth varying term handled
+approximately in the reciprocal sum using Fourier transforms. This splitting changes
+
+ProtoMol: A Molecular Dynamics Research Framework
+
+53
+
+the potential energy from the slowly and conditionally convergent series into the sum of
+two rapidly converging series in direct and reciprocal space and a constant term.
+This algorithm scales like O(N 2 ) unless some optimizations are performed. The
+splitting parameter β, which determines the relative rates of convergence between the
+direct and reciprocal sums, can be adjusted to reduce the computational time to O(N 3/2 ),
+cf. [5].
+Particle Mesh Ewald. Using the discrete Fast-Fourier transforms (FFT), the meshbased Ewald methods approximate the reciprocal-space term of the standard Ewald
+summation by a discrete convolution on an interpolating grid. By choosing an
+3
+appropriate splitting parameter β, the computational cost can be reduced from O(N 2 )
+to O(N log N ). The accuracy and speed are additionally governed by the mesh size and
+the interpolation scheme, which makes the choice of optimal parameters more difficult.
+This problem has been addressed by MDSimAid, a recommender system that proposes
+possible optimal choices for a given system and a required accuracy [6].
+At present, there exist several implementations based on the mesh-based Ewald
+method, but they differ in detail. Smooth particle-mesh Ewald (SPME) [7] is implemented in ProtoMol. The mesh-based Ewald methods are affected by errors when
+performing interpolation, FFT, and differentiation [5]. Accuracy increases when the
+interpolation order or the number of grid points increase.
+Multi-grid Summation. Multi-grid summation (MG) has been used used to solve the
+N -body problems by [3,8]. MG imposes a hierarchical separation of spatial scales and
+scales as O(N ). The pair-wise interactions are split into a local and a smooth part.
+The local parts are short-range interactions, which are computed directly. The smooth
+part represents the slowly varying energy contributions, approximated with fewer terms
+– a technique known as coarsening. MG uses interpolation unto a grid for both the
+charges and the potential energies to represent its smooth – coarse – part. The splitting
+and coarsening are applied recursively and define a grid hierarchy (Fig. 1). For the
+electrostatic energy, the kernel is defined by G(r) = r−1 and r = ||y − x||. G(r)
+is obviously not bounded for small r. The interpolation imposes smoothness to bound
+its interpolation error. By separation, the smoothed kernel (smooth part) for grid level
+k ∈ {1, 2, . . . , l} is defined as
+Gksmooth (r) =
+
+Gsk (r) : r|| < sk
+G(r) : otherwise.
+
+(6)
+
+Here, sk is the softening distance at level k and Gsk (r) is the smoothing function with
+Gsk (sk ) = G(sk ). We define sk = ak−1 s, typically a = 2. Corrections of the energies
+are required when the modified, smoothed kernel is used instead of the exact one.
+
+3
+
+Framework Design
+
+MD programs may substantially differ in design, but they are essentially all based on
+Algorithm 1. Four main requirements were addressed during the design of the framework:
+
+54
+
+T. Matthey, A. Ko, and J.A. Izaguirre
+Point Charges
+
+Potential values
+(2)
+
+l
+
+(3)
+
+(1)
+(4)
+
+l −1
+(1)
+
+(3)
+(4)
+
+1
+
+(3)
+
+(1)
+0
+
+(4)
+
+Fig. 1. The multilevel scheme of the MG algorithm. (1) Aggregate to coarser grids; (2) Compute
+potential energy induced by the coarsest grid; (3) Interpolate energy values from coarser grids;
+(4) Local corrections
+
+1. Allow end-users to compose integrators and force evaluation methods dynamically.
+This allows users to experiment with different integration schemes. MTS methods
+require careful fine-tuning to get the full benefit of the technique.
+2. Allow developers to easily integrate and evaluate novel force algorithms schemes.
+For example, the force design allows the incorporation of sophisticated multiscale
+algorithms, including mesh-based methods and MG.
+3. Develop an encapsulated parallelization approach, where sequential and parallel
+components co-exist. This way, developers are not forced to consider the distributed
+nature of the software. Parallelism itself is based on range computation and a
+hierarchical master-slave concept [9].
+4. Provide facilities to compare accuracy and run-time efficiency of MD algorithms
+and methods.
+For the design of the component-based framework ProtoMol, three different
+modules were identified. These are shown in Fig. 2 and are described next. The frontend provides components to compose and configure MD applications. The components
+are responsible for composing and creating the actual MD simulation set up with its
+integration scheme and particle configuration. This layer is strongly decoupled from the
+rest to the extent that the front-end can be replaced by a scripting language.
+
+Component
+
+Front−end
+
+Framework
+
+Middle Layer
+
+Class Library
+
+Back−end
+
+libfrontend
+libintegrators
+libbase, libtopology
+libparallel, libforces
+
+Fig. 2. The component-based framework ProtoMol
+
+ProtoMol: A Molecular Dynamics Research Framework
+
+55
+
+The middle layer is a white-box framework for numerical integration reflecting a
+general MTS design. The back-end is a class library carrying out the force computation
+and providing basic functionalities (see Sect. 3.1). It has a strong emphasis on run-time
+efficiency.
+The discussion of the framework has a strong emphasis on the design of force
+algorithms, since considerable time was spent to design and implement new force
+algorithms (e.g., standard Ewald summation, SPME, MG, etc.). The front-end is mainly
+the pre- and post-processing in Algorithm 1 and is not detailed in this paper, whereas the
+middle layer is briefly explained to give an overview of the collaboration of integrators
+and their associated forces. A complete domain analysis of the integrator library used
+in ProtoMol is in [10], and some references to novel integrators developed and
+implemented using the program are [11,12].
+
+3.1
+
+Force Design
+
+The forces are designed as separate components and part of the computational back-end.
+From an MD modeling point of view and from performance considerations, five different
+requirements (or customizable options) are proposed. These are discussed below:
+R1 An algorithm to select an n-tuple of particles to calculate the interaction.
+R2 Boundary conditions defining positions and measurement of distances in the system.
+R3 A Cell Manager component to retrieve efficiently the spatial information of each
+particle. This has O(1) complexity.
+R4 A function defining the force and energy contributions on an n-tuple.
+R5 A switching function component to make the force and energy terms smoother.
+
+Force Interface. In order to address these requirements, several design approaches can
+be chosen. To avoid an all inclusive interface with mammoth classes, we use multiple
+inheritance and generic programming. We combine templates and inheritance in the
+Policy or Strategy pattern [13, pp. 315-323]. This pattern promotes the idea to vary the
+behavior of a class independent of its context. It is well-suited to break up many behaviors
+with multiple conditions and it decreases the number of conditional statements.
+The algorithm to select the n-tuples (R1) is customized with the rest of the four
+requirements (R2-R5). This allows the simultaneous evaluation of different types of
+forces with the same algorithm. Complex force objects stem from non-bonded forces.
+For example, to define an electrostatic force, we may choose a cutoff algorithm
+(R1) that considers only the closest neighboring atoms. To find the closest atoms in
+constant time, we use a cell manager based on a cell list algorithm (R3), defining
+some boundary conditions (R2), a function defining the energy and force contributions
+between two arbitrary atoms. We may even modify the energy and force by specifying a
+switching function. The forces are designed with a common interface, a deferred feature
+called evaluate(...) that does the evaluation of the force contributions based on its
+parameterization and policy choices.
+
+56
+
+T. Matthey, A. Ko, and J.A. Izaguirre
+
+Force Object Creation. Once the forces are designed and implemented, we need to
+create (or instantiate) the actual force objects needed by integrators. This can be solved
+by a sort of “just-in-time” (JIT) compiler that can transform a given input definition into
+a real force object.
+The requirements of object creation are satisfied by the Abstract Factory [13, pp. 8795] and the Prototype [13, pp. 117-126] patterns. The Abstract Factory pattern delegates
+the object creation, and the Prototype pattern allows dynamic configuration. At the end of
+the process, a fully featured force object with set parameters is created by the prototype.
+In order to make the dynamic configuration and the actual object creation independent,
+and the factory globally accessible, the force factory uses the Singleton pattern [13,
+pp. 127-134].
+3.2
+
+Performance Monitoring
+
+Since one of the requirements of the framework is the ease to evaluate and compare
+different force algorithms, functionalities were added to the framework for this purpose.
+At present, pairs of forces can be compared to determine energy and force errors of new
+force methods. The comparison is performed on-the-fly, such that the reference force
+does not affect the current simulation. For example, one can compare a fast electrostatics
+method such as PME using two grid sizes, such that the more accurate one serves as an
+accuracy estimator. This is important to validate and verify a simulation.
+For the benchmarking of forces, a timer function was implemented to measure the
+total and average time spent in dedicated force methods. Comparisons can be nested to
+evaluate accuracy and run-time performance simultaneously. The comparison of force
+pairs is based on the Count Proxy pattern [13, pp. 207-217] to link two forces together
+and calculate the actual errors.
+
+4
+
+Performance Evaluation
+
+We describe the performance evaluation of the fast electrostatic methods implemented in
+ProtoMol and described in this paper. Figure 3 shows parallel scalability of ProtoMol
+applied on Coulomb Crystal systems [14,15], which are defined by a – computationally
+dominating – electrostatic part and an electric field with linear work complexity. The
+full electrostatics are solved by MG. The simulations were performed on an IBM p690
+Regatta Turbo. Note that the sequential speedup for N = 106 is of order 102 or more
+compared to the direct method, and for lower accuracy a speedup of order 103 was
+observed.
+Our initial parallel implementation of MG is based on global communication using
+MPI for the smooth part defined at particle level. In Fig. 1 the work of the anterpolation
+(1), the interpolation (3), the direct part (4) and the correction at grid level (4) can
+be estimated and distributed perfectly among the slaves at each level, given the grid
+dimensions, the softening distance and the number of particles. Accurate work estimates
+enables us to assign the work without any synchronization (i.e., a master node), and to
+reduce the idle cycles to a minimum when performing a global update of the local
+contributions at the grid levels. For the direct part at particle level (4) the work is
+
+ProtoMol: A Molecular Dynamics Research Framework
+3
+
+20
+
+10
+
+N=1,000,000
+N=10,000
+N=100
+
+18
+
+# Processors × Time per step [s]
+
+16
+14
+Speedup
+
+57
+
+12
+10
+8
+6
+
+2
+
+10
+
+N=1,000,000
+N=10,000
+N=100
+
+1
+
+10
+
+0
+
+10
+
+−1
+
+10
+
+4
+2
+
+−2
+
+2
+
+4
+
+6
+
+8
+
+10
+12
+# Processors
+
+14
+
+16
+
+18
+
+20
+
+10
+
+0
+
+1
+
+10
+
+10
+# Processors
+
+Fig. 3. Parallel scalability applied on Coulomb Crystal systems using MG electrostatic solver with
+relative error of order 10−5 or less; performed on an IBM p690 Regatta Turbo
+
+distributed dynamically, since the work for a given spatial sub-domain can not be
+predicted statically, due to the fact that the distribution of particles is in general nonuniform. The master assigns ranges of work on demand to balance the work, which
+represents the force decomposition scheme with master-slave distribution. Additionally,
+the ranges of work are sent in pipeline to avoid slaves waiting for their next range. In
+general, a work range represents a collection of terms of a term of the sum U in Eq. (3).
+The ranges are based on the possible splittings provided by the force objects defined by
+the sum U . Furthermore, the work distribution can be performed using either a masterslave, as described above, or a static scheme. The static scheme distributes the work
+in a linear manner, which performs well for small number of nodes or uniform density
+systems.
+Figure 4 compares the run-time of MG, which is extended to periodic boundary
+conditions for the first time here, and the smooth PME. The experiments are based on
+the TIP3 water model with atoms ranging from 1,000 to 100,000. The Ewald method is
+
+10000
+
+Time (s) per MD step
+
+1000
+
+100
+
+10
+
+1
+PME (in pbc)
+MG (in pbc)
+Ewald (in pbc)
+MG (in vacuum)
+Direct (in vacuum)
+0.1
+0
+
+10000
+
+20000
+
+30000
+
+40000
+50000
+60000
+Number of atoms
+
+70000
+
+80000
+
+90000
+
+100000
+
+Fig. 4. Time per MD step for N -body electrostatic solvers implemented in ProtoMol with relative
+error of order 10−4
+
+58
+
+T. Matthey, A. Ko, and J.A. Izaguirre
+
+assumed to be the standard for comparison when the experiments are done in periodic
+boundary condition while the direct method is used for comparison when the experiments
+are done in vacuum. The MG method is tested both in periodic boundary conditions and
+in vacuum while the PME is tested in periodic boundary conditions only. The tests
+are performed using i686 Pentium processors running Linux. The CPU time and the
+relative error in evaluating the potential energy for each test are measured. The same
+˚ are used for all tests.
+C 2 -continuous switching function and switchon of 5 A
+The performance evaluation facilities of ProtoMol allow us to determine the critical
+size and accuracy at which MG performs better than PME. MG is superior for systems of
+8,000 or more particles. An optimization was performed to find the optimal parameters
+for each method at the lowest time and highest accuracy. Details on selection of optimal
+parameters for these methods are beyond the scope of this paper but can be provided on
+request. Some guidelines can be found in [8].
+
+5
+
+Discussion
+
+The design of ProtoMol has allowed the implementation of novel MTS integrators
+and fast N -body solvers. For example, the MG summation for fast electrostatic is 3-5
+times faster than the particle-mesh Ewald for systems only 8,000 atoms. The parallel
+version of MG scales well for moderate numbers of processors: we have tested it with up
+to 20. Combination of these new methods have enabled simulations of million-particle
+systems with full electrostatics described above [15]. The facilities for performance
+monitoring have been very useful and general. Furthermore, the different algorithms
+and the comparison facilities give a unique opportunity to choose the best algorithm for
+a particular application and enable fair comparison of future novel algorithms.
+The domain specific language makes our MD applications very flexible. By using
+the provide “JIT” compiler, users compose their own programs without having to touch
+the code. This was mainly achieved with help of the Abstract Factory pattern and the
+Prototype pattern, which also improves the extendibility on the developer level.
+The object-oriented design of the framework along with the use of design patterns
+has eased the development of a fairly complex framework. By using object-oriented and
+generic implementation of ProtoMol, we have achieved high performance without
+sacrificing extendibility. The programming language C++ has allowed us to achieve the
+goal of extendability, particularly we have benefited from the STL.
+Acknowledgments. This research was supported by a NSF Biocomplexity Grant No.
+IBN-0083653 and a NSF CAREER Award ACI-0135195 and partly by the Norwegian
+Research Council. Many students have contributed to ProtoMol. A list can be found
+in its webpage.
+
+References
+1. Kal´e, L., Skeel, R., Bhandarkar, M., Brunner, R., Gursoy, A., Krawetz, N., Phillips, J.,
+Shinozaki, A., Varadarajan, K., Schulten, K.: NAMD2: Greater scalability for parallel
+molecular dynamics. J. Comp. Phys. 151 (1999) 283–312
+
+ProtoMol: A Molecular Dynamics Research Framework
+
+59
+
+2. Chaturvedi, R., Izaguirre, J.A., Huang, C., Cickovski, T., Virtue, P., Thomas, G., Forgacs, G.,
+Alber, M., Hentschell, G., Newman, S., Glazier, J.A.: Multi-model simulations of chicken limb
+morphogenesis. To appear in proceedings of the International Conference on Computational
+Science ICCS (2003)
+3. Matthey, T.: Framework Design, Parallelization and Force Computation In Molecular
+Dynamics. PhD thesis, Department Of Informatics, University of Bergen (2002)
+4. Matthey, T., Cickovski, T., Hampton, S., Ko, A., Ma, Q., Slabach, T., Izaguirre, J.A.:
+ProtoMol: an object-oriented framework for prototyping novel algorithms for molecular
+dynamics. Submitted to ACM Trans. Math. Softw. (2002)
+5. Petersen, H.G.: Accuracy and efficiency of the particle mesh Ewald method. J. Chem. Phys.
+103 (1995)
+6. Ko, A.: MDSimAid: An automatic recommender for optimization of fast electrostatic
+algorithms for molecular simulations. Master’s thesis, University of Notre Dame, Notre Dame,
+IN (2002) Available from http://www.nd.edu/˜izaguirr/papers/KOthesis.pdf.
+7. Essmann, U., Perera, L., Berkowitz, M.L.: A smooth particle mesh Ewald method. J. Chem.
+Phys. 103 (1995) 8577–8593
+8. Skeel, R.D., Tezcan, I., Hardy, D.J.: Multiple grid methods for classical molecular dynamics.
+J. Comp. Chem. 23 (2002) 673–684
+9. Matthey, T., Izaguirre, J.A.: ProtoMol: A molecular dynamics framework with incremental
+parallelization. In: Proc. of the Tenth SIAM Conf. on Parallel Processing for Scientific
+Computing (PP01). Proceedings in Applied Mathematics, Philadelphia, Society for Industrial
+and Applied Mathematics (2001)
+10. Izaguirre, J.A., Ma, Q., Matthey, T., Willcock, J., Slabach, T., Moore, B., Viamontes,
+G.: Overcoming instabilities in Verlet-I/r-RESPA with the mollified impulse method. In
+Schlick, T., Gan, H.H., eds.: Proceedings of 3rd International Workshop on Methods for
+Macromolecular Modeling. Volume 24 of Lecture Notes in Computational Science and
+Engineering. Springer-Verlag, Berlin, New York (2002) 146–174
+11. Izaguirre, J.A., Catarello, D.P., Wozniak, J.M., Skeel, R.D.: Langevin stabilization of
+molecular dynamics. J. Chem. Phys. 114 (2001) 2090–2098
+12. Skeel, R.D., Izaguirre, J.A.: An impulse integrator for Langevin dynamics. Mol. Phys. 100
+(2002) 3885–3891
+13. Gamma, E., Helm, R., Johnson, R., Vlissides, J.: Design Patterns. Elements of Reusable
+Object-Oriented Software. Addison-Wesley, Reading, Massachusetts (1995)
+14. Hasse, R.H., Avilov, V.V.: Structure and Mandelung energy of spherical Coulomb crystals.
+Phys. Rev. A 44 (1991) 4506–4515
+15. T. Matthey, J.P.H., Drewsen, M.: Bicrystal structures in rf traps of species with identical
+charge-to-mass ratios. Submitted to PRL (2003)
+
+

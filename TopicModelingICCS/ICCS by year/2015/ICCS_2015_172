@@ -1,0 +1,323 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 2016–2025
+ICCS 2015 International Conference On Computational Science
+
+Parallel Performance Optimizations on
+Unstructured Mesh-Based Simulations
+Abhinav Sarje1 , Sukhyun Song2 , Douglas Jacobsen3 , Kevin Huck4 , Jeﬀrey
+Hollingsworth2 , Allen Malony4 , Samuel Williams1 , and Leonid Oliker1
+1
+
+Lawrence Berkeley National Laboratory {asarje,swwilliams,loliker}@lbl.gov
+2
+University of Maryland {shsong,hollings}@cs.umd.edu
+3
+Los Alamos National Laboratory {douglasj}@lanl.gov
+4
+University of Oregon {khuck,malony}@cs.uoregon.edu
+
+Abstract
+This paper addresses two key parallelization challenges the unstructured mesh-based ocean
+modeling code, MPAS-Ocean, which uses a mesh based on Voronoi tessellations: (1) load
+imbalance across processes, and (2) unstructured data access patterns, that inhibit intra- and
+inter-node performance. Our work analyzes the load imbalance due to naive partitioning of
+the mesh, and develops methods to generate mesh partitioning with better load balance and
+reduced communication. Furthermore, we present methods that minimize both inter- and intranode data movement and maximize data reuse. Our techniques include predictive ordering of
+data elements for higher cache eﬃciency, as well as communication reduction approaches. We
+present detailed performance data when running on thousands of cores using the Cray XC30
+supercomputer and show that our optimization strategies can exceed the original performance
+by over 2×. Additionally, many of these solutions can be broadly applied to a wide variety of
+unstructured grid-based computations.
+Keywords: Unstructured Mesh, Ocean Modeling, Graph Partitioning, Performance Optimization
+
+1
+
+Introduction
+
+Iteration-based computational simulations require an abstract representation of the real-world
+state. In most cases, the data is represented as a collection of multidimensional data points
+where some of the data points deﬁne spatial coordinates. In such applications, the domain is
+discretized into cells, forming a mesh or grid. In a distributed parallel environment, these grids
+often provide a convenient framework for decomposition of the data into independent, groups
+of cells as partitions. Structured meshes have regular cells and connectivity. For example, 2D
+structured meshes are typically represented with rectilinear or curvilinear quadrangles which
+can often be decomposed into partitions in a straightforward way. Structured meshes are
+appropriate when they are suﬃcient to deﬁne regular domains. One problem with structured
+2016
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2015.05.466
+
+Parallel Performance Optimizations on Unstructured Mesh-Based Simulations
+
+Sarje et al.
+
+meshes in deﬁning certain domains, such as surfaces of spheres, is that they get distorted in
+order to enclose areas such as the poles of spheres, resulting in multiple grid points sharing
+the same location creating a coordinate singularity where the tangent space is undeﬁned. On
+the other hand, unstructured or irregular meshes have arbitrary polygon cells with irregular
+connectivity. As such, partitioning of these meshes is often not obvious and generally driven
+by complex algorithms. These meshes are useful in applications requiring multiscale and/or
+variable resolution. They map better to curved surfaces, such as surfaces of spheres, avoiding
+coordinate singularities and distortions when mapped to 2D [16]. Applications where such
+meshes are applicable include adaptive mesh reﬁnement, multi-resolution domains, and ﬁnite
+element methods on an irregular domain. Often domain decomposition for distributed memory
+parallel computations requires the use of ghost or halo cells from neighboring partitions when
+cells on the boundary of a partition require input from neighboring cells assigned to a diﬀerent
+partition. Furthermore, decomposition of unstructured meshes that are not fully connected
+results in irregular partitions, potentially with high variability in the numbers of halo cells for
+each partition. This leads to severe load imbalance, increasing synchronization wait times and
+decreasing computational throughput. Deeper halo regions further exacerbate this situation.
+The on-node memory access patterns of structured and unstructured codes tend to be very
+diﬀerent. Structured meshes are convenient in that their layout in memory is amenable to optimizations such as blocking, tiling, good cache reuse and vectorization because the cells are often
+represented as multidimensional rectilinear arrays. Because of their regular shape and layout,
+they have predictable access patterns. In contrast, unstructured meshes are a performance
+challenge as they are frequently represented as connected graphs with non-contiguous memory
+layouts. Iterating over the “neighbors” of an unstructured mesh cell can result in poor cache
+reuse due to pointer chasing since the neighbors may not necessarily be localized in memory. In
+this paper, we address these two particular challenges put forth by unstructured meshes – load
+imbalance and unstructured data. The issue of load imbalance is addressed in Section 3, and
+the issue of unstructured data is addressed in Section 4. We present our results and solutions
+in the context of an ocean modeling code, MPAS-Ocean [16], which we brieﬂy describe next.
+
+2
+2.1
+
+Background
+Ocean Modeling with MPAS
+
+The Model for Prediction Across Scales (MPAS) is a modeling framework collaboratively developed between Los Alamos National Laboratory and the National Center for Atmospheric
+Research [16]. The MPAS framework is built on top of unstructured mesh data structures that
+make heavy use of indirect addressing. In this paper, we present our optimization eﬀorts on
+unstructured meshes in the context of the ocean modeling core, MPAS-Ocean.
+MPAS-O is a next generation global ocean model, built on top of spherical centroidal Voronoi
+tessellations (SCVT). The resultant meshes are composed of arbitrarily shaped polygons which
+bring unique challenges to parallel load balancing and data locality. These meshes can be
+generated using a density function to produce static mesh reﬁnement in areas of interest (see
+Fig. 1). A major advantage of such mesh is that it provides smooth resolution transition
+regions, while allowing for drastically diﬀerent resolutions in diﬀerent regions of the mesh.
+It also eliminates the need for “hanging node” issues that are common in regular structured
+variable resolution meshes, while still providing reﬁnement in areas of interest. Building oﬀ
+of this unstructured mesh, MPAS-O enumerates its data on a staggered horizontal Arakawa
+C-Grid, visualized in Fig. 1. While the horizontal data structure is staggered and unstructured,
+this mesh has a vertical (ocean depth) data structure that is regular and structured.
+2017
+
+Parallel Performance Optimizations on Unstructured Mesh-Based Simulations
+
+Sarje et al.
+
+neighboring partitions, performing “halo-exchanges”. To demonstrate the computational and
+communication load imbalance due to a given Metis partitioning, across the diﬀerent processes
+during an execution, we show the variation in the computation and communication time for
+each process for a sample run in Fig. 2. It can be observed that in this example the computation
+and communication times vary by 75% and 42%, respectively, showing a high imbalance.
+Available partitioners generate a partitioning by (1) balancing the number of cells in all
+partitions, and (2) minimizing the total number of edge cuts. Based on our analysis of loadimbalance due to a straightforward Metis partitioning, it is clear that a diﬀerent approach is
+required to achieve better load balancing, which would eﬀectively balance the computation as
+well as the actual communication distribution. Therefore, this partitioner should balance the
+partitions with respect to total cells including the halo cells, and minimize the communication volume. We turn to partitioning via hypergraphs using the PaToH partitioner [7], which
+promises to model the communication overhead more accurately.
+The communication overhead between processes is due to halo exchanges, and because of the
+unstructured and non-contiguous nature of meshes, each partition has diﬀerent number of halo
+cells, with high variability across all partitions. The eﬀect of halo cells is magniﬁed when deep
+halos are used. MPAS-O typically requires halos with depth of three cells. Since graph/hypergraph partitioning algorithms do not take these halo cells into account, a diﬀerent partitioning
+strategy is necessary for a better balance. In order to develop a halo-aware partitioning scheme,
+we ﬁrst construct a cost model for a given partitioning to accurately represent computation and
+communication costs, and then use this model to design our partitioning algorithm.
+
+3.2
+
+Partitioning-based Cost Modeling
+
+The computational cost for a processor includes the cost due to computations on the local cells
+and on the halo cells. The cost may be diﬀerent for a local cell and a halo cell. For p total
+partitions, let a represent the ratio between computation performed on a halo and local cells.
+Given a partition k, we model its computational cost, Cα as:
+Cα =
+
+1
+F (p)
+
+i∈Nk
+
+i∈Hk
+
+wi + a
+i
+
+wi
+
+(1)
+
+i
+
+where Nk is the set of local cell for partition k, Hk is the set of halo cells for partition k, and
+wi is weight of a cell i. F (p) is a function of p, the number of partitions, and represents the
+fact that the cost decreases with increasing p.
+The communication volume depends on the number of halo cells for each partition, and the
+number of neighbors each processor needs to communicate with. We model the communication
+cost for a partition k as:
+1 hk
++ max (ci ) − ck
+(2)
+Cβ =
+F (p) bk
+i∈[1,p]
+where hk = |Hk |, bk = number of neighbors of partition k, ck is the total computational cost of
+partition k. Hence, the ﬁrst term represents the average communication load to each neighbor,
+and the second term represents the wait time for processor owning partition k.
+We perform extensive experiments with the actual cost of representative simulations with
+varying concurrency and input meshes, and use the obtained performance data to perform a
+least-squares line ﬁt in order to ﬁnd the computation-communication ratio, and the value of
+F (p). From the data collected from these experiments, we obtain the ﬁtted values a = 0.7 and
+F (p) ≈ log(4p). We conﬁrm the correctness of our cost model as shown in Fig. 2.
+2020
+
+Parallel Performance Optimizations on Unstructured Mesh-Based Simulations
+
+3.3
+
+Sarje et al.
+
+Halo-aware Partitioning
+
+To model deep halos, we could naively use BFS or DFS starting from each cell and identify
+all the l distance neighbors to construct l-depth halos. However, given that graphs can be
+represented as sparse matrices, a more eﬃcient approach is to compute the l-th power of a
+matrix, through sparse matrix-matrix multiplication (SpMM), which identiﬁes all nodes in the
+corresponding graph that are at a distance l and connects them with an edge. Therefore, given
+A as the sparse matrix representation of the input mesh, computing Al determines the l depth
+halo cells. We utilize the CombBLAS package [4] to perform the matrix power operations.
+Aggregating the edges from A, A2 , ..., Al identiﬁes all the halo cells for any given partitioning.
+However, because the halo cells cannot be identiﬁed until a partitioning has been performed,
+their cost cannot be added for balancing during the partitioning process. Therefore, our new
+partitioning strategy follows an iterative approach. The strategy is designed as a Monte-Carlo
+based partitioning scheme that iteratively reﬁnes the partitioning using total cost estimated
+for previous iteration’s partitioning. Each iteration, thus, includes a call to the hypergraph
+partitioning tool PaToH. This scheme is as follows for an input mesh G:
+1: procedure HaloAwarePartition(G)
+2:
+Construct sparse matrix A representing G
+3:
+Compute A2 , · · · Al , and A1···l = l Ai
+4:
+Construct hypergraph H0 for A1···l
+5:
+while not converged do
+6:
+Construct partitioning Pi of Hi , and construct halos for each partition in Pi
+7:
+Compute cost prediction for each partition k and assign weights to the cells, distributing the cost of
+halo cells equally among partition cells, and hence compute total partition weights Wk
+min (W )
+8:
+Compute imbalance measure, fi = 1 − maxk (Wk )
+k
+
+k
+
+9:
+Accept Pi with probability m = min 1, e(fi−1 −fi )/2
+10:
+if Pi is accepted then
+11:
+Update Hi with the new cell weights to construct H(i+1)
+12:
+else
+13:
+Reject Pi by setting Pi = Pi−1 and fi = fi−1
+14:
+end if
+15:
+end while
+16:
+Output last accepted partitioning as the result
+17: end procedure
+
+(Metropolis-Hastings probability)
+
+The above procedure ensures that the costs due to halos are taken into account by assigning
+weights to the cells and reﬁning the partitioning iteratively. Experimental results show that
+the convergence is reached quickly, generally within 10 iterations.
+
+3.4
+
+Variable Cell Weights
+
+In general a mesh may have variable cell weights. For MPAS-O the cells in the input mesh have
+variable depths, representing the ocean depth at the corresponding location. This introduces
+another opportunity for optimization, since the computational cost of a cell is proportional
+to the number of depth layers it deﬁnes (varying between 3–40). To take this into account,
+variable weights corresponding to the cell depth are assigned to each cell while calculating the
+cost using the performance model. The next subsection presents the impact of our depth and
+halo-aware partitioning strategies compared with assigning the original partitioning.
+
+3.5
+
+Performance Results
+
+We perform experiments on the Edison system (Section 2.4), using a 15 km resolution mesh to
+simulate 10 days, with the following four partitioning strategies: (1) Original Metis partitioning.
+(2) Hypergraph partitioning from PaToH. (3) Halo-aware partitioning. (4) Depth and halo-aware
+2021
+
+Parallel Performance Optimizations on Unstructured Mesh-Based Simulations
+
+Sarje et al.
+
+References
+[1] M. Bader. Space-Filling Curves. An Introduction With Applications in Scientiﬁc Computing.
+Springer, Oct. 2012.
+[2] M. A. Bender, B. C. Kuszmaul, S.-H. Teng, and K. Wang. Optimal Cache-Oblivious Mesh Layouts.
+Theory of Computing Systems, 48(2):269–296, Feb. 2011.
+[3] M. Berzins. A new metric for dynamic load balancing. Applied Mathematical Modelling, 2000.
+[4] A. Buluc and J. R. Gilbert. The Combinatorial BLAS: Design, implementation, and applications.
+International Journal of High Performance Computing Applications, 2011.
+¨ Cataly¨
+[5] U.
+urek. Hypergraph models for sparse matrix partitioning and reordering. PhD thesis, 1999.
+¨ Cataly¨
+[6] U.
+urek and C. Aykanat. Hypergraph-partitioning-based decomposition for parallel sparsematrix vector multiplication. Parallel and Distributed Systems, IEEE Transactions on, 10(7):673–
+693, 1999.
+[7] U. Catalyurek and C. Aykanat. PaToH: Partitioning Tool for Hypergraphs, March 2011.
+[8] E. Cuthill and J. McKee. Reducing the Bandwidth of Sparse Symmetric Matrices. In Proceedings
+of the 1969 24th National Conference, ACM ’69, pages 157–172, 1969.
+[9] J. M. Dennis. Inverse space-ﬁlling curve partitioning of a global ocean model. In International
+Parallel and Distributed Processing Symposium (IPDPS’07), pages 1–10. IEEE, 2007.
+¨ V. Cataly¨
+[10] K. D. Devine, E. G. Boman, R. T. Heaphy, R. H. Bisseling, and U.
+urek. Parallel hypergraph partitioning for scientiﬁc computing. In Parallel and Distributed Processing Symposium,
+2006. IPDPS 2006. 20th International, page 10 pp. IEEE, 2006.
+[11] O. Fortmeier, H. M. B¨
+ucker, B. O. F. Auer, and R. H. Bisseling. A new metric enabling an exact
+hypergraph model for the communication volume in distributed-memory parallel applications.
+Parallel Computing, 39(8):319–335, Aug. 2013.
+[12] Y. F. Hu and R. J. Blake. Load balancing for unstructured mesh applications. Parallel and
+Distributed Computing Practices, 1999.
+[13] G. Karypis. METIS: A Software Package for Partitioning UnstructuredGraphs, Partitioning
+Meshes, and Computing Fill-Reducing Orderings of Sparse Matrices, Mar. 2013.
+[14] B. Moon, H. V. Jagadish, C. Faloutsos, and J. H. Saltz. Analysis of the clustering properties of the
+Hilbert space-ﬁlling curve. IEEE Transactions on Knowledge and Data Engineering, 13(1):124–
+141, 2001.
+[15] I. Moulitsas and G. Karypis. Architecture Aware Partitioning Algorithms. In ICA3PP ’08:
+Proceedings of the 8th international conference on Algorithms and Architectures for Parallel Processing. Springer-Verlag, June 2008.
+[16] T. Ringler, M. Petersen, R. L. Higdon, D. Jacobsen, P. W. Jones, and M. Maltrud. A multiresolution approach to global ocean modeling. Ocean Modeling, 69(C):211–232, Sept. 2013.
+[17] K. Schloegel, G. Karypis, and V. Kumar. Parallel static and dynamic multi-constraint graph
+partitioning. Concurrency and Computation: Practice and Experience, 14(3):219–240, 2002.
+[18] N. Selvakkumaran and G. Karypis. Multi-Objective Hypergraph Partitioning Algorithms for Cut
+and Maximum Subdomain Degree Minimization. IEEE Transactions on Computer Aided Design,
+pages 1–14, Apr. 2005.
+[19] B. U¸car and C. Aykanat. Revisiting hypergraph models for sparse matrix partitioning. SIAM
+review, 49(4):595–603, 2007.
+[20] H. T. Vo, C. T. Silva, L. F. Scheidegger, and V. Pascucci. Simple and Eﬃcient Mesh Layout with
+Space-Filling Curves. Journal of Graphics Tools, 16(1):25–39, 2012.
+[21] C. Walshaw, M. Cross, and M. G. Everett. Dynamic mesh partitioning: A uniﬁed optimisation
+and load-balancing algorithm. 1995.
+
+2025
+
+

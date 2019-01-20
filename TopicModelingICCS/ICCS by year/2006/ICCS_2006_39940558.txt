@@ -1,0 +1,472 @@
+Source Transformation for MATLAB
+Automatic Diﬀerentiation
+Rahul V. Kharche and Shaun A. Forth
+Cranﬁeld University (Shrivenham Campus), Shrivenham, Swindon SN6 8LA, UK
+{R.V.Kharche, S.A.Forth}@cranfield.ac.uk
+
+Abstract. We present MSAD, a source transformation implementation
+of forward mode automatic diﬀerentiation for MATLAB. MSAD specialises and inlines operations from the fmad and derivvec classes of the
+MAD package. The operator overloading overheads inherent in MAD
+are eliminated while preserving the derivvec class’s optimised derivative combination operations. Compared to MAD, results from several
+test cases demonstrate signiﬁcant improvement in eﬃciency across all
+problem sizes.
+
+1
+
+Automatic Diﬀerentiation in MATLAB
+
+MATLAB is popular for rapid prototyping and numerical computing owing to its
+high-level abstraction of matrices and its rich set of function and GUI libraries.
+MATLAB’s interpreted nature and high-level language make programming intuitive and debugging easy. Optimised BLAS and LAPACK routines for internal
+matrix operations facilitate good performance. MATLAB may be extended by
+further general purpose and application speciﬁc toolboxes (e.g., for optimisation,
+partial diﬀerential equations, control, etc.). We believe the robustness and eﬃciency of many MATLAB toolboxes and user’s applications would beneﬁt from
+an eﬀective automatic diﬀerentiation (AD) [1] package.
+Coleman and Verma’s ADMAT [2] was the ﬁrst signiﬁcant MATLAB AD
+tool and implemented forward and reverse mode diﬀerentiation, with support
+for Jacobian compression, via operator overloading. The later ADiMat tool [3]
+adopted a hybrid source transformation/operator overloading implementation
+of forward mode AD and out-performed ADMAT on several problems. Simultaneously the fmad class of MAD [4], an operator overloaded implementation
+of forward mode AD, was also shown to outperform ADMAT. MAD’s eﬃciency
+is due to appropriate data-structures and use of high-level matrix operations
+within its derivvec class which holds and propagates derivatives. Use of MATLAB’s sparse data-type to hold and propagate sparse derivatives enables runtime sparsity exploitation – greatly enhancing performance for problems where
+sparsity is unknown or diﬃcult to exploit via compression techniques.
+Because there is no compilation before execution of operator-overloaded MATLAB code, performance of overloaded implementations of AD suﬀer due to overheads from the interpreter and the type check and dispatch mechanism of overloading. Note that MATLAB’s recent just-in-time (JIT) compiler is restricted to
+V.N. Alexandrov et al. (Eds.): ICCS 2006, Part IV, LNCS 3994, pp. 558–565, 2006.
+c Springer-Verlag Berlin Heidelberg 2006
+
+Source Transformation for MATLAB Automatic Diﬀerentiation
+
+559
+
+a subset of MATLAB’s intrinsic classes and so is not applicable to the derivvec
+class. Moreover, overloaded operations typically involve substantial logic and
+branching dependent on the shape (scalar, vector, matrix, N-D array) or storage
+class (complex, sparse) used for derivatives. For example, consider the times
+operation of the derivvec class in Fig. 1. Here .derivs refers to the operand’s
+derivative matrix, and .shape to the size of the operand. We see that the test
+on line 9 checks if operands have equal sizes and those of lines 15 and 17 test
+for scalar operands. Similarly, line 10 checks for sparse storage of derivatives.
+Such tests incur further run-time overheads. Other generic MATLAB overheads
+are described by [8] and their relevance to AD is discussed in [14].
+function cdv = times(a,b)
+if isa(b,’derivvec’)
+cdv = b; mults = a;
+else
+cdv = a; mults = b;
+end
+ssd = prod(cdv.shape); sm = size(mults); ssm = prod(sm);
+mults = mults(:);
+if ssd == ssm
+if issparse(cvd.derivs)
+% sparse mode operations omitted for brevity
+else
+cdv.derivs = mults(:,ones(1,cdv.nderivs)).*cdv.derivs;
+end
+elseif ssd == 1
+cdv.derivs = mults*cdv.derivs; cdv.shape = sm;
+elseif ssm == 1
+cdv.derivs = mults.*cdv.derivs;
+end
+
+% line 9
+% line 10
+
+% line 13
+% line 15
+% line 17
+
+Fig. 1. derivvec - times operation from MAD
+
+The MSAD (MATLAB Source transformation AD) tool aims to demonstrate
+the beneﬁts obtained by combining source transformation with MAD’s eﬃcient
+data structures. An initial, hybrid source transformation/operator overloading
+approach, similar to that of ADiMat, showed signiﬁcant speedup compared to
+MAD for smaller test cases but asymptotically reached the performance of MAD
+as the problem size increased [6]. Section 2 of this paper describes our improved
+source transformation approach, which now specialises and inlines all required
+derivative operations. The beneﬁts of this approach are demonstrated by the
+test cases of Section 3. Conclusions are presented in Section 4.
+
+2
+
+Source Transformation Via Specialising and Inlining
+
+MSAD uses ANTLR-based LL(k) scanner, parser and tree parsers [5] to analyse
+and source transform MATLAB programs for AD [6]. Program transformation
+
+560
+
+R.V. Kharche and S.A. Forth
+
+is carried out via four phases - scanning and parsing for Abstract Syntax Tree
+(AST) and symbol table generation, attribute synthesis for activity analysis [7],
+size and class propagation, and ﬁnally derivative code generation. MSAD’s parser
+recognises the complete MATLAB (Release 14) grammar, but diﬀerentiation of
+code involving branches, loops, structures, cells, nested functions and programs
+spanning multiple ﬁles is currently not implemented. Despite these restrictions,
+by replacing loops with array operations, many tests cases can be diﬀerentiated.
+The attribute synthesis phase propagates ﬂags that mark a variable’s activity, class, storage type and derivative storage type. Input programs are prepared by using directives to indicate the active inputs and optionally sparse
+storage for their derivatives. Users may optionally supply size information of
+input variables. For example, the directives in Fig. 2 indicate to MSAD that
+the size parameters (nx, ny) and the vortex parameter (vornum) are scalars.
+The directives also label variable x as an active input and that its derivatives
+be stored as a sparse matrix. MSAD emulates MATLAB’s sparse type propagation and size computation rules for each elementary operation of the source
+code to deduce the storage type and size of all variables. If a variable’s size and
+storage type cannot be determined, MSAD marks these attributes as unknown.
+The sizes of scalar and array constants within a program are automatically
+propagated.
+
+function fgrad = gdgl2(nx, ny, x, vornum)
+%! size(nx) = [1, 1], size(ny) = [1, 1], size(vornum) = [1, 1]
+%! active(x), sparseDer(x)
+Fig. 2. User directives used with gradient function of MINPACK DGL2 problem
+
+The derivative code is generated in a ﬁnal pass during which the operations
+from MAD’s fmad and derivvec classes are specialised and inlined. Specialisation uses a variable’s size, class, storage class and activity information to resolve
+condition checks and simplify size computations in the fmad and derivvec class
+operations. For variables with unknown size and storage attributes, MSAD conservatively inlines operations involving size and storage checks.
+We illustrate the process of specialisation and inlining by considering the FTBROY function of Fig. 3 [11], speciﬁcally the subexpression (3-2*x(n)).*x(n)
+of line 8. Line 3 of the program implies n equals the length of the vector x. Although this length can be determined only at run-time, n can safely be deduced
+to be a scalar. This further implies x(n) is a scalar, as is 3-2*x(n). MSAD automatically carries out this size inference during the attribute synthesis phase.
+During specialisation, because the operands x(n) and 3-2*x(n), held in variables tmp 5 and tmp 4 in the generated code of Fig. 4, are inferred to be scalars,
+the condition on line 9 from the derivvec-times operation in Fig. 1 is satisﬁed.
+Assuming derivatives are stored in their full form, only lines 8 and 13 from Fig. 1
+need to be inserted into the generated code as seen in lines 17 to 20 of Fig. 4.
+Comments in Fig. 4, and the later Fig. 5, were added by hand to indicate to the
+
+Source Transformation for MATLAB Automatic Diﬀerentiation
+
+561
+
+reader which line computes which expression or expression’s derivatives; D[a]
+denotes the derivatives of variable a.
+function f = ftbroy(x)
+%! active(x)
+n = length(x);
+p = 7/3; y = zeros(n,1);
+i = 2:(n-1);
+y(i) = abs((3-2*x(i)) .* x(i) - x(i-1) - x(i+1) + 1).^p;
+y(n) = abs((3-2*x(n)) .* x(n) - x(n-1) + 1).^p;
+y(1) = abs((3-2*x(1)) .* x(1) - x(2) + 1).^p;
+j = 1:(n/2); z = zeros(length(j),1);
+z(j) = abs(x(j) + x(j+n/2)).^p;
+f = 1 + sum(y) + sum(z);
+
+% line 3
+
+% line 6
+% line 7
+% line 8
+
+Fig. 3. FTBROY function
+
+tmp 1 = x(n);
+%
+x(n)
+tmp ind = reshape((1:numel(x)), size(x));
+tmp ind = tmp ind (n);
+%
+D[x(n)]
+d tmp 1 = d x(tmp ind (:),:);
+%
+2*x(n)
+tmp 2 = 2 .* tmp 1 ;
+tmp mults = 2;
+D[2*x(n)]
+d tmp 2 = tmp mults (:,ones(1,res tmp1 )).*d tmp 1 ; %
+%
+3-2*x(n)
+tmp 3 = 3 - tmp 2 ;
+%
+D[3-2*x(n)]
+d tmp 3 = -d tmp 2 ;
+%
+(3-2*x(n))
+tmp 4 = tmp 3 ;
+%
+D[(3-2*x(n))]
+d tmp 4 = d tmp 3 ;
+%
+x(n)
+tmp 5 = x(n);
+tmp ind = reshape((1:numel(x)), size(x));
+tmp ind = tmp ind (n);
+%
+D[x(n)]
+d tmp 5 = d x(tmp ind (:),:);
+%
+(3-2*x(n)).*x(n)
+tmp 6 = tmp 4 .* tmp 5 ;
+%
+line 17
+tmp mults = tmp 5 ;
+d tmp 7 = tmp mults (:,ones(1,res tmp1 )).*d tmp 4 ; % x(n).*D[(3-2*x(n))]
+tmp mults = tmp 4 ;
+d tmp 8 = tmp mults (:,ones(1,res tmp1 )).*d tmp 5 ; % (3-2*x(n)).*D[x(n)]
+% D[(3-2*x(n)).*x(n)]
+d tmp 6 = d tmp 7 + d tmp 8 ;
+
+Fig. 4. MSAD generated derivative code for the subexpression (3-2*x(n)).*x(n) of
+the TBROY function. (Comments added for clarity)
+
+In the subexpression (3-2*x(i)).*x(i) on line 6 in Fig. 3, the size of x(i)
+cannot be determined since i is a vector dependent on the value of n. MSAD
+therefore conservatively inlines lines 7 to 19 of the derivvec-times operation.
+The ﬁrst product of D[3-2*x(i).*x(i)], analogous to lines 17 and 18 from
+Fig. 4, can be seen in Fig. 5.
+
+562
+
+R.V. Kharche and S.A. Forth
+
+%
+D[(3-2*x(i))]
+d tmp 4= d tmp 3
+%
+x(i)
+tmp mults = tmp 5 (:);
+%
+length(x(i))
+tmp ssa = numel(tmp mults );
+% length((3-2*x(i)))
+tmp ssb = numel(tmp 4 );
+%
+equal sizes
+if tmp ssa == tmp ssb
+d tmp 7 = tmp mults (:,ones(1,res tmp1 )) .* d tmp 4 ;
+% (3-2*x(i)) scalar
+elseif tmp ssb == 1
+d tmp 7 = tmp mults * d tmp 4 ;
+%
+x(i) scalar
+elseif tmp ssa == 1
+d tmp 7 = tmp mults .* d tmp 4 ;
+end
+Fig. 5. Additional checks for vector times operation in D[(3-2*x(i))].*x(i). (Comments added for clarity)
+
+3
+
+Test Results
+
+MSAD computed derivatives were tested for correctness and performance on
+several optimisation, BVP and ODE problems [14]. A subset of those tests,
+all performed using MATLAB Release 14 on a Linux machine with a 2.8 GHz
+Pentium-4 processor and 512 MB of RAM, are presented here.
+In Table 1 we compare use of MSAD and MAD’s fmad class to compute
+derivatives by repeating the large-scale test cases from MATLAB’s Optimisation Toolbox [11] performed in [4]. The test cases are: nlsf1a– sparse Jacobian from vector residual; brownf, tbroyf – gradient from objective function;
+browng, tbroyg – Hessian from hand-coded gradient. Both automatic diﬀerentiation tools may use Jacobian/Hessian compression (denoted cmp) [1, Chap. 7] or
+sparse storage (denoted spr) [1, Chap. 6] where appropriate. The only MSAD
+user directives required were those to specify the active input variables and
+use of sparse derivative storage. For comparison, we have included MATLAB’s
+Table 1. Ratio CPU(∇f + f )/CPU(f ) – Jacobian/gradient (including function) to
+function CPU time ratio for given techniques on MATLAB Optimisation Toolbox largescale examples. (m, n) gives the number of dependents and independents, n
+ˆ the maximum number of non-zero entries in a row of the Jacobian and p the number of colours
+for compression
+CPU(∇f + f )/CPU(f ) for
+Hand- sfd- msad fmad msad fmad
+(m, n)
+n
+ˆ p
+coded (nls) (cmp) (cmp) (spr) (spr)
+nlsf1a(Jac)
+4.4
+38.3
+6.9 22.5 19.4 35.1 (100,1000)
+3 3
+4.6 1064.9
+–
+–
+9.3 13.7
+(1,1000) 1000 –
+brownf(grad)
+5.2
+9.5
+4.2
+8.4 15.3 19.6 (1000,1000)
+3 3
+browng(Jac)
+3.8 810.7
+–
+–
+8.8 15.9
+(1,800) 800 –
+tbroyf(grad)
+–
+13.8
+3.3 10.1 15.8 23.5 (800,800)
+6 7
+tbroyg(Jac)
+Problem
+
+Source Transformation for MATLAB Automatic Diﬀerentiation
+
+563
+
+ﬁnite-diﬀerence (sfd(nls)) evaluation of the gradient/Jacobian/Hessian and,
+where available, hand-coding.
+Clearly, MSAD yields signiﬁcant savings compared to fmad in like-for-like
+computation of derivatives for these moderate sized problems (n ≈ 1000). For
+compressed derivative computation we get savings of over 50% using msad(cmp)
+and for sparse storage gains of about 30%. Compressed AD (msad(cmp),
+fmad(cmp)) out-performs compressed ﬁnite-diﬀerencing (sfd(nls)). For the gradient problems (brownf, tbroyf) sparse AD (msad(spr), fmad(spr)) is several
+times faster than sfd(nls) because the functions brownf and tbroy are partially value separable [4] and the sparse derivative computation may utilise intermediate sparsity whereas ﬁnite-diﬀerencing cannot. For the browng problem
+msad(cmp) outperforms hand-coding due to the use of complicated expressions
+in the hand-coding.
+Table 2 lists the total optimisation run-times with derivatives supplied using
+the methods of Table 1. Source transformed derivatives yield substantial savings
+in the total run-time compared to fmad’s overloading approach and run-times
+are comparable to those using hand-coded derivatives.
+The 2-D Ginzburg-Landau unconstrained minimisation problem (GL2) [12, 13]
+uses an nx ×ny mesh with 4 variables per mesh point yielding n = 4nx ny independent variables. The objective function is again partially value separable and the
+gradient code is supplied. The sparse Hessian is computed as the Jacobian Jg of
+the gradient g. Diﬀerentiated functions were generated using MSAD for full and
+sparse storage of derivatives; the user directives for sparse storage can be seen
+in Fig. 2. Table 3 gives the derivative computation ratio CPU(Jg + g)/CPU(g)
+for increasing problem size. Using compression, msad(cmp) is nearly 80% more
+eﬃcient than fmad(cmp) for small n. With increasing problem size, the ﬂoating
+point operation cost of the derivative computation of either method increases
+relative to its overheads and the relative advantage of source transformation
+decreases. However, even for n as large as 65, 536 msad(cmp) is nearly twice as
+fast as overloading. With sparse derivatives (msad(spr), fmad(spr)) we see a
+similar trend but smaller relative improvement due to the common overhead of
+manipulating MATLAB’s sparse data structures.
+The total optimisation time using MATLAB’s fminunc solver with the diﬀerent Hessian calculation techniques of Table 3 is shown in Table 4. The decrease
+Table 2. Averaged CPU time for optimisation of the large-scale examples from the
+MATLAB Optimisation Toolbox with derivatives supplied using given techniques
+Optimisation CPU time (s) for
+Problem Hand- sfd- msad fmad msad fmad
+coded (nls) (cmp) (cmp) (spr) (spr)
+nlsf1a
+0.16 0.36 0.17 0.31 0.20 0.35
+0.56
+–
+–
+–
+0.7 1.25
+brownf
+0.29 0.56 0.23 0.41 0.46 0.64
+browng
+0.72
+–
+–
+– 1.29 2.89
+tbroyf
+– 0.76 0.20 0.48 0.55 0.86
+tbroyg
+
+564
+
+R.V. Kharche and S.A. Forth
+
+Table 3. Ratio CPU(Jg + g)/CPU(g) – Hessian (including gradient) to gradient function CPU time ratio for the MINPACK 2-D Ginzburg-Landau problem using given
+techniques; p gives the number of colours for compression. For all problem sizes, the
+maximum number of non-zero entries in a row of the Jacobian is n
+ˆ = 14.
+Method
+msad(cmp)
+fmad(cmp)
+msad(spr)
+fmad(spr)
+#colours p
+
+CPU(Jg + g)/CPU(g) for problem size n
+64
+256
+1024
+4096 16384 65536
+24.72 23.69 21.84 23.31 37.95 52.16
+115.32 105.89 89.57 72.82 72.11 90.47
+28.11 29.18 35.02 52.63 88.97 177.10
+122.80 113.84 107.73 108.72 126.45 222.81
+20
+23
+25
+24
+25
+25
+
+in overall computation time obtained by using MSAD’s more eﬃcient derivative
+computation is seen – but this is not proportional to the decrease in derivative
+computation time. This is because for larger problem size the number of Newton
+iterations (which require a Hessian recalculation) stays ﬁxed but the number of
+conjugate gradient iterations (which do not) increase [15].
+Table 4. Optimisation CPU time for the MINPACK Ginzburg-Landau (GL2) problem
+using MATLAB’s fminunc with derivatives supplied using given techniques
+
+Method
+msad(cmp)
+fmad(cmp)
+msad(spr)
+fmad(spr)
+sfd
+
+4
+
+Problem size n
+64 256 1024 4096 16384
+CPU time (s) for optimisation
+0.74 0.59 1.34 6.95 29.62
+4.45 2.78 3.79 10.71 38.70
+1.23 1.14 2.87 13.05 61.93
+4.79 3.32 5.41 17.05 73.83
+1.41 1.29 3.60 19.91 216.30
+
+Conclusion
+
+The previous, hybrid source transformation/operator overloading implementation of MSAD [6] gave reasonable speedup over operator overloading for small
+problem sizes. This speedup diminished with increasing problem size. The improved implementation presented here inlines and, where possible specialises,
+the remaining overloaded function calls. This eliminates the type check and dispatch overhead of overloading, reduces logic and branching, and exposes a larger
+section of the augmented code to MATLAB’s JIT acceleration. Section 3’s test
+cases clearly demonstrate these beneﬁts. Figure 4’s code indicates the scope for
+further performance improvements by eliminating redundant temporaries and
+common subexpressions. Preliminary results obtained by implementing such improvements by hand on one test case produced a 42% speedup [14] and highlight
+the need for such compiler-like optimisations within a MATLAB AD-tool.
+
+Source Transformation for MATLAB Automatic Diﬀerentiation
+
+565
+
+References
+1. Griewank, A.: Evaluating Derivatives: Principles and Techniques of Algorithmic
+Diﬀerentiation. Number 19 in Frontiers in Appl. Math. SIAM, Philadelphia, Penn.
+(2000)
+2. Coleman, T.F., Verma, A.: ADMAT: An automatic diﬀerentiation toolbox for
+MATLAB. Technical report, Computer Science Department, Cornell University
+(1998)
+3. Bischof, C.H., B¨
+ucker, H.M., Lang, B., Rasch, A., Vehreschild, A.: Combining
+source transformation and operator overloading techniques to compute derivatives
+for MATLAB programs. In: Proceedings of the Second IEEE International Workshop on Source Code Analysis and Manipulation (SCAM 2002), Los Alamitos, CA,
+USA, IEEE Computer Society (2002) 65–72
+4. Forth, S.A.: An eﬃcient overloaded implementation of forward mode automatic
+diﬀerentiation in MATLAB. Accepted ACM Trans. Math Softw. (2005)
+5. Parr, T., Quong R.: ANTLR: A predicated LL(k ) parser generator. Software,
+Practice and Experience, vol. 25, p. 789, July 1995
+6. Kharche, R.V.: Source transformation for automatic diﬀerentiation in MATLAB.
+Master’s thesis, Cranﬁeld University (Shrivenham Campus), Engineering Systems
+Dept., Shrivenham, Swindon SN6 8LA, UK (2004)
+7. Bischof, C.H., Carle A., Khademi P., Mauer A.: ADIFOR 2.0: Automatic Diﬀerentiation of Fortran 77 Programs. IEEE Computational Science & Engineering 3(3)
+(1996) 18–32
+8. Menon, V., Pingali, K.: A case for source-level transformations in MATLAB. In:
+PLAN ’99: Proceedings of the 2nd conference on Domain-speciﬁc languages, New
+York, NY, USA, ACM Press (1999) 53–65
+9. Rose, L.D., Padua, D.: Techniques for the translation of MATLAB programs into
+Fortran 90. ACM Trans. Program. Lang. Syst. 21(2) (1999) 286–323
+10. Elphick, D., Leuschel, M., Cox, S.: Partial evaluation of MATLAB. In: GPCE ’03:
+Proceedings of the second international conference on Generative programming
+and component engineering, New York, NY, USA, Springer-Verlag New York, Inc.
+(2003) 344–363
+11. The MathWorks Inc. 24 Prime Park Way, Natick, MA 01760-1500: MATLAB
+Optimization Toolbox - User’s guide. (2005)
+12. Averick, B.M., Mor´e, J.J.: User guide for the MINPACK-2 test problem collection. Technical Memorandum ANL/MCS-TM-157, Argonne National Laboratory,
+Argonne, Ill. (1991) Also issued as Preprint 91-101 of the Army High Performance
+Computing Research Center at the University of Minnesota.
+13. Lenton, K.: An eﬃcient, validated implementation of the MINPACK-2 test problem collection in MATLAB. Master’s thesis, Cranﬁeld University (Shrivenham
+Campus), Engineering Systems Dept., Shrivenham, Swindon SN6 8LA, UK (2005)
+14. Kharche, R., Forth, S.: Source transformation for MATLAB automatic diﬀerentiation. Applied Mathematics & Operational Research Report AMOR 2005/1,
+Cranﬁeld University (Shrivenham Campus), Engineering Systems Dept., Shrivenham, Swindon, SN6 8LA, UK (2005)
+15. Bouaricha, A., Mor´e, J.J., Wu, Z.: Newton’s method for large-scale optimization.
+Preprint MCS-P635-0197, Argonne National Laboratory, Argonne, Illinois (1997)
+
+

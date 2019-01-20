@@ -1,0 +1,1411 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 342–351
+
+International Conference on Computational Science, ICCS 2011
+
+Multi-level Optimization of Matrix Multiplication for
+GPU-equipped Systems
+Kazuya Matsumotoa,∗, Naohito Nakasatoa , Tomoya Sakaia , Hideki Yahagib , Stanislav G. Sedukhina
+a The
+
+University of Aizu, Tsuruga, Ikki-machi, Aizu-Wakamatsu City, Fukushima, 965-8580 Japan
+b Kyoto University, Yoshida-Honmachi, Sakyo-ward, Kyoto, 606-8501 Japan
+
+Abstract
+This paper presents results of our study on double-precision general matrix-matrix multiplication (DGEMM) for
+GPU-equipped systems. We applied further optimization to utilize the DGEMM stream kernel previously implemented for a Cypress GPU from AMD. We have examined the eﬀects of diﬀerent memory access patterns to the
+performance of the DGEMM kernel by changing its layout function. The experimental results show that the GEMM
+kernel with X-Morton layout function superiors to the one with any other functions in terms of performance and cache
+hit rate. Moreover, we have implemented a DGEMM routine for large matrices, where all data cannot be allocated
+in a GPU memory. Our DGEMM performance achieves up to 472 GFlop/s and 921 GFlop/s on a system, using one
+GPU and two GPUs, respectively.
+Keywords: matrix multiplication, layout function, GPU
+
+1. Introduction
+General matrix-matrix multiplication (GEMM) is a fundamental linear algebra routine from the Level 3 BLAS.
+GEMM is used in many important numerical algorithms such as other Level 3 BLAS routines and one-sided factorizations [1–3]. The computational intensity and the regular memory access pattern of GEMM are well suited for
+acceleration by many-core processors including GPUs. There are a number of previous works to implement GEMM
+for GPUs [3–10]. After detailed and precise analysis of GPUs from NVIDIA, Volkov and Demmel [3] have presented
+a fast SGEMM (single precision GEMM) kernel which signiﬁcantly accelerates the speed of one-sided factorizations.
+Nath et al. [6] have designed DGEMM (double precision GEMM) kernels for Fermi GPU which run at around 300
+GFlops/s (60% of the peak performance). Nakasato [7] has implemented SGEMM, DGEMM and DDGEMM (doubledouble precision GEMM) kernels for GPUs from AMD. His DGEMM kernel shows the maximum performance of
+472 GFlop/s (87% of the peak performance) on a Cypress GPU. Rohr et al. [8] have also reported a fast DGEMM
+kernel for Cypress GPU with the equivalent performance to the Nakasato’s kernel.
+In this paper, we demonstrate our eﬀort to implement a fast DGEMM routine for GPU-equipped systems. We
+utilize the DGEMM stream kernel which is the result of our previous study [7]. The high eﬃciency of the DGEMM
+∗ Corresponding
+
+author
+Email address: d8121101@u-aizu.ac.jp (Kazuya Matsumoto)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.036
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+343
+
+kernel relies on L1 cache on GPU. A large fraction of previous works regarding GPGPU has been dealing with how
+to use its shared memory eﬀectively as software cache. In contrast, the cache is managed in hardware; thus, we can
+skip using shared memory.
+The DGEMM kernel presented in [7] shows a ﬂuctuating performance, where the performance for certain matrix
+sizes degrades. In this paper, we propose a more stable kernel by considering diﬀerent memory access patterns. We
+can control the memory access pattern by changing its layout function. The used access patterns include several
+recursive layouts which are based on space-ﬁlling curves [11] such as Morton layouts. Matrix-matrix multiplication
+algorithms in recursive array layouts have been studied for increasing data locality in memory on CPUs [12–15]
+and these results showed beneﬁcial eﬀects of using recursive layouts. To our best knowledge, there have been no
+previous works on a matrix-matrix multiplication in diﬀerent layouts on GPU. This paper shows the layout eﬀects to
+the performance and the cache hit rate of the DGEMM kernel on a Cypress GPU.
+In addition to the DGEMM kernel, we have developed a DGEMM routine targeted for matrix problems whose
+data size is larger than GPU memory. In [7], we showed the benchmark result with taking into account data transfer
+time between CPU host memory and GPU memory. The measured maximum performance was around 300 GFlop/s
+although the DGEMM kernel on the Cypress GPU can run with the maximum speed of around 470 GFlop/s. The
+result shows that the data transfer between CPU and GPU is a limiting factor. Here, we resolve this limitation by
+overlapping the communication and the computation.
+The rest of this paper is organized as follows. In Section 2, we brieﬂy describe architecture of Cypress GPU
+with a special attention to memory system. Section 3 gives short notation and terminology related to this paper.
+Section 4 presents our DGEMM stream kernel and shows eﬀects of memory access patterns to the performance of the
+DGEMM kernel. Section 5 discusses our DGEMM implementation for large matrices and shows experimental results
+on GPU-equipped systems. Finally, Section 6 concludes this paper with a mention to future work.
+2. Cypress GPU Architecture
+Cypress is a GPU architecture from AMD with many enhancements for general purpose computing on GPU
+(GPGPU). It contains 1600 processing elements. Each processing element is capable of executing various singleprecision (SP) ﬂoating-point operations. Five processing elements compose a stream core (SC) which is arranged as a
+ﬁve-way very long instruction word (VLIW) unit. Therefore, one Cypress processor has 320 SCs. An SC can execute
+either at most ﬁve SP/integer operations, four simple SP/integer operations with one transcendental operation, or one
+double-precision (DP) operation. Each SC has a register ﬁle with the size of 1024 words and one word is 128-bit
+wide (4 SP variables or 2 DP variables). 16 SCs are grouped into compute unit (CU). At the top level of the GPU,
+there are 20 compute units, a controller unit, other units such as units for graphic processing, memory controllers, and
+DMA engines. The GPU executes user-developed programs (called stream kernels) by mapping the execution onto
+compute units. Each instance of a stream kernel running on a compute unit is called work-item (synonym for thread).
+A work-item can issue a VLIW instruction every clock cycle.
+The Cypress GPU (Radeon HD 5870) runs at 850 MHz. For DP operations, the four processing elements in each
+SC are working together to compute either two DP additions, one DP multiply, or one DP fused multiply-add (FMA).
+With the FMA instruction, the Cypress GPU oﬀers the peak performance of 320 · 2 · 850 · 106 = 544 GFlop/s in DP
+and 1600 · 2 · 850 · 106 = 2.72 TFlop/s in SP.
+An external memory attached to the Cypress is 1 GB GDDR5 memory with 256-bit bus. The memory clock speed
+is 1.2 GHz and the memory data rate is 4.8 Gbit/s which oﬀers the bandwidth of 153.6 GB/s. This external memory
+is accessed by GPU through 4 banks and each bank has level-2 read-cache (L2 cache). The total size of L2 cache is
+512 KB (=4 · 128 KB). 20 compute units and memory controllers are interconnected through crossbar. Each compute
+unit has level-1 read-cache (L1 cache) and local data store (LDS). We summarize parameters of the memory system
+on Cypress GPU in Table 1.
+3. Notation and Terminology
+GEMM is expressed as C ← αop(A)op(B) + βC, where C is m × n matrix, A is m × k matrix, B is k × n matrix, α and
+β are scalars, and op(X) takes X (non-transposed) or X T (transposed) depending on GEMM variants. For simplicity,
+
+344
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+Table 1: Sizes and aggregated bandwidth (BW) of the memory system of Cypress GPU
+
+Memory type
+Register
+LDS
+L1 cache
+L2 cache
+Global memory
+
+Size/CU (KB)
+256
+32
+8
+-
+
+Size/GPU (KB)
+5120
+640
+160
+512
+1 GB
+
+BW (TB/s)
+13
+2.2
+1.1
+0.44
+0.15
+
+Table 2: Role and block size on each optimization level of our DGEMM
+
+Optimization
+Level-1
+Level-2
+Level-3
+
+Role
+Building block for computing in each
+GPU thread
+Optimizing the memory access pattern in
+a group of GPU threads
+Maximizing the GPU utilization
+
+Block size
+m1 = 4, n1 = 4, k1 ≥ 1
+(m2 /m1 ) · (n2 /n1 ) = 64, k2 = k1 , where
+m2 ≡ 0 (mod m1 ) and n2 ≡ 0 (mod n1 )
+m3 , n3 ≥ 128 in multiples of 128, k3 = k1
+
+we will omit the scalars α and β in the following. Let us also assume that given matrices are ordered in row-major
+in memory. We have also implemented the DGEMM in a column-major order, although we use C language in which
+the default order is row-major. Note that our previous DGEMM kernel [7] was written in row-major order. The
+performance in Flop/s is calculated by using the formula: (2mnk [Flops])/(run-time [s]).
+In this work, we use three levels of optimization of DGEMM for GPU-equipped systems. The diﬀerent optimizations are highly related with a blocking of GEMM algorithm because the blocking is indispensable to alleviate the
+diﬀerence between computing power and other factors including memory bandwidth and latency. Let us denote the
+blocking factors by m x , n x , k x in each optimization level x (x ∈ {1, 2, 3}). The role and the block size on each level of
+optimization are summarized in Table 2.
+4. DGEMM Stream Kernel
+In this section, the implementation of our DGEMM stream kernel for a Cypress GPU is explained. More speciﬁcally, this section explains optimization of matrix-matrix multiplication of an m3 × k3 matrix A and a k3 × n3 matrix B
+for the resulting an m3 × n3 matrix C. We utilize the DGEMM kernel which is a result of our earlier work [7]; the maximum performance of this kernel is 472 GFlop/s (87% of the peak) on a Cypress GPU (Radeon HD 5870). The kernel
+was written in an assembly like language called Intermediate Language (IL). Cypress GPU also supports OpenCL;
+however, a DGEMM implementation written in OpenCL demonstrates lower performance than the one written in IL.
+For example, Jang [10] has reported that their auto-tuned DGEMM kernel in OpenCL achieves the performance of
+366 GFlop/s (67% of the peak).
+4.1. Level-1 Optimization
+In the lowest level-1 optimization, we follow the approach to optimize the DGEMM kernel studied in [7]. Here,
+we review an optimization only related to the blocking. Let us divide an m3 × n3 matrix C into m1 × n1 matrices
+with m3 /m1 row partitions and n3 /n1 column partitions. The block matrix sizes m1 , n1 , k1 determine the workload in
+a thread on GPU. In the DGEMM kernel, a rank-1 update algorithm (i.e, outer product based) is adopted and each
+thread works as follows: (1) initializing registers with zeros for accumulation of partial results; (2) computing the
+outer product of a m1 × 1 row-slice of A and a 1 × n1 column-slice of B to accumulate the product to the m1 × n1 matrix
+of C and iterating this process k1 times; and, ﬁnally, (3) adding the results in registers to the corresponding m1 × n1
+input matrix of C.
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+345
+
+To update m1 · n1 words on the registers in each iteration of step (2), m1 + n1 data (two slices from each A and B)
+have to be read. In this case, the memory words per ﬂoating point operation is W = (m1 + n1 )/(m1 · n1 ) words/ﬂop.
+The required memory bandwidth can be computed as BWGEMM = W · F · S , where F is the peak performance in
+ﬂoating-point operations per second and S is the word size in bytes; for DGEMM on Cypress GPU, S = 8 and F
+= 544 GFlop/s. When we choose the block size of 4 × 4 as m1 × n1 , the required bandwidth would be BWDGEMM
+= 1.088 TB/s. This BWDGEMM bandwidth is exactly equal to the aggregate bandwidth of texture (L1) cache units in
+Cypress GPU and, therefore, the selected block size 4 × 4 is considered to be optimal. Note that CALDGEMM [8],
+which has independently been developed for Cypress GPU, also uses 4 × 4 block as optimal. Note also that the size
+k1 should be large enough to compensate the pre-/post-processing and loop overheads. Other notable choices of the
+implementation are that the kernel uses pixel shader, in which GPU system assigns a two-dimensional thread ID to
+each thread, and that the DGEMM kernel reads blocks of data from global memory through texture cache, not by
+using a shared memory (LDS).
+4.2. Level-2 Optimization
+In this section, we introduce level-2 blocking that represents an m3 × n3 matrix as a group of (m2 /m1 ) × (n2 /n1 )
+grids. Let an (m2 /m1 ) × (n2 /n1 ) grid be called level-2 grid. GPUs from AMD preserve the high granularity of data
+parallelism by grouping the certain number of work-items (threads), which is called wavefront. The number of threads
+in each wavefront is speciﬁc to the GPU architecture. In Cypress GPU, the number is 64. This leads us to select the
+number of m1 × n1 matrices in a level-2 m2 × n2 block matrix as 64, i.e., (m2 /m1 ) · (n2 /n1 ) = 64 1 . To make an
+explanation simple, we assume that level-2 grid is a square 8 × 8 grid (m2 = n2 = 8 · 4 = 32) in the following while
+the block does not have to be a square matrix in real implementation.
+We identify each level-1 block in a level-2 8 × 8 grid by coordinates (I, J), where 0 ≤ I, J ≤ 7. As it was described
+above, each workload of level-1 block is assigned to a thread. We assign an ID to each thread t from 0 to 63 and deﬁne
+an array layout function L(t) = (I, J) to create a one-to-one mapping between t and (I, J). We can choose an array
+layout function for the 64 threads. Following presents our eﬀort to ﬁnd an optimal layout to improve a performance
+of the DGEMM kernel.
+4.2.1. Diﬀerent Array Layouts
+We have tested several array layout functions which are based on the space-ﬁlling curves [11]. For an example of array layout functions, canonical row-major and column-major array layout functions are deﬁned as LR (t) =
+(t/8, t mod 8) and LC (t) = (t mod 8, t/8), respectively. For comparison, we have also tested a random layout function.
+It is expected that a memory access pattern generated randomly will be the most severe case for the GPU memory
+system.
+Below, recursive array layout functions which we used in this work are described. Note that, for simplicity, we
+do not explain the precise way how to construct these functions (see [11, 13] for details). In Fig. 1, the array layout
+functions are shown geometrically. The curve line that connects IDs in each layout shows the corresponding spaceﬁlling curve.
+Fig. 1(a), (b) and (c) show variants of array layouts based on Morton curves. With these array layouts, 2×2 threads
+are connected with a curve line that is close to its letter shape of U, X or Z. This procedure is repeated recursively
+three levels to connect all 64 threads with a given space-ﬁlling curve. We use the notation tk to represent k-th bit in a
+given integer ID t. We can write the array layout function for Z-Morton layout as
+LZ (t) = (I, J), where I = t5 t3 t1 and J = t4 t2 t0 .
+
+(1)
+
+For X-Morton and U-Morton layouts, we need XOR (exclusive “or”) operation. We can write the array layout function
+for X-Morton layout as
+LX (t) = (I, J), where I = t5 t3 t1 and J = (t5 XOR t4 )(t3 XOR t2 )(t1 XOR t0 ).
+1 Note
+
+we can choose the smaller size than 64 such as 16 or 4; however, we have found experimentally that it is less optimal.
+
+(2)
+
+346
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+0
+
+3
+
+12
+
+15
+
+48
+
+51
+
+60
+
+63
+
+0
+
+3
+
+12
+
+15
+
+48
+
+51
+
+60
+
+63
+
+0
+
+1
+
+4
+
+5
+
+16
+
+17
+
+20
+
+21
+
+0
+
+1
+
+14
+
+15
+
+16
+
+19
+
+20
+
+21
+
+1
+
+2
+
+13
+
+14
+
+49
+
+50
+
+61
+
+62
+
+2
+
+1
+
+14
+
+13
+
+50
+
+49
+
+62
+
+61
+
+2
+
+3
+
+6
+
+7
+
+18
+
+19
+
+22
+
+23
+
+3
+
+2
+
+13
+
+12
+
+17
+
+18
+
+23
+
+22
+
+4
+
+7
+
+8
+
+11
+
+52
+
+55
+
+56
+
+59
+
+8
+
+11
+
+4
+
+7
+
+56
+
+59
+
+52
+
+55
+
+8
+
+9
+
+12
+
+13
+
+24
+
+25
+
+28
+
+29
+
+4
+
+7
+
+8
+
+11
+
+30
+
+29
+
+24
+
+25
+
+5
+
+6
+
+9
+
+10
+
+53
+
+54
+
+57
+
+58
+
+10
+
+9
+
+6
+
+5
+
+58
+
+57
+
+54
+
+53
+
+10
+
+11
+
+14
+
+15
+
+26
+
+27
+
+30
+
+31
+
+5
+
+6
+
+9
+
+10
+
+31
+
+28
+
+27
+
+26
+
+16
+
+19
+
+28
+
+31
+
+32
+
+35
+
+44
+
+47
+
+32
+
+35
+
+44
+
+47
+
+16
+
+19
+
+28
+
+31
+
+32
+
+33
+
+36
+
+37
+
+48
+
+49
+
+52
+
+53
+
+58
+
+57
+
+54
+
+53
+
+32
+
+35
+
+36
+
+37
+
+17
+
+18
+
+29
+
+30
+
+33
+
+34
+
+45
+
+46
+
+34
+
+33
+
+46
+
+45
+
+18
+
+17
+
+30
+
+29
+
+34
+
+35
+
+38
+
+39
+
+50
+
+51
+
+54
+
+55
+
+59
+
+56
+
+55
+
+52
+
+33
+
+34
+
+39
+
+38
+
+20
+
+23
+
+24
+
+27
+
+36
+
+39
+
+40
+
+43
+
+40
+
+43
+
+36
+
+39
+
+24
+
+27
+
+20
+
+23
+
+40
+
+41
+
+44
+
+45
+
+56
+
+57
+
+60
+
+61
+
+60
+
+61
+
+50
+
+51
+
+46
+
+45
+
+40
+
+41
+
+21
+
+22
+
+25
+
+26
+
+37
+
+38
+
+41
+
+42
+
+42
+
+41
+
+38
+
+37
+
+26
+
+25
+
+22
+
+21
+
+42
+
+43
+
+46
+
+47
+
+58
+
+59
+
+62
+
+63
+
+63
+
+62
+
+49
+
+48
+
+47
+
+44
+
+43
+
+42
+
+(a) U-Morton layout
+
+(b) X-Morton layout
+
+(c) Z-Morton layout
+
+(d) Hilbert layout
+
+Figure 1: Diﬀerent recursive array layout functions; the number in each layout indicates the thread ID
+
+Similarly, we can write the array layout function for U-Morton layout as
+LU (t) = (I, J), where I = (t5 XOR t4 )(t3 XOR t2 )(t1 XOR t0 ) and J = t4 t2 t0 .
+
+(3)
+
+Additionally, Fig. 1(d) shows the array layout based on Hilbert curve. The procedure to connect blocks is similar
+to the Morton cases but more complicated. It is not simple to deﬁne the array layout function for Hilbert layout (please
+see [11, 13] for details).
+4.3. Experimental Results
+Here, we present the experimental results on a Cypress GPU (Radeon HD 5870). In the present work, we have
+evaluated the DGEMM kernel with various array layout functions. For applying various array layout functions, we
+have added an instruction reading the corresponding thread ID from an array layout function to the DGEMM kernel
+[7]. Tested DGEMM is only for square matrices (m3 = n3 = k3 ) and tested matrix sizes are in multiples of 128 2 . In
+the run-time, we do not include the time for constructing the layout function as well as the time for transferring data
+between the host and the GPU.
+Fig. 2(a) and (b) show the performance of C ← AT B + C and C ← AB + C with diﬀerent layout functions. Note
+that Cypress GPU normally assign the 64 threads in Z-Morton layout [16]. In Fig. 2(a) and (b), we compare the
+performance for four layouts based on space-ﬁlling curves and, in addition, for random array layout. Clearly, the
+performance for random layout is the worst in all the cases as expected.
+The performance in [7], which is identical to the one with Z-Moron layout function, is served as a baseline for
+experiments in the present work. Depending on transpose options, the maximum DGEMM performance (Pmax) is
+diﬀerent. We can see that the performance of DGEMM kernel C ← AT B + C is the highest among the four variants
+with the Pmax = 472 GFlop/s. The Pmax for the DGEMM kernels C ← AB + C and C ← AT BT + C is 358 GFlop/s
+and the performance of these two kernels is almost identical. The Pmax for the DGEMM kernel C ← ABT + C is 269
+GFlop/s and is the lowest. These results indicate that memory access patterns signiﬁcantly aﬀect the performance of
+GEMM kernels.
+Among all results of DGEMM kernel with diﬀerent layout functions in Fig. 2, the DGEMM kernel with X-Morton
+layout shows the best performance. For C ← AT B + C, the performance in X-Morton almost equals or outperforms
+the performance with Z-Morton layout. We can see that the DGEMM kernel with Z-Morton layout shows a wave-like
+pattern. The performance decline happens in multiples of 512 and this tendency seems related to the memory bank
+conﬂicts. Namely, the Pmax is 472 GFlop/s at n3 = 1664, while at n3 = 4096 the performance is 404 GFlop/s, that
+is 14% lower than the Pmax. In contrast, the kernel with X-Morton layout also shows the Pmax = 472 GFlop/s at n3
+= 1664 while at n3 = 4096 the performance is 437 GFlop/s, that is only 7% lower than the Pmax. The kernel with
+X-Morton layout shows more stable performance behavior.
+We also measured the cache hit rate of DGEMM kernels with diﬀerent layout functions. Fig. 2(c) and (d) show
+the cache hit rate of C ← AT B + C and C ← AB + C. We have found that the superior performance with X-Morton
+2 We
+
+can use only multiples of 128 because global buﬀer in Cypress GPU only accepts multiples of 64 and our operation is in double-precision.
+
+347
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(b) Performance of C ← AB + C
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(a) Performance of C ← AT B + C
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+(c) Cache hit rate of C ← AT B + C
+
+(d) Cache hit rate of C ← AB + C
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+Figure 2: Performance and cache hit rate of stream kernel of square matrix-matrix multiply-add with various array layout functions on a Cypress
+GPU
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(a) Performance of C ← AT B and C ← AB
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+!
+
+!
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+(b) Cache hit rate of C ← AT B and C ← AB
+
+Figure 3: Performance and cache hit rate of stream kernel of square matrix-matrix multiplication with X-Morton layout and Z-Morton layout on a
+Cypress GPU; TN means C ← AT B and NN means C ← AB.
+
+348
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+layout is related to the higher cache hit rate. The hit rate for X-Morton layout tends to decline less than the one for
+Z-Morton; for example, at n3 = 4096, the cache hit rate of C ← AT B + C with X-Morton is 28.8% whereas the one in
+Z-Morton is 20.0%. From this tendency, we conclude that the access pattern of the DGEMM kernel with X-Morton
+is optimal.
+We additionally measured the performance and the cache hit rate of C ← AT B and C ← AB, i.e., for only matrix
+multiplication without the addition to C. The results are shown in Fig. 3. The DGEMM performance with X-Morton
+layout outperforms the one with Z-Morton only in cases of matrix sizes n3 ≥ 3584 for C ← AT B. Here, the matrix
+multiplication does not require memory accesses to read block data for the addition to C from GPU global memory;
+therefore, there is no decline of the cache hit rate and the beneﬁt of using X-Morton layout is considered to be less.
+Note that Pmax = 480 GFlop/s for C ← AT B is slightly higher than Pmax = 472 GFlop/s for C ← AT B + C.
+5. DGEMM for Large Matrices
+This section presents our eﬀort to a fast DGEMM for matrices whose data size is larger than GPU memory. Let
+us consider that the matrix multiplication C ← AB + C, where C is m × n matrix, A is m × k matrix, and B is k × n
+matrix, are all partitioned into grids of m3 × n3 , m3 × k3 , and k3 × n3 matrices, respectively. The notation XI,J is used
+to designate the coordinates of each optimization level-3 block in a matrix X.
+5.1. Level-3 Optimization
+We address the problem to determine an adequate level-3 block sizes for maximizing GPU’s computational power
+without signiﬁcant performance loss. The DGEMM kernel C ← AT B is used for computing on a GPU because, as
+described in the previous section, this kernel is the fastest among all the DGEMM kernels and does not require extra
+operations related to the addition to C. To use the kernel in several DGEMM variants, we need to copy matrix data
+into transposed form before computing, e.g., for computing C ← AB+C, matrix A has to be transposed before running
+the kernel.
+Hiding data communication time between CPU (host) and GPU is crucial to maintain high performance. The
+communication is conducted through PCI-Express (PCIe) bus. Although we normally require two processes for the
+communication (between host and PCIe and between PCIe and GPU), we can skip the process between host and PCIe
+with the use of pinned memory (memory space in PCIe remapped from host memory). Therefore, in our DGEMM
+implementation, we have selected the communication way using pinned memory. Nonetheless, block data have to be
+copied by CPU explicitly to a buﬀer in the pinned memory before putting the data to GPU and vice verse, since a
+capacity of pinned memory is limited and, therefore, we cannot allocate all the data of matrices in the pinned memory.
+After considering these things and doing a lot of experiments, we have implemented our fast DGEMM routine
+for GPU-equipped systems. The block algorithm for the DGEMM can be written as shown in Fig. 4, where the right
+column in each operation (T operation ) shows the corresponding amount of time. fload represents the time for loading a
+single element from matrix A or B to a buﬀer in pinned memory; fstore represents the total time for adding a value of
+C I,J to a corresponding value of C I,J and for storing the added value to matrix C; fput represents the time for putting
+a single element from a buﬀer in pinned memory to GPU; fget represents the time for getting a single element from
+GPU to a buﬀer in pinned memory; fkernel represents the time for multiplying or adding two elements on GPU. The
+cost involving fload and fstore depends on the speed of memory access by CPU. The cost involving fput and fget highly
+depends on the bandwidth between PCIe and GPU. The cost involving fkernel depends on the speed of DGEMM kernel
+on a GPU.
+In the algorithm in Fig. 4, the innermost loop (lines 6-10) is related to n. This indicates that in this innermost loop,
+the algorithm needs loading a k3 × n3 matrix from the host memory to a buﬀer in pinned memory (line 6), putting the
+k3 × n3 matrix in the pinned memory to a GPU (line 7), multiplying an m3 × k3 matrix by the k3 × n3 matrix for an
+m3 × n3 matrix on the GPU (line 8), getting the m3 × k3 matrix from the GPU to a buﬀer in pinned memory (line 9),
+and storing the m3 × n3 matrix to the host memory after the element-wise addition of m3 × n3 matrices (line 10).
+The important fact here is that the DGEMM kernel on a GPU and the other operations in the algorithm can be
+overlapped. The cost of other operations can be hidden if we choose a suﬃciently large block size. To extract the
+high computational power from GPU, we need to select the level-3 block size of m3 , n3 , k3 as to, at least, satisfy the
+inequality:
+(4)
+T kernel ≥ max(T loadB + T storeC , T putB + T getC ).
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+1:
+2:
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:
+11:
+12:
+13:
+
+for P = 0 to k/k3 − 1 do
+for I = 0 to m/m3 − 1 do
+Load AI,P to buﬀer;
+Put AI,P to GPU;
+for all 0 ≤ J ≤ n/n3 − 1 do
+Load BP,J to buﬀer;
+Put BP,J to GPU;
+C I,J ← ATI,P BP,J on GPU;
+Get C I,J from GPU;
+Store C I,J after addition (C I,J ← C I,J + C I,J );
+end for
+end for
+end for
+
+T loadA
+T putA
+
+= m3 k3 fload
+= m3 k3 fput
+
+T loadB
+T putB
+T kernel
+T getC
+T storeC
+
+= k3 n3 fload
+= k3 n3 fput
+= 2m3 n3 k3 fkernel
+= m3 n3 fget
+= m3 n3 fstore
+
+349
+
+Figure 4: Block DGEMM algorithm for GPU-equipped system
+
+Note that we cannot use an extremely large block size because there is an upper limit of the capacity of memory space
+S pinned , i.e., we have to also satisfy an inequality 2 · 8(m3 n3 + m3 k3 + k3 n3 ) ≤ S pinned , where 2 means two buﬀers per
+matrix are required to allocate for the overlapping and 8 is the word size in bytes for double-precision.
+5.2. Experimental Results
+We have measured the performance of our DGEMM on two system conﬁgurations. Both of them contain Cypress
+GPUs (Radeon HD 5870s). The CPU in both systems is Bloomﬁeld, which is a code name of Intel Nehalem microarchitecture; the one conﬁguration, called as System A, contains Core i7 920 (2.67 GHz), and the other, called as
+System B, contains Core i7 960 (3.2 GHz). We use gcc 4.4.1 compiler with -O2 option for program compilation
+and ATI Stream SDK v2.2 for GPU programming.
+GPU and CPU (host) are connected through 16 lanes of PCI-Express 2.0 buses whose theoretical peak bandwidth
+is 8 GB/s. The actual bandwidth, however, is chipset dependent. On System A with Catalyst 10.12 as the display
+driver, the measured bandwidth from PCIe to GPU is around 5.0 GB/s and from GPU to PCIe is around 6.4 GB/s
+when data of 2048 × 2048 matrix in double precision are transferred.
+In the DGEMM, CPU loads each block data to a buﬀer in pinned memory, and adds and stores an output block
+data in pinned memory to the matrix C. The cost of these operations depends on the CPU’s computational power. For
+the loading operation, we need two kinds of implementations: simply copying a serial data to a buﬀer or copying this
+data to a buﬀer in the transposed form. Both implementations of ours are optimized with blocking and parallelization
+techniques. Let us also use the same unit in GB/s for copying as the above bandwidth for comparison. On System A,
+the performance of the serial copying is around 6.8 GB/s while the copying with transposition is around 4.5 GB/s, and
+that of the addition and the storing is around 5.2 GB/s. On System B, the performance of the serial copying is around
+8.2 GB/s, that of the copying with transposition is around 5.0 GB/s, and that of the addition and the storing is around
+5.4 GB/s.
+Note that the above performance of data transferring and copying are independently measured. When we run both
+operations at the same time, we cannot get such high performance because both of them requires accessing the pinned
+memory and interfere with each other.
+Fig. 5 shows the maximum performance (Pmax) of square matrix multiply-add (C ← AB + C) for the diﬀerent
+block sizes (m3 , n3 , k3 ), where we only use square blocks (m3 = n3 = k3 ) and the size is in multiples of 128. Note
+that the used block size is up to 2304 because we are not able to allocate memory for the larger blocks in pinned
+memory. As shown in Fig. 5, we can extract the suﬃcient GPU’s computational power when the block size is equal
+or larger than 1408. Compared with the performance of both systems, we cannot see big diﬀerence; this is due to the
+fact that the communication between PCIe and GPU takes a little more time than the copying in the innermost loop
+(T putB + T getC > T loadB + T storeC ) and the small diﬀerence comes from the diﬀerent performance of the copying with
+transposition of the matrix A. The Pmax of overall results in both systems is 472 GFlop/s, which is over 98% of the
+Pmax (480 GFlop/s) of the DGEMM kernel C ← AT B.
+
+350
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 5: Maximum performance of square matrix multiply-add
+(C ← AB + C) for diﬀerent block sizes on a single Radeon HD
+5870 GPU plus diﬀerent CPUs
+
+	
+
+
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 6: Performance of square matrix multiply-add (C ← AB +
+C) with a padding on System A (a single Radeon HD 5870 GPU
+plus a Core i7 920 CPU)
+
+
+
+
+
+
+	
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+Figure 7: Maximum performance of square matrix multiply-add
+(C ← AB + C) for diﬀerent block sizes on two Radeon HD 5870
+GPUs plus diﬀerent CPUs
+
+
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 8: Performance of square matrix multiply-add (C ← AB +
+C) on System B (two Radeon HD 5870 GPUs plus a Core i7 960
+CPU); the block size is 2176.
+
+When a matrix size is not in multiples of a block size, we can use a zero padding so that the computation can
+be done on GPU. In this case, the performance is sensitive to the amount of padding since it increases the redundant
+computations on the padded portions. Thus, we have implemented the DGEMM so as to choose the appropriate block
+size for every matrix size in computation time. Fig. 6 shows the performance of C ← AB + C with the padding
+on System A. When the matrix size is larger than 8000, we can expect the performance of 400 GFlop/s or higher
+although the real performance is still not stabilized. Note that it is possible to utilize CPU to compute the remaining
+parts instead of the padding. Actually, such CPU’s utilization technique was adopted in CALDGEMM [8]; their
+approach works well in their system which contains 24-core CPU (two AMD Opteron 6172 processors). However,
+such technique requires a suﬃciently high-power CPU and additional optimizations which highly depend on a system
+conﬁguration in contrast to our approach with the padding.
+We have additionally implemented a DGEMM for systems containing two GPUs. The algorithm used is similar to
+the block algorithm in Fig. 4, but we parallelize the loop indexed by I: if I is odd, the row blocks of C I,J are computed
+
+Kazuya Matsumoto et al. / Procedia Computer Science 4 (2011) 342–351
+
+351
+
+by a GPU; if I is even, the row blocks are computed by the other GPU; and if m/m3 is not odd, the last row blocks are
+computed by both GPUs.
+For utilizing two GPUs fully, the main obstacle is its CPU’s computational power in the system because of the following reason. Using two GPUs, the total GPU’s computational power doubles. Also, the communication bandwidth
+between PCIe and GPU doubles because we can use two discrete buses of 16 PCIe lanes. The CPU’s computational
+power, however, cannot double though the workload required for copying doubles. This means that we have to choose
+the block sizes (m3 , n3 , k3 ) to satisfy the following inequality:
+T kernel ≥ max(2(T loadB + T storeC ), T putB + T getC ).
+
+(5)
+
+Using two GPUs, the maximum performance for various block sizes is shown in Fig. 7. Core i7 920 does not have
+enough power to support the full-power of two GPUs even if we use the biggest block size of 2304. On the other hand,
+using Core i7 960, our DGEMM performance achieves 921 GFlop/s as the Pmax, which is about 1.95 times as high
+as the Pmax of a single GPU (we set 2176 as the block size). Fig. 8 shows the DGEMM performance on System B.
+6. Conclusion
+In this paper, we have described our eﬀort to implement a fast DGEMM for systems containing Cypress GPUs.
+We have shown eﬀects of memory access patterns to the performance and the cache hit rate of the DGEMM stream
+kernel with diﬀerent layout functions. Among all the tested layouts, the DGEMM kernel with X-Morton layout shows
+the superior performance. We have also presented implementation details of our DGEMM routine for matrices, where
+the data size is larger than GPU memory. We have measured the DGEMM performance for diﬀerent block sizes in
+the block algorithm on GPU-equipped systems. The results of performance evaluation indicate that we can obtain the
+GPU’s high computational power only if we use a suﬃciently large block size and a suﬃciently powerful host CPU
+even in the case of using two GPUs.
+This paper only shows results of implementation of a square matrix-matrix multiplication. Actually, our current implementation also supports a matrix multiplication for non-square matrices; however, this implementation has
+not thoroughly optimized yet. Future work includes further optimizations for multiplying rectangular matrices and
+utilization of the DGEMM routine to other linear algebra problems.
+References
+[1] B. Kågstr¨om, P. Ling, C. van Loan, GEMM-based level 3 BLAS: high-performance model implementations and performance evaluation
+benchmark, ACM Transactions on Mathematical Software 24 (3) (1998) 268–302.
+[2] S. Barrachina, M. Castillo, F. D. Igual, R. Mayo, E. S. Quintana-ort, Solving Dense Linear Systems on Graphics Processors, in: Proc. 14th
+International Euro-Par Conference (Euro-Par 2008), Vol. 5168 of LNCS, 2008, pp. 739–748.
+[3] V. Volkov, J. Demmel, Benchmarking GPUs to Tune Dense Linear Algebra, in: SC ’08: Proc. 2008 ACM/IEEE conference on Supercomputing, 2008, pp. 1–11.
+[4] K. Fatahalian, J. Sugerman, P. Hanrahan, Understanding the eﬃciency of GPU algorithms for matrix-matrix multiplication, in: HWWS ’04:
+Proc. the ACM SIGGRAPH/EUROGRAPHICS conference on Graphics Hardware, 2004, pp. 133–137.
+[5] Y. Li, J. Dongarra, S. Tomov, A Note on Auto-tuning GEMM for GPUs, in: Proc. ICCS 2009, Vol. 5544 of LNCS, 2009, pp. 884–892.
+[6] R. Nath, S. Tomov, J. Dongarra, An Improved MAGMA GEMM for Fermi Graphics Processing Units, International Journal of High Performance Computing Applications 24 (4) (2010) 511–515.
+[7] N. Nakasato, A Fast GEMM Implementation on a Cypress GPU, in: 1st International Workshop on Performance Modeling, Benchmarking
+and Simulation of High Performance Computing Systems (PMBS 10), 2010, pp. 1–9.
+[8] D. Rohr, M. Kretz, M. Bach, CALDGEMM and HPL, Tech. rep., Frankfurt Institute for Advanced Studies, University of Frankfurt (2010).
+[9] P. Du, R. Weber, P. Luszczek, S. Tomov, G. Peterson, J. Dongarra, From CUDA to OpenCL : Towards a Performance-portable Solution for
+Multi-platform, Tech. Rep. UT-CS-10-656, University of Tennessee Computer Science (2010).
+[10] C. Jang, GATLAS GPU Automatically Tuned Linear Algebra Software, http://golem5.org/gatlas/ [Online] (October 2010).
+[11] H. Sagan, Space-Filling Curves, Springer-Verlag, 1994.
+[12] J. D. Frens, D. S. Wise, Auto-blocking matrix-multiplication or tracking BLAS3 performance from source code, in: Proc. the sixth ACM
+SIGPLAN Symposium on Principles and Practice of Parallel Programming, Vol. 32, ACM, 1997, pp. 206–216.
+[13] S. Chatterjee, A. R. Lebeck, P. K. Patnala, M. Thottethodi, Recursive Array Layouts and Fast Matrix Multiplication, IEEE Transactions on
+Parallel and Distributed Systems 13 (11) (2002) 1105–1123.
+[14] V. Valsalam, A. Skjellum, A framework for high-performance matrix multiplication based on hierarchical abstractions, algorithms and optimized low-level kernels, Concurrency and Computation: Practice and Experience 14 (10) (2002) 805–839.
+[15] B. Kågstr¨om, E. Elmroth, F. Gustavson, I. Jonsson, Recursive Blocked Algorithms and Hybrid Data Structures for Dense Matrix Library
+Software, SIAM Review 46 (1) (2004) 3–45.
+[16] AMD Inc., ATI Stream Computing OpenCL Programming Guide, rev1.05 (August 2010).
+
+

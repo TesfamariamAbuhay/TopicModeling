@@ -1,0 +1,497 @@
+Optimization of Collective Reduction Operations
+Rolf Rabenseifner
+High-Performance Computing-Center (HLRS), University of Stuttgart
+Allmandring 30, D-70550 Stuttgart, Germany
+rabenseifner@hlrs.de,
+www.hlrs.de/people/rabenseifner/
+
+Abstract. A 5-year-proﬁling in production mode at the University
+of Stuttgart has shown that more than 40% of the execution time of
+Message Passing Interface (MPI) routines is spent in the collective communication routines MPI Allreduce and MPI Reduce. Although MPI
+implementations are now available for about 10 years and all vendors
+are committed to this Message Passing Interface standard, the vendors’
+and publicly available reduction algorithms could be accelerated with
+new algorithms by a factor between 3 (IBM, sum) and 100 (Cray
+T3E, maxloc) for long vectors. This paper presents ﬁve algorithms
+optimized for diﬀerent choices of vector size and number of processes.
+The focus is on bandwidth dominated protocols for power-of-two and
+non-power-of-two number of processes, optimizing the load balance in
+communication and computation.
+Keywords: Message Passing, MPI, Collective Operations, Reduction.
+
+1
+
+Introduction and Related Work
+
+MPI Reduce combines the elements provided in the input vector (buﬀer) of each
+process using an operation (e.g. sum, maximum), and returns the combined
+values in the output buﬀer of a chosen process named root. MPI Allreduce is
+the same as MPI Reduce, except that the result appears in the receive buﬀer
+of all processes. MPI Allreduce is one of the most important MPI routines and
+most vendors are using algorithms that can be improved by a factor of more than
+2 for long vectors. Most current implementations are optimized only for short
+vectors. A 5-year-proﬁling [11] of most MPI based applications (in production
+mode) of all users of the Cray T3E 900 at our university has shown, that 8.54 %
+of the execution time is spent in MPI routines. 37.0 % of the MPI time is spent in
+MPI Allreduce and 3.7 % in MPI Reduce. The 5-year-proﬁling has also shown,
+that 25 % of all execution time was spent with a non-power-of-two number of
+processes. Therefore, a second focus is the optimization for non-power-of-two
+numbers of processes.
+Early work on collective communication implements the reduction operation
+as an inverse broadcast and do not try to optimize the protocols based on diﬀerent buﬀer sizes [1]. Other work already handle allreduce as a combination of basic
+M. Bubak et al. (Eds.): ICCS 2004, LNCS 3036, pp. 1–9, 2004.
+c Springer-Verlag Berlin Heidelberg 2004
+
+2
+
+R. Rabenseifner
+
+routines, e.g., [2] already proposed the combine-to-all (allreduce) as a combination of distributed combine (reduce scatter) and collect (allgather). Collective
+algorithms for wide-area cluster are developed in [5,7,8], further protocol tuning
+can be found in [3,4,9,12], and automatic tuning in [13]. The main focus of the
+work presented in this paper is to optimize the algorithms for diﬀerent numbers
+of processes (non-power-of-two and power-of-two) and for diﬀerent buﬀer sizes
+by using special reduce scatter protocols without the performance penalties on
+normal rank-ordered scattering. The allgather protocol is chosen according the
+the characteristics of the reduce scatter part to achieve an optimal bandwidth
+for any number of processes and buﬀer size.
+
+2
+2.1
+
+Allreduce and Reduce Algorithms
+Cost Model
+
+To compare the algorithms, theoretical cost estimation and benchmark results
+are used. The cost estimation is based on the same ﬂat model used by R. Thakur
+and B. Gropp in [12]. Each process has an input vector with n bytes, p is the
+number of MPI processes, γ the computation cost per vector byte executing
+one operation with two operands locally on any process. The total reduction
+eﬀort is (p − 1)nγ. The total computation time with optimal load balance on
+p processes is therefore p−1
+p nγ, i.e., less than nγ, which is independent of the
+number of processes! The communication time is modeled as α + nβ, where α is
+the latency (or startup time) per message, and β is the transfer time per byte,
+and n the message size in bytes. It is assumed further that all processes can send
+and receive one message at the same time with this cost model. In reality, most
+networks are faster, if the processes communicate in parallel, but pairwise only
+in one direction (uni-directional between two processes), e.g., in the classical
+binary tree algorithms. Therefore αuni + nβuni is modeling the uni-directional
+communication, and α + nβ is used with the bi-directional communication. The
+ratios are abbreviated with fα = αuni /α and fβ = βuni /β. These factors are
+normally in the range 0.5 (simplex network) to 1.0 (full duplex network).
+2.2
+
+Principles
+
+A classical implementation of MPI Allreduce is the combination of MPI Reduce
+(to a root process) followed by MPI Bcast sending the result from root to all
+processes. This implies a bottle-neck on the root process. Also classical is the
+binary tree implementation of MPI Reduce, which is a good algorithm for short
+vectors, but that causes a heavy load imbalance because in each step the number of active processes is halved. The optimized algorithms are based on a few
+principles:
+Recursive vector halving: For long-vector reduction, the vector can be split
+into two parts and one half is reduced by the process itself and the other half is
+sent to a neighbor process for reduction. In the next step, again the buﬀers are
+halved, and so on.
+
+Optimization of Collective Reduction Operations
+
+3
+
+Recursive vector doubling: To return the total result in the result vector,
+the split result vectors must be combined recursively. MPI Allreduce can be
+implemented as a reduce-scatter (using recursive vector halving) followed by an
+allgather (using recursive vector doubling).
+Recursive distance doubling: In step 1, each process transfers data at distance 1 (process P0 with P1, P2–P3, P4–P5, ...); in step 2, the distance is
+doubled, i.e., P0–P2 and P1–P3, P4–P6 and P5–P7; and so on until distance p2 .
+Recursive distance halving: Same procedure, but starting with distance p/2,
+i.e., P0–P p2 , P1–P( p2 + 1), ..., and ending with distance 1, i.e., P0–P1, ... .
+Recursive vector and distance doubling and halving can be combined for
+diﬀerent purposes, but always additional overhead causes load imbalance if the
+number of processes is not a power of two. Two principles can reduce the overhead in this case.
+Binary blocks: The number of processes can be expressed as a sum of power-oftwo values, i.e., all processes are located in subsets with power-of-two processes.
+Each subset is used to execute parts of the reduction protocol in a block. Overhead occurs in the combining of the blocks in some step of the protocol.
+Ring algorithms: A reduce scatter can be implemented by p − 1 ring exchange
+steps with increasing strides. Each process computes all reduction operations for
+its own chunk of the result vector. In step i (i=1 .. p-1) each process sends the
+input vector chunk needed by rank +i to that process and receives from rank −i
+the data needed to reduce its own chunk. The allreduce can be completed by an
+allgather that is also implemented with ring exchange steps, but with constant
+stride 1. Each process sends its chunk of the result vector around the ring to the
+right (rank + 1) until its left neighbor ((rank + p − 1) mod p) has received it
+after p − 1 steps. The following sections describe the algorithms in detail.
+2.3
+
+Binary Tree
+
+Reduce: The classical binary tree always exchanges full vectors, uses recursive
+distance doubling, but with incomplete protocol, because in each step, half of
+the processes ﬁnish their work. It takes lg p steps and the time taken by this
+algorithm is Tred,tree = lg p (αuni + nβuni + nγ)).
+For short vectors, this algorithm is optimal (compared to the following algorithms) due to its smallest latency term lg p αuni .
+Allreduce: The reduce algorithm is followed by a binary tree based broadcast.
+The total execution time is Tall,tree = lg p (2αuni + 2nβuni + nγ)).
+2.4
+
+Recursive Doubling
+
+Allreduce: This algorithm is an optimization especially for short vectors. In
+each step of the recursive distance doubling, both processes in a pair exchange
+the input vector (in step 1) or its intermediate result vector (in steps 2 ... lg p )
+with its partner process and both processes are computing the same reduction
+redundantly. After lg p steps, the identical result vector is available in all processes. It needs Tall,r.d. = lg p (α+nβ+nγ))+(if non-power-of-two αuni +nβuni )
+This algorithm is in most cases optimal for short vectors.
+
+4
+
+R. Rabenseifner
+
+Fig. 1. Recursive Halving and Doubling. The ﬁgure shows the intermediate results
+after each buﬀer exchange (followed by a reduction operation in the 1st part). The
+dotted frames show the overhead caused by a non-power-of-two number of processes
+
+2.5
+
+Recursive Halving and Doubling
+
+This algorithm is a combination of a reduce scatter implemented with recursive vector halving and distance doubling1 followed by a allgather implemented
+by a recursive vector doubling combined with recursive distance halving (for
+allreduce), or followed by gather implemented with a binary tree (for reduce).
+In a ﬁrst step, the number of processes p is reduced to a power-of-two value:
+p = 2 lg p . r = p − p is the number of processes that must be removed in this
+ﬁrst step. The ﬁrst 2r processes send pairwise from each even rank to the odd
+(rank + 1) the second half of the input vector and from each odd rank to the
+even (rank − 1) the ﬁrst half of the input vector. All 2r processes compute the
+reduction on their half.
+Fig. 1 shows the protocol with an example on 13 processes. The input vectors and all reduction results will be divided into p parts (A, B,..., H) by this
+algorithm, and therefore it is denoted with A–Hrank . After the ﬁrst reduction,
+process P0 has computed A–D0−1 , denoting the reduction result of the ﬁrst
+half of the vector (A–D) from the processes 0–1. P1 has computed E–H0−1 , P2
+A–D2−3 , ... . The ﬁrst step is ﬁnished by sending those results from each odd
+process (1 ... 2r − 1) to rank − 1 into the second part of the buﬀer.
+Now, the ﬁrst r even processes and the p − 2r last processes are renumbered
+from 0 to p − 1. This ﬁrst step needs (1 + fα )α + 1+f2beta nβ + 12 nγ and is not
+necessary, if the number of processes p was already a power-of-two.
+Now, we start with the ﬁrst step of recursive vector halving and distance
+doubling, i.e., the even / odd ranked processes are sending the second / ﬁrst half
+1
+
+A distance doubling (starting with distance 1) is used in contrary to the reduce scatter algorithm in [12] that must use a distance halving (i.e., starting with
+distance #processes
+) to guarantee a rank-ordered scatter. In our algorithm, any order
+2
+of the scattered data is allowed, and therefore, the longest vectors can be exchanged
+with the nearest neighbor, which is an additional advantage on systems with a hierarchical network structure.
+
+Optimization of Collective Reduction Operations
+
+5
+
+of their buﬀer to rank + 1 / rank − 1. Then the reduction is computed between
+the local buﬀer and the received buﬀer. This step costs α + 12 (nβ + nγ).
+In the next lg p − 1 steps, the buﬀers are recursively halved and the distance
+doubled. Now, each of the p processes has p1 of the total reduction result vector,
+i.e., the reduce scatter has scattered the result vector to the p processes. All
+recursive steps cost lg p α + (1 − p1 )(nβ + nγ). The second part implements an
+allgather or gather to complete the allreduce or reduce operation.
+Allreduce: Now, the contrary protocol is needed: Recursive vector doubling
+and distance halving, i.e., in the ﬁrst step the process pairs exchange p1 of the
+buﬀer to achieve p2 of the result vector, and in the next step p2 is exchanged to
+get p4 , and so on. A–B, A–D ... in Fig. 1 denote the already stored portion of
+the result vector. After each communication exchange step, the result buﬀer is
+doubled and after lg p steps, the p processes have received the total reduction
+result. This allgather part costs lg p α + (1 − p1 )(nβ).
+If the number of processes is non-number-of-two, then the total result vector
+must be sent to the r removed processes. This causes the additional overhead
+α + nβ. The total implementation needs
+1
+• Tall,h&d,n=2exp = 2 lg pα + 2nβ + nγ − p (2nβ + nγ)
+2 lg pα + 2nβ + nγ if p is power-of-two,
+1+fbeta
+)nβ + 32 nγ − p1 (2nβ + nγ)
+• Tall,h&d,n=2exp = (2 lg p + 2 + fα )α + (3 +
+2
+(3 + 2 lg p )α + 4nβ + 32 nγ if p is non-power-of-two (with p = 2 lg p ).
+This protocol is good for long vectors and power-of-two processes. For nonpower-of-two processes, the transfer overhead is doubled and the computation
+overhead is enlarged by 32 . The binary blocks protocol (see below) can reduce
+this overhead in many cases.
+Reduce: The same protocol is used, but the pairwise exchange with sendrecv
+is substituted by single message passing. In the ﬁrst step, each process with the
+bit with the value p /2 in its new rank identical to that bit in root rank must
+receive a result buﬀer segment and the other processes must send their segment.
+In the next step only the receiving processes continue and the bit is shifted 1
+position right (i.e., p /4). And so on. The time needed for this gather operation
+is lg p αuni + (1 − p1 )nβuni .
+In the case that the original root process is one of the removed processes,
+then the role of this process and its partner in the ﬁrst step are exchanged
+after the ﬁrst reduction in the reduce scatter protocol. This causes no additional
+overhead. The total implementation needs
+1
+• Tred,h&d,n=2exp = lg p(1 + fα )α + (1 + fβ )nβ + nγ − p (n(β + βuni ) + nγ)
+2 lg pα + 2nβ + nγ if p is power-of-two,
+1+fbeta
++ fβ )nβ + 23 nγ −
+• Tred,h&d,n=2exp = lg p (1 + fα )α + (1 + fα )α + (1 +
+2
+1
+p ((1 + fβ )nβ + nγ)
+(2 + 2 lg p )α + 3nβ + 32 nγ if p is non-power-of-two (with p = 2 lg p ).
+
+6
+
+R. Rabenseifner
+
+Fig. 2. Binary Blocks
+
+2.6
+
+Binary Blocks
+
+Further optimization for non-power-of-two number of processes can be achieved
+with the algorithm shown in Fig. 2.
+Here, the maximum diﬀerence between the ratio of the number of proccesses
+of two successive blocks, especially in the low range of exponents, determines
+the imbalance.
+Allreduce: The 2nd part is an allgather implemented with buﬀer doubling and
+distance halving in each block as in the algorithm in the previous section. The
+input must be provided in the processes of the smaller blocks always with pairs
+of messages from processes of the next larger block.
+Reduce: If the root is outside of the largest block, then the intermediate result
+segment of rank 0 is sent to root and root plays the role of rank 0. A binary tree
+is used to gather the result segments into the root process.
+For power-of-two number of processes, the binary block algorithms are identical to the halving and doubling algorithm in the previous section.
+
+2.7
+
+Ring
+
+While the algorithms in the last two sections are optimal for power-of-two process numbers and long vectors, for medium non-power-of-two number of processes and long vectors there exist another good algorithm. It uses the pairwise exchange algorithm for reduce scatter and ring algorithm for allgather (for
+allreduce), as described in [12], and for reduce, all processes send their result
+segment directly to root. Both algorithms are good in bandwidth usage for nonpower-of-two number of processes, but the latency scales with the number of
+processes. Therefore this algorithm can be used only for a small number of
+processes. Independent of whether p is power-of-two or not, the total implementation needs Tall,ring = 2(p − 1)α + 2nβ + nγ − p1 (2nβ + nγ) for allreduce, and
+Tred,ring = (p − 1)(α + αuni ) + n(β + βuni ) + nγ − p1 (n(β + βuni ) + nγ) for reduce.
+
+Optimization of Collective Reduction Operations
+
+7
+
+vendor
+binary tree
+pairwise + ring
+halving + doubling
+recursive doubling
+binary blocks halving+doubling
+break-even points : size=1k and 2k and min( (size/256)9/16, ...)
+
+Fastest Protocol for
+Allreduce(sum,dbl)
+
+number of MPI processes
+
+512
+256
+128
+64
+32
+16
+8
+4
+2
+8
+
+32
+
+256
+
+1k
+
+8k
+32k
+buffersize [bytes]
+
+256k
+
+1M
+
+8M
+
+Fig. 3. The fastest protocol for Allreduce(double, sum) on a Cray T3E 900.
+
+3
+
+Choosing the Fastest Algorithm
+
+Based on the number of processes and the vector (input buﬀer) length, the
+reduction routine must decide which algorithm should be used. Fig. 3 shows the
+fastest protocol on a Cray T3E 900 with 540 PEs. For buﬀer sizes less than or
+equal to 32 byte, recursive doubling is the best, for buﬀer sizes less than or equal
+to 1 KB, mainly vendor’s algorithm (for power-of-two) and binary tree (for nonpower-of-two) are the best but there is not a big diﬀerence to recursive doubling.
+For longer buﬀer sizes, the ring is good for some buﬀer sizes and some #processes
+less than 32 PEs. A detailed decision is done for each #processes value, e.g., for
+15 processes, ring is used if length ≥ 64 KB. In general, on a Cray T3E 900, the
+size
+binary block algorithm is faster if δexpo,max < lg( vector
+1Byte )/2.0 − 2.5 and vector
+size ≥ 16 KB and more than 32 processes are used. In a few cases, e.g., 33 PEs
+and less then 32 KB, halving&doubling is the fastest algorithm.
+Fig. 4 shows that with the pure MPI programming model (i.e., 1 MPI process
+per CPU) on the IBM SP, the beneﬁt is about 1.5x for buﬀer sizes 8–64 KB, and
+2x – 5x for larger buﬀers. With the hybrid programming model (1 MPI process
+per SMP node), only for buﬀer sizes 4–128 KB and more than 4 nodes, the beneﬁt
+is about 1.5x – 3x.
+
+4
+
+Conclusions and Future Work
+
+Although principal work on optimizing collective routines is quite old [2], there
+is a lack of fast implementations for allreduce and reduce in MPI libraries for
+a wide range of number of processes and buﬀer sizes. Based on the author’s
+algorithm from 1997 [10], an eﬃcient algorithm for power-of-two and non-powerof-two number of processes is presented in this paper. Medium non-power-oftwo number of processes could be additionally optimized with a special ring
+algorithm. The halving&doubling is already included into MPICH-2 and it is
+
+8
+
+R. Rabenseifner
+128
+Allreduce(sum,dbl) - ratio := best bandwidth of 4 new a
+
+Allreduce(sum,dbl) - ratio := best bandwidth of 4 new algo.s / vendor’s bandwidth
+
+512
+
+100.<= ratio
+
+64
+
+number of MPI processes
+
+number of MPI processes
+
+50. <= ratio <100.
+256
+
+128
+
+64
+
+32
+
+20. <= ratio < 50.
+32
+
+10. <= ratio < 20.
+7.0 <= ratio < 10.
+
+16
+
+5.0 <= ratio < 7.0
+3.0 <= ratio < 5.0
+2.0 <= ratio < 3.0
+
+8
+
+1.5 <= ratio < 2.0
+1.1 <= ratio < 1.5
+
+4
+
+0.9 <= ratio < 1.1
+0.7 <= ratio < 0.9
+2
+
+16
+8
+
+32
+
+256 1k
+
+8k
+
+32k
+
+256k 1M
+
+buffersize [bytes]
+
+8M
+
+0.0 <= ratio < 0.7
+8
+
+32
+
+256 1k
+
+8k
+
+32k
+
+256k 1M
+
+8M
+
+buffersize [bytes]
+
+Fig. 4. Ratio of bandwidth of the fastest protocol (without recursive doubling) on a
+IBM SP at SDSC and 1 MPI process per CPU (left) and per SMP node (right)
+
+planned to include the other bandwidth-optimized algorithms [10,12]. Future
+work will further optimize latency and bandwidth for any number of processes
+by combining the principles used in Sect. 2.3–2.7 into one algorithm and selecting
+on each recursion level instead of selecting one of those algorithms for all levels.
+Acknowledgments. The author would like to acknowledge his colleagues and
+all the people that supported this project with suggestions and helpful discussions. He would especially like to thank Rajeev Thakur and Jesper Larsson Tr¨
+aﬀ
+for the helpful discussion on optimized reduction algorithm and Gerhard Wellein,
+Thomas Ludwig, Ana Kovatcheva, Rajeev Thakur for their benchmarking support.
+
+References
+1. V. Bala, J. Bruck, R. Cypher, P. Elustondo, A. Ho, C.-T. Ho, S. Kipnis and M.
+Snir, CCL: A portable and tunable collective communication library for scalable
+parallel computers, in IEEE Transactions on Parallel and Distributed Systems,
+Vol. 6, No. 2, Feb. 1995, pp 154–164.
+2. M. Barnett, S. Gupta, D. Payne, L. Shuler, R. van de Gejin, and J. Watts, Interprocessor collective communication library (InterCom), in Proceedings of Supercomputing ’94, Nov. 1994.
+3. Edward K. Blum, Xin Wang, and Patrick Leung, Architectures and message-passing
+algorithms for cluster computing: Design and performance, in Parallel Computing
+26 (2000) 313–332.
+4. J. Bruck, C.-T. Ho, S. Kipnis, E. Upfal, and D. Weathersby, Eﬃcient algorithms for
+all-to-all communications in multiport message-passing systems, in IEEE Transactions on Parallel and Distributed Systems, Vol. 8, No. 11, Nov. 1997, pp 1143–1156.
+5. E. Gabriel, M. Resch, and R. R¨
+uhle, Implementing MPI with optimized algorithms
+for metacomputing, in Proceedings of the MPIDC’99, Atlanta, USA, March 1999,
+pp 31–41.
+
+Optimization of Collective Reduction Operations
+
+9
+
+6. Message Passing Interface Forum. MPI: A Message-Passing Interface Standard,
+Rel. 1.1, June 1995, www.mpi-forum.org.
+7. N. Karonis, B. de Supinski, I. Foster, W. Gropp, E. Lusk, and J. Bresnahan,
+Exploiting hierarchy in parallel computer networks to optimize collective operation
+performance, in Proceedings of the 14th International Parallel and Distributed
+Processing Symposium (IPDPS ’00), 2000, pp 377–384.
+8. Thilo Kielmann, Rutger F. H. Hofman, Henri E. Bal, Aske Plaat, Raoul A. F.
+Bhoedjang, MPI’s reduction operations in clustered wide area systems, in Proceedings of the Message Passing Interface Developer’s and User’s Conference 1999
+(MPIDC’99), Atlanta, USA, March 1999, pp 43–52.
+9. Man D. Knies, F. Ray Barriuso, William J. Harrod, George B. Adams III, SLICC:
+A low latency interface for collective communications, in Proceedings of the 1994
+conference on Supercomputing, Washington, D.C., Nov. 14–18, 1994, pp 89–96.
+10. Rolf Rabenseifner, A new optimized MPI reduce and allreduce algorithm, Nov. 1997.
+http://www.hlrs.de/mpi/myreduce.html
+11. Rolf Rabenseifner, Automatic MPI counter proﬁling of all users: First results on
+a CRAY T3E 900-512, Proceedings of the Message Passing Interface Developer’s
+and User’s Conference 1999 (MPIDC’99), Atlanta, USA, March 1999, pp 77–85.
+http://www.hlrs.de/people/rabenseifner/publ/publications.html
+12. Rajeev Thakur and William D. Gropp, Improving the performance of collective
+operations in MPICH, in Recent Advances in Parallel Virtual Machine and Message Passing Interface, proceedings of the 10th European PVM/MPI Users’ Group
+Meeting, LNCS 2840, J. Dongarra, D. Laforenza, S. Orlando (Eds.), 2003, 257–267.
+13. Sathish S. Vadhiyar, Graham E. Fagg, and Jack Dongarra, Automatically tuned
+collective communications, in Proceedings of SC2000, Nov. 2000.
+An extended version of this paper can be found on the author’s home/publication page.
+
+

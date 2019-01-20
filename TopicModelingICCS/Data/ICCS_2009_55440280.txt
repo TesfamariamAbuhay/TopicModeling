@@ -1,0 +1,629 @@
+Evaluating Algorithms for Shared File Pointer
+Operations in MPI I/O
+Ketan Kulkarni and Edgar Gabriel
+Parallel Software Technologies Laboratory,
+Department of Computer Science, University of Houston
+{knkulkarni,gabriel}@cs.uh.edu
+
+Abstract. MPI-I/O is a part of the MPI-2 speciﬁcation deﬁning ﬁle I/O
+operations for parallel MPI applications. Compared to regular POSIX
+style I/O functions, MPI I/O oﬀers features like the distinction between
+individual ﬁle pointers on a per-process basis and a shared ﬁle pointer
+across a group of processes. The objective of this study is the evaluation
+of various algorithms of shared ﬁle pointer operations for MPI-I/O. We
+present three algorithms to provide shared ﬁle pointer operations on ﬁle
+systems that do not support ﬁle locking. The evaluation of the algorithms
+is carried out utilizing a parallel PVFS2 ﬁle system on an InﬁniBand
+cluster and a local ext3 ﬁle system using a 8-core SMP.
+
+1
+
+Introduction
+
+The MPI standards provide many features for developing parallel applications on
+distributed memory systems, such as point-to-point communication, collective
+operations, and derived data types. One of the important features introduced in
+MPI-2 is MPI-I/O [1]. The MPI I/O routines provide a portable interface for
+accessing data within a parallel application. A feature deﬁned in MPI-I/O is the
+notion of a shared ﬁle pointers, which is a ﬁle pointer jointly maintained by a
+group of processes.
+There are two common usage scenarios for shared ﬁle pointers in parallel
+applications. The ﬁrst one involves generating event logs of a parallel application,
+e.g., to document the progress of each application process or to generate error
+logs. For these scenarios, users typically want to know the chronological order of
+events. Without shared ﬁle pointers, the parallel applications would be required
+to coordinate events with the other processes in a sequential manner (in the
+order in which these events occurred) [2]. Using a shared ﬁle pointer, the MPI
+library will automatically order the events, and ease the generation of parallel
+log ﬁles signiﬁcantly. The second usage scenario uses a shared ﬁle pointer for
+assigning chunks of work to each processes in a parallel application. If a process
+has ﬁnished computing the work currently assigned to it, it could read the next
+chunk from the shared input ﬁle using a shared ﬁle pointer. Thus, no additional
+entity is required to manage the distribution of work across the processes.
+Although there are/were some ﬁle systems that have support for shared ﬁle
+pointers such as VESTA [3], the majority of ﬁle systems available today do not
+G. Allen et al. (Eds.): ICCS 2009, Part I, LNCS 5544, pp. 280–289, 2009.
+c Springer-Verlag Berlin Heidelberg 2009
+
+Evaluating Algorithms for Shared File Pointer Operations in MPI I/O
+
+281
+
+provide a native support for these operations. Thus, the MPI library has to
+emulate shared ﬁle pointer operations internally. Today, the most wide-spread
+implementation of MPI I/O is ROMIO [4]. ROMIO relies on a hidden ﬁle which
+contains the shared ﬁle pointer for each MPI ﬁle. In order to modify the shared
+ﬁle pointer, a process has to lock the hidden ﬁle and thus avoid simultaneous
+access by multiple processes. However, many ﬁle systems have only limited or
+no support for ﬁle locking. As a result, shared ﬁle pointer operations often do
+not work with ROMIO [5]. Furthermore, since ﬁle locking is considered to be
+expensive, the performance of shared ﬁle pointer operations in ROMIO is often
+sub-optimal.
+An alternative approach for implementing shared ﬁle pointer operations has
+been described in [6]. The solution proposed is to implement the shared ﬁle pointers using passive target one-sided communication operations, such as MPI Win lock and MPI Win unlock. A shared ﬁle pointer oﬀset is stored in an MPI window. If a process wants to execute a read or write operation using the shared
+ﬁle pointer, it has to ﬁrst test if any other process has acquired the shared ﬁle
+pointer. If this is not the case, it will access the shared ﬁle pointer from the
+root process. Else, it will wait for the signal from the process that currently
+has the shared ﬁle pointer. However, this approach is not available in a public
+release of ROMIO as of today, since it requires an implementation of one-sided
+operations, which can make progress outside of MPI routines, e.g. by using a
+progress thread [6]. In [7] Yu et.al. present an approach similar to one algorithm
+outlined in this paper by using the ﬁle-joining feature of Lustre to optimize the
+performance of collective write operations. In contrary to our algorithms however, there approach is bound to a speciﬁc ﬁle system and is not used to optimize
+shared ﬁle pointer operations.
+In this paper we present three alternative algorithms for implementing shared
+ﬁle pointer operations on top of non-collaborative ﬁle systems. The ﬁrst approach
+utilizes an additional process for maintaining the status of the shared ﬁle pointer.
+The second algorithm maintains a separate ﬁle for each process when writing
+using a shared ﬁle pointer. The third approach utilizes also an individual ﬁle
+on a per process basis, combines however the data of multiple MPI ﬁles into
+a single individual ﬁle. The remainder of the paper is organized as follows. In
+section 2 we describe the algorithms that have been developed, and document
+expected advantages, disadvantages and restrictions. Section 3 describes the test
+environment and the results of our evaluation over a parallel PVFS2 ﬁle system
+and a local ext3 ﬁle system. For the latter we also compare the performance of
+our algorithms to the ROMIO implementation of shared ﬁle pointers. Finally,
+section 4 summarizes the results of the paper and presents the ongoing work in
+this area.
+
+2
+
+Shared File Pointer Algorithms
+
+The aim of designing new algorithms for shared ﬁle pointer operations is to avoid
+dependencies of the ﬁle systems on ﬁle locks, and to improve the performance of
+
+282
+
+K. Kulkarni and E. Gabriel
+
+shared ﬁle pointer operations. In the following, we describe three algorithms to
+achieve these goals, namely using an additional process to maintain the shared
+ﬁle pointer, using an individual ﬁle per process and MPI ﬁle, and using a single
+ﬁle per process across all MPI ﬁles. The algorithms described in this section have
+been implemented as a standalone library using the proﬁling interface of MPI,
+and use individual MPI ﬁle pointer operations to implement the algorithms.
+In order to do not mix up the individual ﬁle pointers to an MPI ﬁle and the
+shared ﬁle pointer, each MPI File is opened twice providing two independent
+MPI handles.
+2.1
+
+Using an Additional Process
+
+The main idea behind the ﬁrst algorithm is to have a separate process that
+maintains the shared ﬁle pointer. This mechanism replaces the hidden ﬁle used by
+ROMIO maintaining the shared ﬁle pointer, thereby preventing the ﬁle locking
+problems mentioned previously. In the current implementation, the additional
+process is created by dynamically spawning a new process upon opening a ﬁle.
+However, in a long term we envision to utilize an already existing process, such as
+mpirun for this purpose, since the workload of the additional process is relatively
+low in realistic scenarios.
+Upon opening a new MPI ﬁle, all processes of a process group deﬁned by an
+intra-communicator collectively spawned the management process using MPIComm spawn. MPI Comm spawn returns a new inter-communicator that consists
+of a local group containing the already existing processes and a new remote group
+containing the newly spawned process. This inter-communicator will be used for
+communication between the local and remote groups. The management process
+initializes and stores the shared ﬁle pointer. Whenever a participating application
+process wants to perform an I/O operation using the shared ﬁle pointer, it ﬁrst
+requests the current position of the shared ﬁle pointer respectively the ﬁle oﬀset
+from the management process. The management process puts all requests in a
+request-queue and sends the current value of the shared ﬁle pointer oﬀset back to
+the requesting process, and increases the value by the number of bytes indicated
+in the request.
+The collective version of the write operation (MPI File write ordered) for
+shared ﬁle pointers is implemented in multiple steps. First, a temporary root
+process, typically the process with the rank zero in that communicator, collects
+from each process in the group the number of bytes that they would write to
+the main ﬁle using a gather operation. The temporary root process sends the
+request to the management process with the total number of bytes to be written
+as a part of this collective write operation, and receives the oﬀset of the shared
+ﬁle pointer. It than calculates the individual oﬀset for each process based on the
+shared ﬁle pointer oﬀset and the number of bytes requested by each process, and
+sends it to each process individually. Note that an alternative implementation
+using MPI Scan could be used to determine the local oﬀset for each process.
+Each process then writes to the main ﬁle using the explicit oﬀset collective
+blocking write ﬁle routine MPI File write at all. Thus, the collective notion
+
+Evaluating Algorithms for Shared File Pointer Operations in MPI I/O
+
+283
+
+of the operation is maintained. The collective read algorithm works in a similar
+fashion. This algorithm is able to implement the full set of functions deﬁned
+in the MPI standard, and does not have any major restrictions form the usage
+perspective.
+2.2
+
+Using an Individual File Per Process and MPI File
+
+This algorithm prevents ﬁle locking on the main ﬁle during collective and noncollective write operations using the shared ﬁle pointer by having each process
+write its data into an individual data ﬁle. Henceforth, the ﬁle that is opened and
+closed in the application would be referred to as the main ﬁle. At any collective
+ﬁle I/O operation the entire data from the individual ﬁles are merged into the
+main ﬁle based on the metadata information stored along with the application
+data. Metadata is the information about the data, which is being written into
+the data ﬁle, and contains the information shown in Table 1.
+Table 1. Metadata Record
+Record Id
+Timestamp
+Local position
+Record length
+
+ID indicating the write operation of this record
+Time at which data is being written to the data ﬁle
+Oﬀset in the individual data ﬁle
+Number of bytes written to the data ﬁle
+
+In the following, we detail the required steps in this algorithm. Each process
+opens an individual data ﬁle and a metadata ﬁle during the MPI File open
+operation. During any individual write operation, each process writes the actual
+data into its individual data ﬁle instead of the main ﬁle. The corresponding
+Metadata is stored in the main memory of each process using a linked list.
+Once a limit to the number of nodes in the linked list is reached, for example,
+as indicated by the parameter MAX METADATA RECORDS, the linked list is
+written into the metadata ﬁle corresponding to that process. During the merging
+step, we ﬁrst check for metadata records in the metadata ﬁle before reading the
+records from the linked list. The most important and time-consuming operation
+in this algorithm is that of merging independent data written by each of the
+process. Note that merging needs to involve all processes in the group. Hence, it
+can be done only during collective operations such as MPI File write ordered,
+MPI File write ordered begin, and MPI File close.
+The merging of data requires the following ﬁve steps:
+1. All processes compute the total number of metadata nodes by combining the
+metadata nodes written by each of the processes using an MPI Allgather
+operation.
+2. Each process collects the timestamps and record lengths corresponding to all
+metadata nodes stored on each process using an MPI Allgatherv operation.
+3. Once each process receives all the metadata nodes containing the timestamps
+and record lengths, it sorts them based on the timestamps in an ascending
+order.
+
+284
+
+K. Kulkarni and E. Gabriel
+
+4. Each process assigns a global oﬀset to the sorted list of the metadata nodes.
+The global oﬀset corresponds to the position at which the data needs to be
+written into the main ﬁle.
+5. Once each process has global oﬀsets assigned to each metadata record, it
+reads the data from the local data ﬁle using the local ﬁle oﬀset from the
+corresponding metadata node, and writes the data into the main ﬁle based
+on the global oﬀset, which was computed in the previous step.
+For the merging step we also envision the possibility to create the ﬁnal output ﬁle
+in a separate post processing step. This would give applications the possibility
+to improve the performance of their write operations using a shared ﬁle pointer,
+and provide an automatic mechanism to merge the separate output ﬁles of the
+diﬀerent processes after the execution of the application.
+This implementation has three major restrictions:
+– The individual ﬁle algorithm does not support read operations using the
+shared ﬁle pointers. The assumption within this prototype implementation
+is that the user indicates using an MPI Info object that shared ﬁle pointers
+would not be used for read operations, respectively the MPI library should
+not choose this algorithm if the required guarantee is not given, but fall back
+to a potentially slower but safer approach.
+– In order to be able to compare the timestamps of diﬀerent processes, this
+algorithm requires a globally synchronized clock across the processes. While
+there are some machines providing a synchronized clock, this is clearly not
+the case on most clusters. However, there are algorithms known in the literature on how to synchronize clocks of diﬀerent processes [8], which would
+allow to achieve a relatively good clock synchronization at run time. Nevertheless, this algorithm has the potential to introduce minor distortions in
+the order of entries between processes.
+– This implementation can not support applications that use both individual
+and shared ﬁle pointers simultaneously. In our experience this is however not
+a real restriction, since we could not ﬁnd any application using both type of
+ﬁle pointers at the same time.
+An additional hint passed to the library using an Info object could indicate
+whether the merge operation shall be executed at runtime or in a post-processing
+step.
+2.3
+
+Using a Single Individual File Per Process
+
+This algorithm oﬀers a slight variation from the individual ﬁle per process algorithm. It maintains a single data and meta data ﬁle per process across all
+the ﬁles that have been opened by that process. Data pertaining to multiple
+ﬁles are written into single data and metadata ﬁles. The main reason behind
+this approach is to ease the burden on the metadata servers of the ﬁle systems,
+whose main limitation is the number of simultaneous I/O requests that can be
+handled.
+
+Evaluating Algorithms for Shared File Pointer Operations in MPI I/O
+
+285
+
+The main diﬀerence between this algorithm and the one described in the previous subsection is in the handling of collective write operations. When a metadata
+node is written to the metadata ﬁle for an individual operation, each process can
+individually determine the according timestamp of this operation. However, for
+collective operations, the data needs to be written in the order of the ranks of the
+processes. To ensure this behavior, the timestamp corresponding to the process
+with rank zero is broadcasted to all processes in the communicator, and used
+for the corresponding collective entry. To identify the collective operations at ﬁle
+close, each process maintains a linked list with the timestamps corresponding to
+the collective operations.
+This algorithm has the same restrictions as the ’individual ﬁle per process
+and MPI ﬁle algorithm’ described above.
+
+3
+
+Performance Evaluation
+
+In the following, we present the performance of the algorithms described in the
+previous section. The three algorithms have been evaluated on two machines,
+namely, the shark cluster and marvin, an 8 core SMP server. The shark cluster
+consists of 24 compute nodes and one front end node. Each node consists of a
+dual-core 2.2GHz AMD Opteron processor with 2 GB of main memory. Nodes
+are connected by a 4xInﬁniBand network. It has a parallel ﬁle system (PVFS2)
+mounted as ’/pvfs2’, which utilizes 22 hard drives, each hard drive is located
+on a separate compute node. The PVFS2 ﬁle system internally uses the Gigabit Ethernet network to communicate between the pvfs2-servers. Since two of
+the three algorithms presented in this paper only support write operations, our
+results section also focuses due to space constraints on the results achieved for
+various write tests.
+Marvin is an eight processor shared memory system, each processor being
+a 2GHz single-core AMD Opteron processor. The machine has 8 GB of main
+memory and a RAID storage as its main ﬁle system using the Ext3 ﬁle system.
+The results presented in this section are determined by using a simple benchmark program which writes data to a single ﬁle using either of the four shared
+ﬁle pointer write operations deﬁned in MPI-2.
+3.1
+
+Results Using a PVFS2 File System
+
+In the ﬁrst test we constantly increase the total amount of data written by ﬁxed
+number of processes. Tests have been performed for all four write operations using shared ﬁle pointers, namely, MPI File write shared, MPI File write ordered, MPI File iwrite shared, MPI File write ordered begin. Due to space
+limitations, we show the results however only the blocking versions of these operations. Note that as explained in section 1, ROMIO does not support shared ﬁle
+pointer operations over PVFS2 [5]. In the following subsections, results obtained
+after comparing all three algorithms are listed. Every test has been repeated
+at least three times, and the minimum execution time has been used for each
+scenario.
+
+286
+
+K. Kulkarni and E. Gabriel
+PVFS2 Individual, Blocking Write
+
+PVFS2 Collective, Blocking Write
+
+300
+
+300
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+Single (w merge)
+
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+Single (w merge)
+
+250
+Bandwidth [MBytes/sec]
+
+Bandwidth [MBytes/sec]
+
+250
+200
+150
+100
+50
+
+200
+150
+100
+50
+
+0
+
+0
+10
+
+100
+
+1000
+
+Data Size [MBytes]
+
+10000
+
+10
+
+100
+
+1000
+
+10000
+
+Data Size [MBytes]
+
+Fig. 1. Performance Comparison for Individual, Blocking write operation (left) and
+Collective Blockgin write-operations (right)
+
+On PVFS2, the benchmark is run for each of the four write operations using
+shared ﬁle pointer. In each test case, data has been written from 10 MB to 10
+GB among eight processes.
+Figure 1 (left) gives the performance of individual and blocking write operation over PVFS2 ﬁle system. For the individual ﬁle and single ﬁle implementations, we show two separate lines for the execution time before merging (i.e.,
+before calling MPI File close) and after merging. The reason for showing two
+lines is that these two algorithms are especially designed to minimize the time
+spent within the write operation itself, since the merging operation can potentially be performed in a post-processing step.
+The individual ﬁle and single ﬁle implementations before merging of the data
+perform at par with the additional process implementation. All three implementations, with individual and single ﬁle performance compared before merging of
+data, show a relatively high bandwidth in the range of 140 MB/s to 240 MB/s,
+while writing 2-10 GB of data. The individual ﬁle algorithm achieves an overall
+bandwidth of around 50 MB/s after merging, while for the single ﬁle version
+bandwidth drops to around 10 MB/s including the merging step. The latter
+is the result of the large number of reduction and communication operations
+required in the merging step for that algorithm.
+Figure 1 (right) gives the performance of the collective and blocking write operation over the PVFS2 ﬁle system. Note that the individual ﬁle implementation
+of the collective operations does not require merging, since the data is written
+directly into the main ﬁle for collective operations. Hence, only the single ﬁle implementation performance before the merging is compared with that of the other
+two implementations. All the three implementations perform similarly, only the
+performance of the single ﬁle method after the merging deviates signiﬁcantly.
+The performance improves as the amount of data being written increases.
+Performance of the three algorithms has also been evaluated using by writing
+a ﬁxed amount of data, and varying the number of processes writing the data.
+Accordingly, on PVFS2 2GB of data is being written by varying the number
+of processes from 2 to 32. The left part of Fig. 2 shows that the additional
+process algorithm mostly outperforms the other two implementations. Although
+
+Evaluating Algorithms for Shared File Pointer Operations in MPI I/O
+PVFS2 Individual, Blocking Write
+
+PVFS2 Collective, Blocking Write
+
+300
+
+300
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+Single (w merge)
+
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+Single (w merge)
+
+250
+Bandwidth [MBytes/sec]
+
+250
+Bandwidth [MBytes/sec]
+
+287
+
+200
+150
+100
+50
+
+200
+150
+100
+50
+
+0
+
+0
+5
+
+10
+
+15
+20
+No. of processes
+
+25
+
+30
+
+5
+
+10
+
+15
+20
+No. of processes
+
+25
+
+30
+
+Fig. 2. Performance Comparison for Individual, Blocking write operation (left) and
+Collective Blockgin write-operations (right) for varying numbers of processors
+
+it performs reasonably well up to 16 processes, the performance drops sharply for
+32 processes. This performance drop can be due to either of the two reasons: the
+management process could be overwhelmed by the increasing number of (small)
+requests with increasing number of processes, or the ﬁle system or the hard drive
+could get congested with increasing number of requests.
+Which of these two contributes stronger to the performance degradation observed for 32 processes can be answered by looking at the numbers of the collective write operations in the right part of Fig. 2. This graph shows the same
+behavior for the additional process implementation. However, as collective operations in this model only require one request to the management process per
+collective function call, but generate the same number of I/O requests to the
+hard drive and the ﬁle system, we are conﬁdent that the performance drop observed in the previous measurements is not due to a congestion at the additional
+process managing the shared ﬁle pointer.
+3.2
+
+Results Using an EXT3 File System
+
+In this subsection, the benchmark is run using all four write operations of the
+MPI speciﬁcation for shared ﬁle pointer operations using all the three algorithms
+described earlier on a local ﬁle system using Ext3. The test machine utilized
+consists of eight single core AMD Opteron processors. Since the Ext3 ﬁle system
+supports ﬁle locks, the performance of ROMIO over Ext3 could be compared
+with our three implementations. In each case, data from 1 GB to 10 GB is
+written among eight processes. The left part of Fig. 3 gives the performance of
+the individual and blocking write routine over Ext3 ﬁle system, while the right
+part shows the performance of the collective write routine. ROMIO performs
+better than the three new algorithms for smaller amounts of data. However, as
+the amount of data written increases, the performance of ROMIO decreases. The
+additional process implementation performance in these scenarios is better than
+ROMIO. There could be various reasons behind the additional process algorithm
+not being able to completely outperform ROMIO, such as
+
+288
+
+K. Kulkarni and E. Gabriel
+Ext3 Individual, Blocking Write
+
+Ext3 Collective, Blocking Write
+
+300
+
+300
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+Single (w merge)
+ROMIO
+
+200
+150
+100
+50
+0
+1000
+
+Addproc
+Individual (w/o merge)
+Individual (w/ merge)
+Single (w/o merge)
+ROMIO
+
+250
+Bandwidth [MBytes/sec]
+
+Bandwidth [MBytes/sec]
+
+250
+
+200
+150
+100
+50
+
+2000
+
+3000
+
+4000
+
+5000
+
+6000
+
+7000
+
+Data Size [MBytes]
+
+8000
+
+9000 10000
+
+0
+1000
+
+2000
+
+3000
+
+4000
+
+5000
+
+6000
+
+7000
+
+8000
+
+9000 10000
+
+Data Size [MBytes]
+
+Fig. 3. Performance Comparison for Individual, Blocking write operation (left) and
+Collective Blockgin write-operations (right) on the ext3 ﬁle system
+
+– All the evaluation has been done using eight processes. Marvin is a shared
+memory system which has eight processors. In the case of the additional
+process algorithm, when an additional process is spawned (the ninth in this
+case), the performance might decrease as nine processes run on eight processors.
+– Secondly, when the dynamic process management feature is used, Open MPI
+restricts the communication among the original process group and the newly
+spawned processes from using shared memory communication. Instead, it
+uses the next available communication protocol, which is TCP/IP in case of
+Marvin. Hence, slow communication between the local and the remote groups
+of processes could be a factor aﬀecting the performance of the additional
+process algorithm.
+– Thirdly, in case of ROMIO, since the hidden ﬁle is small, it might be cached
+by the ﬁle system or the RAID controller. Hence, processes accessing the
+hidden ﬁle might not touch the hard drive, but access the hidden ﬁle from
+the cache to read and update the shared ﬁle pointer oﬀset value.
+
+4
+
+Summary
+
+This study aims at designing portable and optimized algorithms to implement
+shared ﬁle pointer operations of the MPI I/O speciﬁcation. We have developed,
+implemented and evaluated three new algorithms for I/O operations using shared
+ﬁle pointers. Our evaluation shows, that the algorithms often outperform the
+current version in ROMIO, although there are notable exceptions. However, the
+algorithms do represent alternative approaches which could be used in case the
+ﬁle system does not support ﬁle locking. The ’additional process’ algorithm is
+most general of the three approaches, and we plan to further extend it by overcoming the restrictions discussed in section 3, most notably having the management process being executed in an already existing process, such as mpirun.
+Furthermore, as of today, we have not yet evaluated the diﬀerence between the
+
+Evaluating Algorithms for Shared File Pointer Operations in MPI I/O
+
+289
+
+single ﬁle and the individual ﬁle approaches in case of multiple MPI ﬁles, and
+the impact on the Metadata server of the ﬁle system. The ultimate goal is to
+provide a collection of algorithms and give the end-user the possibility to select
+between those algorithms using appropriate hints.
+
+References
+1. Message Passing Interface Forum: MPI-2: Extensions to the Message Passing Interface (1997), http://www.mpi-forum.org
+2. May, J.: Parallel I/O for High Performance Computing. Morgan Kaufmann Publishers, San Francisco (2003)
+3. Corbett, P.F., Feitelson, D.G.: Design and implementation of the Vesta parallel ﬁle
+system. In: Proceedings of the Scalable High-Performance Computing Conference,
+pp. 63–70 (1994)
+4. Thakur, R., Gropp, W., Lusk, E.: Data Sieving and Collective I/O in ROMIO.
+In: FRONTIERS 1999: Proceedings of the The 7th Symposium on the Frontiers of
+Massively Parallel Computation, Washington, DC, USA, p. 182. IEEE Computer
+Society, Los Alamitos (1999)
+5. Thakur, R., Ross, R., Lusk, E., Gropp, W.: Users Guide for ROMIO: A High Performance, Portable MPI-IO Implementation. Argonne National Laboratory (2004)
+6. Latham, R., Ross, R., Thakur, R.: Implementing MPI-IO Atomic Mode and Shared
+File Pointers Using MPI One-Sided Communication. Int. J. High Perform. Comput.
+Appl. 21(2), 132–143 (2007)
+7. Yu, W., Vetter, J., Canon, R.S., Jiang, S.: Exploiting lustre ﬁle joining for eﬀective
+collective io. In: CCGRID 2007: Proceedings of the Seventh IEEE International
+Symposium on Cluster Computing and the Grid, Washington, DC, USA, pp. 267–
+274. IEEE Computer Society Press, Los Alamitos (2007)
+8. Becker, D., Rabenseifner, R., Wolf, F.: Timestamp Synchronization for Event Traces
+of Large-Scale Message-Passing Applications. In: Proceedings of EuroPVM/MPI.
+LNCS, pp. 315–325. Springer, Heidelberg (2007)
+
+

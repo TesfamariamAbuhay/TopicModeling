@@ -1,0 +1,865 @@
+Procedia Computer Science
+Volume 29, 2014, Pages 172–183
+ICCS 2014. 14th International Conference on Computational Science
+
+GPU Optimization of Pseudo Random Number Generators
+for Random Ordinary Diﬀerential Equations
+Christoph Riesinger1 , Tobias Neckel1 , Florian Rupp2 , Alfredo Parra Hinojosa1 ,
+and Hans-Joachim Bungartz1
+1
+
+2
+
+Department of Informatics, Technische Universit¨
+at M¨
+unchen, M¨
+unchen, Germany
+{riesinge, neckel, hinojosa, bungartz}@in.tum.de
+Department of Mathematics and Science, German University of Technology in Oman, Muscat,
+Sultanate of Oman
+florian.rupp@gutech.edu.om
+
+Abstract
+Solving diﬀerential equations with stochastic terms involves a massive use of pseudo random
+numbers. We present an application for the simulation of wireframe buildings under stochastic
+earthquake excitation. The inherent potential for vectorization of the application is used to its
+full extent on GPU accelerator hardware. A representative set of pseudo random number generators for uniformly and normally distributed pseudo random numbers has been implemented,
+optimized, and benchmarked. The resulting optimized variants outperform standard library
+implementations on GPUs. The techniques and improvements shown in this contribution using
+the Kanai-Tajimi model can be generalized to other random diﬀerential equations or stochastic
+models as well as other accelerators.
+Keywords:
+
+1
+
+Introduction
+
+Stochastic aspects gain increasing importance in the context of Scientiﬁc Computing. Deterministic models are typically well established and understood, eﬃcient algorithms exist and
+have been implemented, and High Performance Computing (HPC) allows scaling up the applications to achieve a suﬃcient numerical accuracy on modern HPC systems. However, from the
+applied point of view, tackling real-world scenarios and stepping forward towards predictability
+of physical systems creates a need to account for random eﬀects, which is usually achieved with
+the use of Uncertainty Quantiﬁcation (UQ). Various approaches exist to realize these stochastic
+aspects.
+We use a random ordinary diﬀerential equation (RODE) formulation to model stochastic
+earthquake excitation and apply it to multi-storey wireframe buildings. The underlying RODE
+Kanai-Tajimi earthquake model results in an interesting and non-trivial, vector-valued coupled
+172
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2014
+c The Authors. Published by Elsevier B.V.
+doi:10.1016/j.procs.2014.05.016
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+system of equations with random input in each time step. This approach and suitable numerical
+schemes have successfully been applied in [21, 20]. In contrast to other approaches, RODEs
+rely on a path-wise solution of classical ODEs and allow for a more realistic (energy-bounded)
+noise description advantageous for physics.
+In this contribution, we focus on the computational eﬃciency of the RODE modeling (cf. Sec.
+3) in the context of the evaluation of a high amount of simulation runs in the spirit of MonteCarlo methods. The high potential of vectorization of the application is realized by algorithmic
+adaptions and a GPU implementation. In particular, a huge amount of normally distributed
+pseudo random numbers has to be generated (explained in Sec. 4) and processed, resulting in the
+largest part of the computational workload (as shown in Sec. 5). We tackle this computational
+challenge by changing the algorithm to compute the random numbers on-the-ﬂy instead of using
+precomputed (and stored) data via the averaging feature of the numerical time-stepping scheme.
+Hence, we shift from a memory-bound to a compute-bound problem. Diﬀerent optimization
+steps have been performed (described in Sec. 6) concerning the computational eﬃciency. These
+optimizations result in a considerable performance boost (cf. Sec. 7) and are generalizable both
+to other RODE models and to other UQ approaches.
+
+2
+
+Related Work
+
+Here, we present publications that deal with diﬀerential equations having a stochastic term and
+optimization for GPUs. Much work has been done in both areas. Corresponding literature can
+be found in the relevant sections of this paper.
+While less eﬀort has been spent in solving RODEs on GPUs yet, combining white noise
+driven stochastic diﬀerential equations (SDEs) with GPUs is much more common. E.g.,
+Januszewski et al. [8] study the numerical solution of SDEs that model the dynamics of Brownian particles. Their focus lays more on how to parallelize this problem in a Monte-Carlo like
+way while we concentrate more on optimization for GPUs. Narayana et al. [19] present several numerical integration schemes for SDEs. Furthermore, they compare a CPU with a GPU
+implementation but only use two pseudo random number generators while we deal with a presentable set. Neglecting a concrete SDE, Neiman [22] introduces a framework to solve arbitrary
+SDEs on GPUs in a general manner. Software Engineering aspects play a central role in their
+contribution whereas we choose an implementation tailored for the Kanai-Tajimi model.
+
+3
+3.1
+
+Random Ordinary Diﬀerential Equations for MultiStorey Buildings
+From SODEs to RODEs
+
+RODEs are less prominent than the well-known white noise driven Stochastic Ordinary Diﬀerential Equations (SODEs), cf. [9]. Due to their immediate applicability to additive white noise
+excited systems, their natural modeling capacity of real processes, and their conceptually easier
+formalism as well as new numerical methods with high convergence rates, RODEs represent an
+interesting alternative for modeling random behavior in real-world problems.
+In this section, we brieﬂy survey key aspects of RODEs omitting mathematical details (for
+which we refer to [3, 21], e.g.). For an Rm -valued stochastic process X : I × Ω → Rm with
+173
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+continuous sample paths, and for a continuous function f : Rd × I × Ω → Rd , a RODE on Rd
+dXt
+= f (Xt (·), t, ω) ,
+dt
+
+Xt (·) ∈ Rd
+
+(1)
+
+x := Xt (ω) ∈ Rd
+
+(2)
+
+is a non-autonomous ordinary diﬀerential equation
+x˙ =
+
+dx
+= Fω (x, t) ,
+dt
+
+for almost all ω ∈ Ω. In other words, for (almost) every ﬁxed realization ω ∈ Ω of the driving
+stochastic process, Eq. (1) becomes an ODE. Note that this is not possible for arbitrary
+stochastic processes. For instance, think of white noise driven systems: there, for even the
+tamest thinkable realization of the white noise, new rules of calculus have to be established.
+In contrast, an SODE is generated by a white-noise driven part (the diﬀusion) and a deterministic part (the drift):
+dXt = a(Xt , t) dt + b(Xt , t) dWt .
+drift
+
+diﬀusion
+
+Here, a and b are suﬃciently well-deﬁned functions, Wt a standard Wiener process and Xt a
+stochastic process that is adapted to the ﬁltrations of the Wiener process (for details, see [26],
+e.g.). Solving such equations requires a considerable mathematical eﬀort using Itˆo’s calculus.
+Luckily, the Doss-Sussmann/Imkeller-Schmalfuss (DSIS) correspondence (see [7]) states that
+under suﬃcient regularity conditions SODEs and RODEs are conjugate; i.e., one can rewrite
+the SODE as a RODE by changing the driving stochastic process. Most often, the white noise
+of the SODE is replaced by a stationary Ornstein-Uhlenbeck (OU) process, cf. [7, 6]. Note
+that in the path-wise approach, typically many classical ODE solutions are necessary to cover
+the stochastics/statistics. We are going to use the DSIS correspondence for the Kanai-Tajimi
+earthquake model.
+
+3.2
+
+The Kanai-Tajimi Earthquake Model
+
+In order to obtain input data for earthquake-induced ground excitations, Kanai and Tajimi
+developed a relatively simple but still decently sophisticated approach to realistic stochastic
+excitations (cf. [10, 11, 28]). The SODE formulation for the ground motion acceleration u
+¨g (t)
+according to the Kanai-Tajimi model is given by u
+¨g = x
+¨g + ξt = −2ζg ωg x˙ g − ωg2 xg , with xg
+being the solution of a stochastic oscillator driven by zero-mean Gaussian white noise ξt
+x
+¨g + 2ζg ωg x˙ g + ωg2 xg = −ξt ,
+
+xg (0) = x˙ g (0) = 0 .
+
+(3)
+
+The model parameters ζg and ωg reﬂect the local geological site conditions. Using the DSIS
+correspondence, the SODE (3) can be formulated as a ﬁrst-order RODE system (cf. [21]) using
+a stationary OU process Ot
+z˙1
+z˙2
+
+=
+
+−(z2 + Ot )
+−2ζg ωg (z2 + Ot ) + ωg2 z1 + Ot
+
+.
+
+(4)
+
+The OU process is numerically (exactly) computed as
+O(t + Δt) = O(t) · μ + σ · n1
+1
+
+(5)
+
+with parameters μ = e−Δt/τ and σ = (cτ /2(1 − μ2 )) 2 (where c and τ are modeling constants
+that describe the diﬀusion and relaxation times of the process) as well as n1 , representing
+statistically independent unit normal random numbers (see [4] for details).
+174
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+3.3
+
+The Wire-Frame Model of a Multi-Storey Building
+
+In order to complete the model setup of our application, we use a straightforward wireframe
+model for the multi-storey building. Each storey is modeled as a mass point connected to the
+storeys above/below via a spring-damper system. The dimension-free equations of motion in
+matrix-vector notation have the form
+u
+¨ + C u˙ + Ku = F (t) ,
+
+(6)
+
+where u := (u1 , u2 , . . . , ud )T holds the displacements of each of the d storeys and F represents
+the time-dependent external force corresponding to the earthquake excitation u
+¨g acting on
+the ﬂoor level. In the following, we use a ﬁxed number of d = 4 storeys (see Fig. 1(a) for a
+sketch). Analogous to the damping matrix C, the matrix K modeling the elastic forces has the
+structure tridiag(−ki−1 , ki + ki+1 , −ki+1 ) with i = 1, . . . , 4 and k5 = 0 (no forces on top ﬂoor
+from above).
+
+0.5
+
+u4
+
+0
+
+−0.5
+
+u3
+
+15
+
+20
+
+0
+
+5
+
+10
+
+15
+
+20
+
+0
+
+5
+
+10
+
+15
+
+20
+
+0
+
+5
+
+10
+
+15
+
+20
+
+0
+
+5
+
+10
+
+15
+
+20
+
+0
+
+0.2
+0
+
+−0.2
+
+u
+¨g
+
+10
+
+0.2
+
+−0.2
+
+u1
+
+5
+
+0
+
+−0.2
+
+u2
+
+0
+
+0.2
+
+20
+0
+
+−20
+
+(a)
+
+t
+
+(b)
+
+Figure 1: (a) Sketch of a 4-storey wireframe building; (b) one example realization of the KanaiTajimi excitation u
+¨g (lowest subplot) and the resulting storey displacements u1 , . . . , u4 .
+
+3.4
+
+Numerical Schemes for RODEs
+
+Applying classical numerical schemes for ODEs (such as explicit Euler, Heun, or Runge-Kutta
+methods) to RODEs results in a decrease in the corresponding order of convergence due to the
+dependency on the smoothness of the right-hand side. In the RODE setting (2), the resulting
+right-hand side Fω (x, t) typically is only continuous or at most H¨older continuous but not
+diﬀerentiable in t (see [20] for an example). This clearly is also the case for our right-hand
+side in the Kanai-Tajimi RODE model (4) with the OU process. In order to circumvent this
+problem, the class of averaged schemes has been developed (cf. [5]). For the family of RODEs
+with separable vector ﬁeld
+dx
+= Fω (x, t) := G(t) + g(t)H(x),
+dt
+
+(7)
+175
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+with functions g : [0, T ] → R, G : [0, T ] → Rd , and H : Rd → Rd (which is at least once
+continuously diﬀerentiable), the basic idea of the so-called Averaged Euler scheme is to apply
+a classical explicit Euler step with size h = tn+1 − tn ,
+xn+1 = xn + h · Fω (xn , tn ) ,
+
+(8)
+
+¯ and g¯ over a much ﬁner sampling in
+but to substitute G and g with their averaged values G
+time to account for the reduced smoothness of the stochastic processes. Hence, at every interval
+[t, t + h], a subsampling step size δ = h/N is used to compute
+1
+g¯h,δ (t) =
+N
+
+N −1
+
+g(t + jδ),
+j=0
+
+¯ h,δ (t) = 1
+G
+N
+
+N −1
+
+G(t + jδ), .
+
+(9)
+
+j=0
+
+Inserting Eq. (9) into Eq. (8) results in the actual Averaged Euler scheme:
+xn+1
+
+=
+
+1
+xn +
+N
+
+N −1
+j=0
+
+H(xn )
+hG(tn + jδ) +
+N
+
+N −1
+
+hg(tn + jδ) .
+j=0
+
+The price for keeping the order of the Averaged Euler scheme equal to one is a considerable
+amount of additional averaging time steps δ which directly translates in a high number of
+random number generations for the stochastic process hidden in the functions g and G. Similar
+averaging approaches for other schemes such as Heun’s method as well as higher-order schemes
+exist (see [21, 20] for a survey), but, for simplicity, we stick to the Averaged Euler scheme in
+the following.
+Combining all described building blocks, we are able to simulate our earthquake-induced
+wireframe buildings using RODEs. In Fig. 1(b), one example realization of a stochastic KanaiTajimi earthquake excitation of the ground ﬂoor (lowest plot) as well as the resulting oscillation
+of the four storeys are shown for T = 20. These results have been obtained using a time step
+size h = 1/512 and parameters ζg = 0.64 and ωg = 15.56 [rad/sec] as well as k1 = . . . = k4 = 15
+and c1 = . . . = c4 = 5.
+
+4
+
+Pseudo Random Number Generators
+
+As one can see from Eq. (5) one needs a independent random variable with normal distribution
+to solve a RODE. The state of the art way to compute realizations of such a random variable
+on computers are Pseudo Random Number Generators (PRNGs). They do not produce real
+random numbers (e.g. via atomic decay) but compute them via deterministic formulas. The
+generated sequences of numbers satisfy certain statistical requirements that makes them very
+similar to real random numbers. PRNGs don’t produce independent random numbers, but we
+resign on independence in favor on the distribution (cf. [27]).
+Most of the PRNGs provide realizations of a random variable with uniform distribution (one
+exception can be found in [31]). These realizations have then to be transformed to the desired
+distribution, such as, in our case, normal distribution via a transformation function.
+
+4.1
+
+PRNGs for uniformly distributed random numbers
+
+There is a huge number of classes and algorithms to generate uniformly distributed random
+numbers on computers. L’Ecuyer et al. [13] list 92 diﬀerent PRNGs. In this paper, we have
+176
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+state vector
+lookup tables
+internal branching
+
+uniform
+SHR3 MT
+✗
+✓
+✗
+✗
+✗
+✗
+
+BM
+✗
+✗
+✗
+
+normal
+Polar Ziggurat
+✗
+✗
+✗
+✓
+✓
+✓
+
+Table 1: Properties of all PRNGs and transformation functions used in this paper.
+a look at only two (but very popular) PRNGs for uniform number sequences. Our main focus
+lays on the optimization of the PRNGs for GPUs, not a complete survey.
+The Mersenne Twister (MT) [18] method (to be more precise: the Mersenne Twister 19937
+method) is one of the most popular PRNGs in use. It calculates 624 numbers at once and stores
+them in a internal vector. After all 624 numbers have been consumed, the method updates the
+whole internal vector in one phase.
+The 3-Shift Register Generator (SHR3) method by Marsaglia et al. (cf. [17]) is a so-called
+register shift generator. Register shift generators are known to have very a high generation
+rate for pseudo random numbers, so they are widely used in libraries, e.g. [23]. SHR3 very
+simple to implement (only three lines of code) but can be critical when used for cryptographic
+applications (cf. [24]).
+
+4.2
+
+Transformation from uniform to normal distribution
+
+A uniform random variable computed by a PRNG has to be transformed to a normally distributed realization for our purposes. According to [30], such transformations can be realized
+via one of four approaches: (a) inversion, (b) recursion, (c) transformation, and (d) rejection:
+The inversion approach inverts the Cumulative Distribution Function (CDF), but this is not
+possible for the normal distribution [29]. The only existing recursion example can be found in
+[31]. The methods used in this work belong to approaches (c) and (d):
+The very fast BoxMuller (BM) and the very popular Polar method transform a ﬁxed number
+(in this case, two) of uniform input samples into a ﬁxed number (also two) of normal output
+samples (see [1, 15]).
+The most popular example for a rejection approach is the Ziggurat [16] method. It uses
+lookup tables to decide if a simple calculation based on lookup tables in most of the cases can
+be performed or a more complex computation for the bottom/base strip has to be done.
+In this paper, we do optimization for the BM, Polar and Ziggurat method.
+
+4.3
+
+The cuRAND library as reference
+
+There are libraries with implementations of PRNGs and transformation functions for GPUs
+that have been highly optimized. The most common one is cuRAND [23]. cuRAND uses
+XORWOW [14] (which is quite similar to SHR3, since both are register shift generators),
+MTGP32 [12] (a combined multiple-recursive generator) and MRG32k3a [25] (a modiﬁcation of
+MT for GPUs) for uniform random number generation and supports various other distributions.
+The transformation function for normal distribution is BM.
+We use cuRAND as a reference and compare our implementation of PRNGs and transformation functions with cuRAND in Sec. 7.
+Table 1 gives an overview of the properties of the PRNGs and transformation functions for
+this paper.
+177
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+10
+
+1
+
+Explicit solver
+
+Averager
+0,12%
+
+2
+7
+8
+9
+
+Averager
+6
+
+3
+
+OU process
+11,88%
+
+PRNG
+87,57%
+
+Explicit solver
+0,43%
+
+OU process
+5
+
+Averager
+OU process
+
+Explicit solver
+PRNG
+
+4
+
+PRNG
+(a)
+
+(b)
+
+Figure 2: (a) Shows the structure of implementation of our RODE project. The circled numbers
+visualize the order of calling the stages. (b) Shows the ratio of time spent in every single stage
+of the implementation.
+This paper does not focus on testing certain statistical properties of PRNGs but on High
+Performance Computing (HPC) aspects like the eﬃcient implementation on GPUs. We do not
+deal with questions like period, independence etc. For more details on such properties, see [13].
+
+5
+
+Implementation
+
+This section brieﬂy describes the structure of our RODE solver for the Kanai-Tajimi model. We
+limit ourselves to the solution of Eq. (4) and do not consider the simulation of the wireframe
+building described in Sec. 3.3 in the implementation.
+There are three major components that interact (see Fig. 2(a)): (a) The OU process
+uses PRNGs to generate random numbers and uses them to calculate realizations of the OU
+process Eq. (5). (b) Averager uses an OU process to compute Eq. (9). (c) Explicit solver
+implements Eq. (8) and computes the interface value u
+¨g used in the wireframe model.
+One feature of our implementation is the low memory footprint. Explicitly saving the
+results from every intermediate step is critical. Since the amount of generated random numbers
+is typically huge, this would lead to high memory consumption and many memory accesses.
+Therefore, we implemented a call structure where the stages are not called in sequence but in
+a stack like manner. Generated random numbers are directly processed in the OU process, the
+realizations of the OU process are directly summed up to averaged values, ﬁnally these values
+are directly used to integrate the RODE.
+Figure 2(b) shows the amount of time spent in every stage of a typical simulation using the
+averaged Euler scheme. The measurement was done on an non-optimized GPU version. It is
+obvious that most of the time is spent on pseudo random number generation, which causes the
+bottleneck. So we only focus on the optimization of this bottleneck in section 6.
+
+6
+
+Optimization for GPUs
+
+Depending on the properties of a PRNG or transformation function, diﬀerent optimizations for
+GPUs are possible and applied (see Tab. 1).
+178
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+simple
+
+complex
+1
+2
+3
+4
+
+shift
+logical
+compare
+add/mult
+div
+sqrt
+sin/cos
+log
+
+uniform generators
+SHR3
+MT1
+3
+5
+3
+12
+-
+
+transformation functions
+BM2 Polar23 Ziggurat4
+1
+1
+1
+3
+7
+1
+0.5
+0.5
+0.5
+1
+0.5
+0.5
+-
+
+throughput
+32
+160
+?
+192
+?
+?
+32
+?
+
+Average number of instruction to generate one random number
+These transformations use two uniform random numbers to generate two normal random numbers
+For the case the ﬁrst two selected uniform random numbers satisfy the internal termination criterion
+For the case of the ﬁrst branch
+
+Table 2: The number of all logical and arithmetical operations used by the implemented PRNGs
+and transformation functions. The last column lists the throughput for one corresponding
+instruction on a compute capability 3.x CUDA device. “?” indicates that either the operation
+is not implemented in hardware and/or throughput information is not available.
+
+In this work, we do optimization for CUDA-capable devices using the corresponding CUDA
+terminology. Most of the principles and ideas presented in this work are also valid for GPUs
+from other vendors or other massively parallel shared memory accelerators, such as Intel Xeon
+Phi, but some details are CUDA speciﬁc.
+
+6.1
+
+Operations used by PRNGs
+
+Neglecting in this subsection the diﬀerent number of memory accesses and the diﬀerent memory
+access patterns of the various methods for random number generation, one can have a look at
+the pure number of operations and the kind of operations the PRNGs and transformation
+functions use. Table 2 lists these characteristics together with the throughput of the operations
+on a compute capability 3.x CUDA device.
+It is obvious that PRNGs make only use of simple instructions (SHR3 uses the least instructions) while every transformation function (except Ziggurat) also uses complex instructions.
+Just considering the used operations and their throughput on a GPU, the Ziggurat method
+should perform best. We will see later why this is not the case.
+Complex instructions cannot be avoided in the methods where they are used. Since most
+time of the computational stages is spent with such instructions, it makes sense to consider
+possible optimizations. A direct mapping to operations implemented in hardware via intrinsics
+makes sense and is done. This improves the computational performance in terms of FLOPS
+but can lead to poorer precision (which is not the case for our application).
+
+6.2
+
+Optimizing PRNGs with state vector or lookup tables
+
+Besides optimizing the operations of the particular methods, memory issues play a vital role.
+We investigate whether the amount of used memory can be reduced, as well as in which memory
+the data should be stored. As visualized in Tab. 1, MT uses an internal vector and the Ziggurat
+method uses lookup tables. So they are suitable candidates for memory optimization.
+179
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+
+It is not possible to reduce the memory consumption of MT because the computation of a
+random number here is based on random numbers computed 227, 623 and 624 steps before.
+The good performance of the Ziggurat method (which results from a high entry rate in the
+ﬁrst branch using only simple instructions) is only achievable with lookup tables. Calculating
+them on-the-ﬂy or replacing them is not possible. Otherwise one has to invert the CDF of the
+normal distribution. So the amount of used memory by Ziggurat can be reduced but not totally
+avoided.
+Following the second approach of memory optimization (i.e. using the best type of memory for data storage), we save MT’s internal vector and the Ziggurat’s lookup tables in fast
+shared memory. Since there is no communication between the diﬀerent instances of PRNGs,
+an adaption is straightforward. The memory consumption for MT is very high (624 × 32 Bit
+≈ 2.5 kByte) since one thread is mapped to one PRNG and MT needs an internal vector for
+every instance. For the Ziggurat method, storing the lookup tables in shared memory is a more
+suitable option because these are identical for every instance of a PRNG and can be used in a
+shared manner.
+
+6.3
+
+Treatment of Branching
+
+The Polar and the Ziggurat method suﬀer from conditional statements. That leads to possible branching and, hence, to warp divergence. Therefore, the avoidance or even reduction of
+branching is a crucial goal.
+In both cases, branching cannot be completely avoided. The Polar method does not allow
+any modiﬁcation of the branching properties at all without modifying the algorithm. But
+for the Ziggurat method, it is possible to increase the likelihood to execute the ﬁrst branch,
+which also increases the likelihood that all threads of a warp execute this branch. To do so,
+one shrinks the bottom/base strip, resulting in a decreased likelihood to treat the case of the
+normal tail, namely, the second branch. On the other hand, this results in larger lookup tables.
+A discussion on how to ﬁnd the best compromise between memory consumption and shrinking
+the bottom/base strip can be found in [2]. In our implementation, we use lookup tables with
+128 elements.
+
+7
+
+Results
+
+In this section we evaluate the resulting performance of the methods presented in section 4 by
+measuring the number of generated pseudo random numbers by the corresponding, optimized
+implementations. All operations are mapped to intrinsics (if they exist). In particular, we have
+a look at diﬀerent variants using either global or shared memory.
+The test hardware is a single Nvidia Tesla K20c with 2496 CUDA cores at 705 MHz and
+compute capability 3.5. Compiler and library versions are 5.5, the driver version is 319.37. The
+block size for kernel invocations is 512, the grid size 1024. Every thread computes 220 numbers
+and the needed time is normalized accordingly. All computations are done in single precision.
+Comparing the uniform random number generator implementations, one observes that SHR3
+outperforms MT by a factor of more than nine. One reason is that SHR3 only works on registers
+whereas MT needs additional memory. In addition, less operations are needed by SHR3. The
+shared memory variant of MT is drastically less eﬃcient than the global memory one. This is
+due to the low occupancy of the shared memory implementation due to limited size of shared
+memory per multi processor (for MT shared, only 8 threads per block are used).
+180
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+60
+
+54,7
+
+GPRN/s
+
+50
+
+42,55
+
+40
+
+30,51 30,78
+
+30
+
+20,58
+
+20
+10
+0
+
+5,61
+
+0,06
+
+20,14
+
+0,55
+
+Figure 3: Giga pseudo random numbers (GPRN) per second of diﬀerent PRNGs. The input
+for the transformation function has been computed with SHR (times included).
+The transformation function with the highest throughput, however, is BM due to its low
+operation count and lack of conditional branches (the Polar method has to be restarted in
+1 − π4 ≈ 21.5% of all cases). Ziggurat has worse performance than BM because of warp
+divergence due to branching. Even with reduced likelihood of entering the “bad branch”, it is
+still rather likely that at least one thread of a warp does not fulﬁll the branching condition:
+Assuming a probability of 1% for not fulﬁlling the branching condition, the probability that
+a warp with 32 threads diverges is 1 − 0.9932 ≈ 27.5%. Ziggurat beneﬁts from using shared
+memory instead of global memory by a factor of more than 36 because it does not lower the
+occupancy in comparison to MT.
+To compare our results with cuRAND, we use those methods of cuRAND that generate the
+most random numbers per unit of time. For the uniform distribution case, that is XORWOW;
+for the normal distribution case, that is BM. Both, the generation of uniform (79%) and normal
+(38%) random numbers by our implementation is more performant than using the cuRAND
+library although the used methods are from the same algorithm class.
+
+8
+
+Summary & Outlook
+
+We presented an optimized GPU implementation for an RODE approach to simulations of
+multi-storey wireframe buildings under earthquake excitations using the Kanai-Tajimi model.
+Since pseudo random number generation is the most time-consuming part of the application, a
+representative set of diﬀerent PRNGs has been benchmarked. The resulting optimized variants
+outperform standard library implementations. The techniques and improvements shown in this
+contribution can be generalized to other RODE or stochastic models.
+Current work is on higher-order RODE schemes to complement the Averaged Euler method
+and allow time integration with arbitrary order. Counter-based pseudo random number generators and parallelization in time oﬀer two additional ways in parallelization to even more
+account for high workloads of long-term simulations.
+
+References
+[1] G. Box and M. Muller. A note on the generation of random normal deviates. The Annals of
+Mathematical Statistics, 29:610–611, 1958.
+
+181
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+[2] J. Buchmann, D. Cabarcas, F. G¨
+opfert, A. H¨
+ulsing, and P. Weiden. Discrete ziggurat: A timememory trade-oﬀ for sampling from a gaussian distribution over the integers. Cryptology ePrint
+Archive, Report 2013/510, 2013. http://eprint.iacr.org/.
+[3] H. Bunke. Gew¨
+ohnliche Diﬀerentialgleichungen mit zuf¨
+alligen Parametern. Akademie-Verlag,
+Berlin, 1972.
+[4] D. T. Gillespie. Exact numerical simulation of the ornstein-uhlenbeck process and its integral.
+Physical Review E, 54(2):2084–2091, 1996.
+[5] L. Gr¨
+une and P. E. Kloeden. Pathwise approximation of random ordinary diﬀerential equations.
+BIT Numerical Mathematics, 41(4):711–721, 2001.
+[6] P. Imkeller and Ch. Lederer. The cohomology of stochastic and random diﬀerential equations, and
+local lineraization of stochastic ﬂows. Stochastics and Dynamics, 2(2):131–159, 2002.
+[7] P. Imkeller and B. Schmalfuss. The conjugacy of stochastic and random diﬀerential equations and
+the existence of global attractors. Journal of Dynamics and Diﬀerential Equations, 13(2):215–249,
+2001.
+[8] M. Januszewski and M. Kostur. Accelerating numerical solution of stochastic diﬀerential equations
+with cuda. Computer Physics Communications, 181(1):183–188, 2010.
+[9] A. Jentzen and P. Kloeden. Taylor Approximations for Stochastic Partial Diﬀerential Equations.
+SIAM Press, Philadelphia, 2011.
+[10] K. Kanai. Semi-empirical formula for the characteristics of the ground. Bulletin of the Earthquake
+Research Institute, 35, 1957.
+[11] K. Kanai. An empirical formula for the spectrum of strong earthquake motions. Bulletin of the
+Earthquake Research Institute, 39, 1961.
+[12] P. L’Ecuyer. Good parameters and implementations for combined multiple recursive random
+number generators. Operations Research, 47(1):159–164, 1999.
+[13] P. L’Ecuyer and R. Simard. Testu01: A c library for empirical testing of random number generators. ACM Trans. Math. Softw., 33(4), Aug 2007.
+[14] G. Marsaglia. Xorshift rngs. Journal of Statistical Software, 8:1–6, 2003.
+[15] G. Marsaglia and T. Bray. A convenient method for generating normal variables. SIAM Review,
+6(3):260–264, 1964.
+[16] G. Marsaglia and W. Tsang. The ziggurat method for generating random variables. Journal of
+Statistical Software, 5:7, 2000.
+[17] G. Marsaglia and A. Zaman. The kiss generator. Technical report, Department of Statistics,
+Florida State University, 1993.
+[18] M. Matsumoto and T. Nishimura. Mersenne twister: A 623-dimensionally equidistributed uniform
+pseudo-random number generator. ACM Trans. Model. Comput. Simul., 8(1):3–30, 1998.
+[19] D. Narayana, S. Prakalp, and J. Meghana. Stochastic diﬀerential equations simulation using gpu.
+In Proceedings of International Simulation Conference of India, 2012.
+[20] T. Neckel, A. Parra, and F. Rupp. Path-wise algorithms for random & stochastic odes with eﬃcient
+quadrature rules for multiple ou- & wiener-integrals. 2013. submitted.
+[21] T. Neckel and F. Rupp. Random Diﬀerential Equations in Scientiﬁc Computing. Versita, De
+Gruyter publishing group, Warsaw, 2013. open access.
+[22] L. Neiman. Solving stochastic diﬀerential equations using general purpose graphics processing
+unit. Master’s thesis, Russ College of Engineering of Ohio University, 2012.
+[23] NVidia Corporation. cuRAND Library, 5.5 edition, May 2013.
+[24] G. Rose. Kiss: A bit too simple. IACR Cryptology ePrint Archive, 2011:7, 2011.
+[25] M. Saito and M. Matsumoto. Variants of mersenne twister suitable for graphic processors. ACM
+Transactions on Mathematical Software (TOMS), 39(2):12, 2013.
+[26] Z. Schuss. Theory and Applications of Stochastic Processes. Springer-Verlag, Berlin, Heidelberg,
+
+182
+
+GPU Optimization, PRNGs, RODEs C. Riesinger, T. Neckel, F. Rupp, A. Parra and H.-J. Bungartz
+New York, 2010.
+[27] R`eudiger Seydel. Tools for computational ﬁnance. Springer, 2006.
+[28] H. Tajimi. A statistical method of determining the maximum response of a building during an
+earthquake, 1960. Proceedings of the Second World Conference on Earthquake Engineering, Tokyo
+and Kyoto, Japan, Vol. II.
+[29] D. Thomas, L. Howes, and W. Luk. A comparison of cpus, gpus, fpgas, and massively parallel
+processor arrays for random number generation. In Proceedings of the ACM/SIGDA international
+symposium on Field programmable gate arrays, pages 63–72, 2009.
+[30] D. Thomas, W. Luk, P. Leong, and J. Villasenor. Gaussian random number generators. ACM
+Computing Surveys (CSUR), 39(4):11, 2007.
+[31] C. Wallace. Fast pseudorandom generators for normal and exponential variates. ACM Transactions
+on Mathematical Software (TOMS), 22(1):119–127, 1996.
+
+183
+
+

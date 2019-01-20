@@ -1,0 +1,286 @@
+Procedia Computer Science
+Volume 51, 2015, Pages 2854–2858
+ICCS 2015 International Conference On Computational Science
+
+Optimizing Performance of ROMS on Intel Xeon Phi
+Gopal Bhaskaran1 and Pratyush Gaurav2
+1
+2
+
+Tata Consultancy Services, Pune, India
+gopal.bhaskaran@tcs.com
+Tata Consultancy Services, Pune, India
+pratyush.gaurav@tcs.com
+
+Abstract
+ROMS (Regional Oceanic Modeling System) is an open-source ocean modeling system that is
+widely used by the scientiﬁc community. It uses a coarse-grained parallelization scheme which
+partitions the computational domain into tiles. ROMS operates on a lot of multi-dimensional
+arrays, which makes it an ideal candidate to gain from architectures with wide and powerful
+Vector Processing Units (VPU) such as Intel Xeon Phi.
+In this paper we present an analysis of the BENCHMARK application of ROMS and the
+issues aﬀecting its performance on Xeon Phi. We then present an iterative optimization strategy
+for this application on Xeon Phi which results in a speed-up of over 2x compared to the baseline
+code in the native mode and 1.5x in symmetric mode.
+Keywords: Ocean Modeling, ROMS, HPC, Optimization, Intel Xeon Phi, MIC, Vectorization
+
+1
+
+Introduction
+
+ROMS is an ocean modeling system implementing an optimal set of numerical algorithms for
+a time-stepping, free-surface, terrain-following coordinate oceanic model. The algorithms that
+comprise ROMS computational nonlinear kernel are described in detail in Shchepetkin and
+McWilliams [1][2], and the tangent linear and adjoint kernels and platforms are described in
+Moore et.al. [3].
+BENCHMARK is an idealized application of ROMS. There is no ﬁle I/O other than the
+reading of the workload deﬁnition during initialization. A ROMS application can be built as
+serial, parallel (with OpenMP) or distributed (with MPI) application[4]. We used the MPI
+version of ROMS for optimizations in this work.
+Intel Xeon Phi (also called Many-Integrated-Core or MIC, code-named Knight’s Corner) coprocessor is a Symmetric Multiprocessor (SMP) with over sixty cores, four hardware threads per
+core, and 512-bit Single Instruction Multiple Data (SIMD) instructions. It supports two modes
+for applications - native mode, where the application is cross-compiled for the co-processor
+and runs directly on it and oﬄoad mode, where the application is compiled for the host where
+explicit sections are oﬄoaded onto the co-processor for execution.
+2854
+
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2015
+c The Authors. Published by Elsevier B.V.
+doi:10.1016/j.procs.2015.05.447
+
+Optimizing Performance of ROMS on Intel Xeon Phi
+
+Bhaskaran and Gaurav
+
+Figure 1: Comparison of function proﬁle before and after optimization
+The paper by Panzer et. al.[5] describes parallization of UPWELLING application of ROMS
+using CUDA, oﬄoading a major hotspot on the GPGPU.
+In the following sections, we describe the ROMS MPI implementation, application proﬁle
+and then explain how a few targeted optimizations requiring minimal code changes, can more
+than double the application performance on the co-processor.
+
+2
+
+Analysis of ROMS on the Intel Xeon Phi
+
+We have used MPI build of ROMS BENCHMARK application and a workload having a
+2048x256 point grid domain with 30 vertical levels. The simulation takes 30 baroclinic[2]
+time-steps of 50 seconds, each of which having faster barotropic[2] time step of 10 seconds.
+Ranks
+Speedup
+
+16
+1x
+
+32
+1.95x
+
+48
+2.75x
+
+60
+3.5x
+
+120
+4.25x
+
+180
+3.2x
+
+240
+3.25x
+
+Table 1: Speed Gain with Increasing MPI Ranks on Xeon Phi
+As shown in Table 1, the application scales well up to 60 ranks and saturates at 120 ranks.
+Using 120 MPI ranks, the function proﬁle for BENCHMARK is shown by baseline graph in
+Figure 1. The total run-time to complete 30 time-steps on a grid of size 2048x256 using 120 MPI
+ranks is 147s out of which close to 15s (1800/120) is spent in the function lmd skpp tile().
+
+3
+3.1
+
+Optimization of BENCHMARK
+Compiler ﬂags
+
+Changing the compiler ﬂags from -ip -fp-model precise -O3 -mmic to -fp-model fast=1
+-O2 -mmic reduced the runtime to 100s for 120 ranks.
+
+3.2
+
+Vectorization
+
+We used Intel compiler which has the feature to auto-vectorize using data dependency rules
+and heuristics. To assist the compiler, we incorporated numerous techniques[6] as described in
+2855
+
+Optimizing Performance of ROMS on Intel Xeon Phi
+
+Bhaskaran and Gaurav
+
+the following sections, which reduced the runtime to 72s.
+Data Alignment: For eﬃcient vectorization, we must have data fetches of the arrays inside the loop, to be at vector boundary. For illustration, we will take a simple loop from
+lmd skpp.f90 which operates on two vectors z w and hsbl and stores the resultant in a third
+vector sl dpth.
+DO j=Jstr,Jend
+DO i=Istr,Iend
+sl_dpth(i,j)=lmd_epsilon*(z_w(i,j,N(ng))-hsbl(i,j))
+END DO
+END DO
+
+Here sl dpth array is allocated as followingreal(r8), dimension (IminS:ImaxS,JminS:JmaxS) :: sl_dpth
+
+Although the sl dpth array has dimensions (IminS:ImaxS,JminS:JmaxS), computation
+only takes place in an interior subsection of the array (Istr:Iend, Jstr:Jend). Aligning the
+start of the array at a vector boundary will not result in aligned data access. By padding extra
+rows in the array and also some oﬀset bytes at the start of the array, all accesses can be aligned
+as shown below. Here, VECLEN B and VECLEN R8 represent the VPU width in bytes and
+8-byte reals.
+
+!DIR$
+
+real(r8), allocatable, target :: sl_dpth_padded(:)
+!DIR$ attributes align:64
+:: sl_dpth_padded
+real(r8), pointer
+:: sl_dpth(:,:)
+AlignCue = Istr
+PadOffset = VECLEN_R8 - (AlignCue - IminS)
+PadRows = VECLEN_R8 - MOD((ImaxS - IminS + 1), VECLEN_R8)
+ArraySize = PadOffset+((ImaxS-IminS+1+PadRows) * (JmaxS - JminS + 1))
+allocate(sl_dpth_padded(ArraySize))
+sl_dpth(IminS:ImaxS+PadRows),JminS:JmaxS)=>
+sl_dpth_padded((PadOffset+1):ArraySize)
+assume_aligned sl_dpth(Istr, Jstr):VECLEN_B
+
+Flattening of Nested if-else: For compiler assisted vectorization we need to keep the code
+structure simple so that the heuristic mechanisms of the compiler are able to spot a chance to
+vectorize. Deeply nested conditional statements go against this principle.
+In Figure 2, the left hand side shows the pseudo-code of an instance of nested conditions
+from ROMS and a snippet from its equivalent assembly code. On the right hand side is the
+pseduo-code of equivalent conditional statements in ﬂattened form along with the snippet of
+resultant assembly code. Here we can see that a vector operation mask k2 is being created to
+selectively perform operations in the VPU.
+Optimizing Tile Sizes: We observed that rectangular tiles elongated on the i-dimension
+yield better performance than others. This is due to the fact that the loops which are iterating
+fastest in the i-dimension have to face less number of trip counts. Since there is a likelihood of
+remainder loop section which will be less than the full width of VPU after every trip, reduced
+trip counts result in lesser instances of such remainders. For our grid of 2048x256 the optimal
+values of NtileI and NtileJ were found to be 10 and 12 respectively which gave tiles of size
+205x22.
+2856
+
+Optimizing Performance of ROMS on Intel Xeon Phi
+
+Bhaskaran and Gaurav
+
+Figure 2: Eﬀects of ﬂattening nested conditions
+
+3.3
+
+Use of Huge Pages
+
+The large memory footprint of BENCHMARK results in TLB pressure - translations having
+to be ﬂushed and fetched again from the page directory in memory. This can be alleviated by
+the use of large pages[7] - 2MB pages instead of the standard 4K pages. With 2MB pages, the
+same amount of memory can be mapped with fewer TLB entries resulting in better TLB hit
+ratio and increased performance. This reduced the runtime to 61s from 72s.
+
+4
+
+Results
+
+A detailed break-up of gain in terms of function footprint of optimized code vis-a-vis the baseline
+code is shown in Figure 1. Table 2 shows the speedup achieved for our workload after each step
+of optimization.
+Optimization
+Baseline
+Compiler Flags
+Vectorization
+Huge Pages
+
+Runtime
+147s
+100s
+72s
+61s
+
+Speedup
+1.00x
+1.47x
+2.04x
+2.40x
+
+Table 2: Incremental Gains in Xeon Phi Native Mode
+The optimizations had a marginal eﬀect on Xeon host. We paired the Xeon host with the
+Xeon Phi in symmetric mode (partitioning the problem between MPI ranks running on both
+the host and Xeon Phi) to boost the performance of Xeon host.
+Since each core of Xeon host runs faster than a Xeon Phi core, the Xeon cores were oversubscribed to balance the computation1 . It resulted in tile sizes so small that vectorization was
+1 Each Xeon core was made to process 7 tiles, whereas each Xeon Phi core was processing 2 tiles. Thus
+requiring 288 ranks in total (168 on Xeon & 120 on Phi).
+
+2857
+
+Optimizing Performance of ROMS on Intel Xeon Phi
+
+Bhaskaran and Gaurav
+
+not eﬃcient. We decided to increase the problem size to 4096x512 and kept other parameters
+the same. This problem size does not ﬁt in Xeon Phi’s memory of 16GB. But by using Xeon
+Phi as an accelerator in symmetric mode, we were able to reduce the runtime on a single node
+from 156s to 104s. Here 156s is the runtime of the baseline code on an Ivybridge host and 104s
+runtime is achieved by adding a Xeon Phi (KNC) card to the host and running the optimized
+code. Table 3 gives the performance numbers compared to the baseline.
+4096 x 512
+Baseline
+Optimized
+
+Ivybridge
+156s
+136s
+
+Ivybridge+KNC
+221s
+104s
+
+Table 3: Optimization Results in Host & Symmetric Mode
+
+5
+
+Conclusion
+
+Using the methods described in this paper, we were able to speed up the ROMS BENCHMARK
+application by more than 150% on Intel Xeon Phi. Also Xeon Phi co-processor was able to give
+boost to its Xeon host by 50% in symmetric mode. In conclusion, we observe that proper use
+of compiler ﬂags and coding practices can produce highly vectorized code and get beneﬁt from
+the Xeon Phi architecture for an application like ROMS.
+
+6
+
+Acknowledgements
+
+We are grateful to Richard Mills and Indraneil Gokhale from Intel and Manoj Nambiar from
+Tata Consultancy Services for their guidance and support in this work. We would also like
+to thank Hernan Arango from Rutgers Ocean Modeling Group for making the ROMS code
+available to us.
+
+References
+[1] A. F. Shchepetkin and J. C. McWilliams. The regional ocean modeling system: A split-explicit,
+free-surface, topography following coordinates ocean model. Ocean Modeling, 9:347–404, 2005.
+[2] A. F. Shchepetkin and J. C. McWilliams. Correction and commentary for ocean forecasting in
+terrain-following coordinates: Formulation and skill assessment of the regional ocean modeling
+system by haidvogel et al. J. Comp. Phys., 228:8985–9000, 2009.
+[3] A. M. Moore, H. G. Arango, A. J. Miller, B. D. Cornuelle, E. Di Lorenzo, and D. J. Neilson.
+A comprehensive ocean prediction and analysis system based on the tangent linear and adjoint
+components of a regional ocean model. Ocean Modelling, 7:227–258, 2004.
+[4] Rutgers Ocean Modeling Group. Parallelization. [online]. https://www.myroms.org/wiki/index.
+php/Parallelization.
+[5] I. Panzer, S. Lines, J. Mak, P. Choboter, and C. Lupo. High performance regional ocean modeling
+with gpu acceleration. In Oceans - San Diego, 2013, pages 1–4. IEEE, September 2013.
+[6] J. Jeﬀers and J. Reinders. Intel Xeon Phi Coprocessor High Performance Programming. Morgan
+Kaufmann, 2013.
+[7] Karthik Raman. Optimizing memory bandwidth on stream triad. [online]. https://software.
+intel.com/en-us/articles/optimizing-memory-bandwidth-on-stream-triad.
+
+2858
+
+

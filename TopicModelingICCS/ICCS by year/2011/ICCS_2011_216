@@ -1,0 +1,747 @@
+Available online at www.sciencedirect.com
+
+Procedia Computer Science 4 (2011) 2317–2326
+
+International Conference on Computational Science, ICCS 2011
+
+A Comparison of Lock-based and Lock-free Taskpool
+Implementations in Haskell
+Michael Lesniak
+University of Kassel
+Research Group Programming Languages / Methodologies
+Wilhelmsh¨oher Allee 73
+Kassel, Germany
+
+Abstract
+Today, synchronization of shared data structures in multithreaded software is mostly implemented using locks,
+which leads to diﬃcult to understand and error-prone programs. Software Transactional Memory allows lock-free
+concurrent programming by handling the synchronization of shared variables implicitly. We show how to implement
+diﬀerent instances of the widely-used taskpool pattern (global and private taskpools with and without task stealing)
+using both lock-based and lock-free synchronization mechanisms in the functional programming language Haskell.
+We examine their performance using two synthetic algorithms and LU decomposition and report our observations
+about parallel performance and the complexity of the implementation. Our results show that lock-free taskpools are
+not only on par with lock-based implementations concerning parallel performance but are also easier to comprehend
+and develop.
+Keywords: Concurrent Programming, Taskpools, Haskell
+
+1. Introduction
+Today, one of the hardest problem in parallel programming is to keep data that is shared by multiple threads
+consistent. The classic (manual) approach is to restrict access to the data by wrapping the modiﬁcation right around a
+lock: Before a thread is allowed to modify data, it has to obtain the lock. Until the lock is released no other thread is
+allowed to modify the shared data (depending on the particular scenario, even reading can be unsafe). This technique
+has well-known drawbacks that makes the development of correct and performant parallel programs diﬃcult, even for
+experts. A modern approach in concurrent software development named Software Transactional Memory[1], coming
+historically from database research, uses the idea of transactions to allow concurrent access to shared data structures
+without explicit locking and unlocking; instead, functions access shared data structures in transactions and the runtime
+systems takes care of consistency issues, e.g. by restarting transactions in case of conﬂicts.
+In this paper we analyze the advantages and disadvantages of the lock-based and lock-free synchronization models
+with respect to performance and ease of development by implementing variants of the well-known taskpool pattern[2]
+in Haskell.
+Email address: mlesniak@uni-kassel.de (Michael Lesniak)
+
+1877–0509 © 2011 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+Selection and/or peer-review under responsibility of Prof. Mitsuhisa Sato and Prof. Satoshi Matsuoka
+doi:10.1016/j.procs.2011.04.252
+
+2318
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+A taskpool[3] is a design pattern to distribute independent tasks to threads: it stores processable tasks in a shared
+data structure, such that threads can take tasks out of and add new tasks to the pool. Taskpools are good candidates to
+compare the parallel performance of the two synchronization models: First, the number of tasks and thus accesses to
+a taskpool is often large. The underlying parallel runtime system and especially the building blocks of the particular
+synchronization mechanism are therefore constantly under load. Second, the application of taskpools in real-world
+applications is enormous (for example, Java’s Executor Framework[4] is based on this pattern). Results of a comparison have therefore practical relevance both for the implementation of similar parallel programs and parallel runtime
+systems.
+Haskell[5] is a pure and non-strict functional programming language with support for diﬀerent concurrency approaches (see [6, 7, 8]), especially supporting both lock-based and lock-free concurrent programming. It is far from
+obvious how the taskpool pattern, typically implemented in imperative languages, maps onto the respective (parallel)
+Haskell counterparts and which implementation delivers the best performance.
+Our contributions in this paper are:
+• The implementation of three taskpool variants in Haskell. We examine global taskpools and private taskpools
+with and without task stealing.
+• A comparison of the parallel performance of these taskpools with focus on the diﬀerent synchronization models.
+For benchmarking we used three example problems: two synthetic algorithms with varying task structures and
+LU decomposition.
+• A list of observations comparing the development eﬀort of both approaches.
+To brieﬂy state our results, the development of parallel programs using STM is easier and more comprehensible when
+compared with standard lock-based approaches and the performance of lock-free taskpool variants is comparable to
+manual locking.
+The rest of this paper is structured as follows: In section 2, we explain the used Taskpool variants. In Section 3
+we describe the various implementations. In Section 4 we explain our benchmark design and discuss the results of
+the benchmark outcome. Section 5 compares related work and Section 6 concludes and gives an outlook to possible
+future work. Due to the lack of space we refer to [7, 9] for an introduction to concurrent programming using MVars
+and to [8, 10] for STM, respectively.
+2. Taskpool variants
+While selecting and implementing the taskpools we were guided by three requirements: First, the taskpool implementation should not imply a large overhead, leaving most of the processing time for the actual calculations. Second,
+the taskpool’s interface should be consistent and simple to understand; diﬀerent variants and their implementations
+should be interchangeable to ease experimentation. Third, the functioning of the taskpool should be task independent.
+Besides simple task structures it should support complex task structures, where subtasks are spawned, dependencies
+between tasks exists and advanced termination detection is needed. We study three well-known variants of taskpools:
+With a global taskpool all threads access a single homogeneous data structure to take tasks and add new subtasks.
+A global pool is suﬃciently performant when accesses to the pool are infrequent. If threads access the pool often,
+they can delay each other due to the needed synchronization. A private taskpool uses a data structure that consists
+of a public pool as well as private thread-local storage for each thread. On each access to the public pool a set of
+tasks is transferred into the private storage. Successive takes are served by this storage until it becomes empty. A
+private taskpool prevents frequent synchronized accesses to the public pool. If tasks are large, taking a set of tasks of
+the public pool can leave idle threads workless. A shared taskpool resembles a private taskpool but has an extended
+operation to get new tasks: If the public pool is empty, an idle thread accesses the private storage of a still working
+thread and steals some of its tasks. This approach prevents idle threads but enforces additional synchronization on
+thread-local storage.
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+2319
+
+3. Taskpool Implementations
+In this section we describe a general taskpool interface for Haskell and lock-based and lock-free implementations
+for global, private and shared taskpools with a focus on synchronization.
+3.1. The Abstract Taskpool Interface
+Our common interface to all taskpools consists of two parts: a multiparameter typeclass with functional dependencies deﬁnes the necessary functions of a taskpool and a monad deﬁnes the environment in which these functions
+are executed. An application can thus be programmed against the typeclass and use the monad while the diﬀerent
+taskpool implementations can be changed transparently. The typeclass is deﬁned by
+class Taskpool pool
+put :: task ->
+get :: TPMonad
+wait :: TPMonad
+
+task | pool -> task where
+TPMonad pool ()
+pool (Maybe task)
+pool ()
+
+where put adds a task to the taskpool and can both be called by the main thread for initialization and by a working
+thread. get returns Just t if a task t is available and Nothing if the calculation is ﬁnished. If the pool is empty
+and other tasks are still working, get blocks until either all threads are ﬁnished or a new task becomes available. The
+function wait, only used by the main-thread that created and initially ﬁlled the taskpool, blocks until all tasks have
+been processed. It is used to wait both for the the ﬁnish of the ﬁnal calculation and for fulﬁlling of task dependencies
+between iterations (see below).
+The monad TPMonad is used to hide pool-internal data from the interface. It encapsulates a state containing a
+thread-speciﬁc index (Section 3.2 explains its necessity) and the used pool and is deﬁned by
+type TPMonad pool a = StateT (Int,pool) IO a
+
+The following example shows the taskpool independent code for the synthetic algorithm (described in Section 4.2),
+clariﬁes the use of the described operations and demonstrates the simplicity of their usage:
+synthetic :: Taskpool pool Int => Int -> Int -> pool -> IO ()
+synthetic constFactor initTask pool = do
+-- taskpool :: Taskpool pool task => pool -> TPMonad pool () -> IO ()
+taskpool pool $ do
+-- thread :: Taskpool pool task => (task -> TPMonad pool ()) -> TPMonad pool ()
+forkN numCapabilities (thread (task constFactor))
+put initTask
+wait
+task :: Taskpool pool Int => Int -> Int -> TPMonad pool ()
+task constFactor t = do
+if t > 0
+then do -- Use seq to force evaluation of simulated computation.
+calcPi (1*constFactor) ‘seq‘ put (t-2)
+calcPi (5*constFactor) ‘seq‘ put (t-1)
+calcPi (10*constFactor) ‘seq‘ return ()
+else calcPi (10*constfactor) ‘seq‘ return ()
+
+In the example, numCapabilities worker threads are forked; numCapabilities is set on the command line using
+-N<threads> and sets the number of operating system threads used by the parallel runtime. The functions taskpool,
+forkN and thread are internally deﬁned helper functions: taskpool encapsulates the Taskpool monad functions
+and initializes the taskpool state, forkN forks a number of threads whereby each thread receives a running index and
+thread passes received tasks to the given function until the pool is empty. After the worker threads are forked, the
+initial task initTask is put in the pool, and the main-thread waits until all tasks have been processed.
+Our approach supports dependencies between parallel phases (called iterations) as for example needed in the
+parallelization of the LU decomposition: an iteration consists of initial tasks added to the pool by the main-thread and
+waiting for these tasks to be processed. In the following example the main-thread waits until all tasks for a particular
+i and all j have been processed before adding tasks for the next iteration:
+
+2320
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+forkN ...
+forM_ [1..10] $ \i -> do
+forM_ [1..10] $ \j -> do
+put (i,j)
+wait
+-- wait for dependencies between iterations
+wait
+-- wait for final calculation
+3.2. Lock-based Taskpool variants
+We describe the implementation of the global taskpool in detail since it is the basis for the other variants, and
+explain private and shared pools by focusing on the diﬀerences and additions.
+3.2.1. Global Pool.
+An eﬃcient implementation of global pools needs to prevent busy-waiting and implement general termination
+detection. After a description of the pool’s type we will describe the general control ﬂow of the taskpool operations
+and explain in detail how these problems are solved using the information stored in the type.
+The global pool is deﬁned by a type
+data GPool a = GPool {
+gChan
+:: Chan a
+, gWork
+:: MVar (Set ThreadId)
+, gState :: IORef GState
+, gWait
+:: IORef [MVar ()]
+, gFinish :: MVar (MVar ())
+}
+data GState = Put | Wait deriving Eq
+
+-------
+
+put
+W
+RW
+RW
+
+get
+R
+RW
+R
+RW
+W
+
+wait
+RW
+W
+R
+
+The comments after each ﬁeld mark the diﬀerent access modes for each of the taskpool functions, R stands for reading
+access, W for writing and RW for both. We used diﬀerent MVars to synchronize parts of the global state instead of one
+single lock that protects the whole state. This reduces the time each thread needs to hold locks.
+The channel gChan stores tasks of an arbitrary type a and is the only part of the pool responsible for task storage;
+the other parts are used for synchronization and termination detection. A channel is used solely for its FIFO-like interface and its simple usage. In retrospect, Data.Sequence would have been a viable alternative that allows additional
+access patterns (e.g. LIFO) with similar complexity.
+The pool data structure is concurrently accessed by multiple threads and access is synchronized by the lock gWork.
+Besides being the global lock, we use gWork to store the set of ThreadIds of working threads. We have chosen to
+specify thread identiﬁers instead of counting working threads because it allows a more thorough overview of the
+taskpool’s functionality; since the number of threads is small and the set-operations insert and delete are O(log n),
+usage did not induce a measurable performance penalty.
+The taskpool can be in one of two states, Put or Wait. Initially, before wait in the main-thread is called, it is in
+Put-state: initial tasks can be inserted into the pool by the main-thread, idle worker threads need to wait if they can
+not get tasks. After the pool changes into Wait-state, all initial tasks for the current iteration have been inserted. In
+Wait-state, when the pool is empty and all threads are idle, the next iteration can start.
+In general, there are two possibilities to block a thread that is waiting on an event: First, the thread can create
+an empty MVar and block until it is ﬁlled (blocked waiting). Second, the thread can repeatedly acquire a lock, check
+if the event occurred, release the lock, wait some time and retry again (busy waiting). By using busy waiting, the
+event source does not need to be aware of all listeners, but the manual lock-check-unlock cycle creates unnecessary
+locking operations. Since performance was important, we used the ﬁrst approach, which is implemented as follows:
+the thread that holds the global lock and wants to wait creates a new empty MVar w. Depending on the event it wants
+to be informed of, it either adds w to gWait to be informed on the arrival of new tasks or sets gFinish to be informed
+on the start of a new iteration (see get-operation below). Afterwards it releases the global lock and tries to read w.
+The thread is later unblocked when a value is written to its MVar.
+The put-operation works by writing a new task into the channel and unblocking a waiting thread (in gWait), if
+one exists (Figure 1, put).
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+put:
+
+write task
+to channel
+
+wait:
+
+state = Wait
+
+get:
+
+2321
+
+unblock
+waiting thread
+collect finished
+MVars
+
+state = Put
+
+read task
+
+return task
+
+unblock finish
+MVars
+
+N
+pool empty?
+Y
+state = Put OR
+other threads
+working?
+
+operation holding
+a lock
+
+Y
+wait
+
+N
+add finish
+MVar
+
+unblock
+waiting thread
+
+wait for
+finish MVar
+
+return Nothing
+
+operation without
+a lock
+
+Figure 1: Schematic ﬂowchart of the taskpool-operations for a global taskpool
+
+When the wait-operation is called the pool’s state is changed to Wait. An empty MVar is collected for each
+ﬁnished and idle thread using gFinish. Afterwards, the pool’s state is changed to Put to recreate the initial state for
+a possible next iteration, and threads are unblocked (Figure 1, wait).
+The get-operation is called by each thread to receive a new task or to be informed that the current iteration has been
+ﬁnished. Since termination detection is implemented in get, it is the most complex of the three operations (Figure 1,
+get): After the pool structure is locked, the availability of unprocessed tasks is checked. If tasks are available, one is
+read and returned. If the pool is empty but the pool’s state still in Put-state or other tasks are still working and could
+add tasks, the thread starts waiting. If on the other hand all threads have ﬁnished their work, the remaining one is the
+last non-waiting thread; after creating a MVar for gFinish, it unblocks one of the other waiting threads until all are
+unblocked.
+3.2.2. Private Pool.
+A private taskpool is similar to a global pool but has in addition to the pool data structure a thread-local (nonsynchronized) storage for tasks. The implementation was complicated because all details of the local storage should
+be hidden from the forked function. The type PPool is extended by an additional array pPrivate as follows:
+data PPool a = PPool {
+-- ... same as GPool
+, pPrivate :: IOArray Int (ArrayList a)
+, pSize
+:: Int
+}
+
+ArrayList is a custom data structure in the IO monad based on IOArrays which supports additional functions, e.g.
+getting blocks of elements. We generate a thread-speciﬁc index in forkN and modify the initial state for each forked
+thread. The get function can therefore access the thread-local ArrayList by reading the value at its speciﬁc index
+of pPrivate. This approach has the advantages of being performant and easy to implement.
+3.2.3. Shared Pool.
+A shared pool uses the same approach as the private pool but allows threads to access the local storage of still
+working threads to steal tasks; other implementations divide the thread-local pool in a private and shared pool (cf. [11])
+but since we were mainly interested in the synchronization behavior we implemented sharing as follows: The threadlocal ArrayList needs to be extended to be concurrency-safe; the SPool-type has the additional attributes
+data SPool a = SPool {
+-- ... same as PPool
+-- not needed anymore: pPrivate :: IOArray Int (ArrayList a)
+, sPrivate :: IOArray Int (ArrayListLock a)
+, sSize
+:: Int
+}
+
+2322
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+The ArrayListLock is the lock-based equivalent of a non-synchronized ArrayList, where each of the access functions uses a lock to prevent concurrent access. When the private pool is empty, a thread tries to steal half of all tasks
+of a randomly chosen working thread.
+3.3. Lock-free Taskpool Variants
+In the following sections we describe our implementation of the lock-free taskpool variants, where we used STM
+instead of manual locking. After an explanation of the global lock-free taskpool we brieﬂy describe the diﬀerences of
+the other variants to the lock-based approaches.
+3.3.1. Global Pool.
+The lock-free global taskpool uses the same ideas and techniques as the lock-based one, but we need fewer ﬁelds:
+data STMGPool a = STMGPool {
+stmChan
+:: TChan a
+, stmState
+:: TVar STMState
+, stmFinished :: TChan (TMVar ())
+, stmWorking :: TVar (Set ThreadId)
+}
+data STMState = SPut | SWait deriving Eq
+
+-- put
+-- W
+----
+
+get
+R
+R
+W
+RW
+
+wait
+R
+W
+R
+R
+
+The ﬁelds follow the same naming scheme and serve the same purpose as in the lock-based example, the main
+diﬀerences are
+• the use of STM-supported types (TChan, TVar, TMVar), substituting Chan and MVar.
+• no explicit locking. We leave the details of keeping the pool structure consistent to the runtime system.
+• no explicit blocked waiting. Instead of having an explicit list of waiting threads, a thread calls retry if it wants
+to be informed of events and automatically blocks until then.
+These advantages directly map onto the implementation complexity of the taskpool-speciﬁc operations: the putoperation does not need to inform waiting threads about new tasks and the get-operation does not need to keep track
+of manual notiﬁcations for waiting; all operations ignore the various lock- and unlock occurrences.
+3.3.2. Private and Shared Pools.
+From a synchronization point of view the implementation of private and shared pools is identical. Both pools
+use a structure ArrayListSTM to store thread-local data; instead of an IOArray, a TArray is used internally. Since
+the synchronization is done by the STM implementation, we did not need to develop both a locking and non-locking
+version for the shared and private pools, respectively.
+4. Benchmarks
+We tested the diﬀerent taskpool implementations against each problem on a 2.2 GHz 8-core AMD Opteron 875
+running Linux-kernel 2.6.18 with GHC 6.12.1. We ran each benchmark, consisting of a particular example problem, a
+taskpool variant and its synchronization model, ﬁve times from one to eight cores and used the mean value for speedup
+calculation. The basis for the speedup calculations were sequential versions of each problem. The local storage had
+space for 256 tasks for all taskpool variants. We chose our instance sizes such that the absolute runtime on eight cores
+was around thirty seconds.
+We chose example problems for using the taskpools based on the following considerations: First, the problems
+should be processable independently of problem-dependent data structures: A problem where each task must store its
+result in a set of synchronized linked lists would be unfavorable, for instance since the additional synchronizations
+are non-trivial and allow many taskpool-independent optimizations[12]. Second, the tasks should have varying and
+possibly unpredictable computation time, such that the approach of using taskpools is reasonable. Third, the tasks
+generated by the problem should not use much (dynamic) memory: since we test the implementations with a large
+number of tasks, it would stress the garbage collector and thus complicate the interpretation of the results even more.
+Since the observations and their interpretation are similar, we explain the π-calculation-benchmark in detail in the
+next section and focus mainly on the diﬀerences for the other ones.
+
+2323
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+1
+1.04
+0.99
+1.03
+1.07
+
+Speedup for pi-small
+Lock-based
+2
+4
+8
+1
+1.92 3.61 6.10
+1.89 3.52 5.23 0.89
+1.86 3.52 5.99 0.89
+1.92 3.55 6.32 0.89
+
+1
+1.00
+1.00
+1.01
+1.01
+
+Speedup for pi-large
+Lock-based
+2
+4
+8
+1
+1.93 3.73 6.48
+1.89 3.48 6.22 0.91
+1.90 3.56 6.32 0.91
+1.92 3.62 6.42 0.91
+
+Variant
+manual
+global
+private
+shared
+Variant
+manual
+global
+private
+shared
+
+Lock-Free
+2
+4
+1.71
+1.75
+1.69
+
+3.39
+3.26
+3.27
+
+Lock-Free
+2
+4
+1.81
+1.82
+1.80
+
+3.63
+3.60
+3.63
+
+8
+5.72
+5.47
+5.47
+
+8
+6.88
+6.75
+6.84
+
+Table 1: Speedup for the pi-problem
+
+4.1. Calculating Digits of π
+Our most basic and somewhat artiﬁcial example task refers to the calculation of π to an arbitrary number of digits.
+Benchmark problems consist of a list of numbers that each specify the calculation of π to the given precision. This
+problem has the following properties: First, tasks do not spawn subtasks, hence if the pool is empty, all given tasks
+have been processed. Second, since only arithmetical operations are used, the calculation is memory eﬃcient. Third,
+since no subtasks are spawned we can manually assign the tasks to threads beforehand, leaving out the taskpool.
+Therefore we can benchmark the maximal speedup and deduce the overhead of the taskpools for this particular case.
+We benchmarked the π-calculation using two scenarios: ﬁrst, using 131272 tasks with a random task size of
+100±10 (pi-small, ca. 0.001s/task), second with 8192 tasks with a random size of 1000±100 (pi-large, ca. 0.12s/task).
+Since the tasks in pi-small are so short-lived, the pool is accessed frequently to obtain new tasks. This eﬀect is
+weakened in pi-large. To compare the taskpool’s overhead, we split the tasks manually to threads beforehand in an
+additional benchmark run. Table 1 shows the speedup for pi-small and pi-large; values larger than 1.0 for one core
+in the lock-based variants are measurement errors. In the following we describe our observations and give possible
+explanations:
+a) For short-lived tasks the speedup is better when a lock-based variant is used: Since accesses occur extremely often,
+the impact of the overhead of the STM implementation is signiﬁcant.
+b) The lock-based shared pool is better than manual distribution for small tasks: Since tasks are randomly generated,
+threads become idle when they have processed their individual chunks. This is prevented when threads are allowed to
+steal tasks.
+c) The global lock-free pool performs better than the lock-based one: The speedup for both variants shows that the
+lock-free taskpools scales better with many threads. We think that STM’s optimistic transactional approach[8] and
+earlier restart of waiting threads (namely, when a transactional variable is changed) are the reasons for this observation.
+d) For large tasks all lock-free variants perform better than their lock-based counterparts: the pool is not accessed as
+often since the computation time per task is larger, hence the impact of the lock-free overhead is not as severe. At the
+same time, the STM variants still scale better (see c)), thus delivering the better speedup.
+4.2. A Synthetic algorithm
+The next example problem is a synthetic algorithm[13] that involves spawning of subtasks, where each task A(i)
+typically generates two new subtasks A(i − 1) and A(i − 2): In the base case (i ≤ 0) one ﬁnal calculation ({10 f }) is done
+and no subtasks are spawned. In the normal case (i > 0) increasing sized calculations are interleaved with spawning
+of two smaller-sized subtasks ({1 f }A(i − 2){5 f }A(i − 1){10 f }). The values in curly braces describe simulated compu-
+
+2324
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+1
+0.97
+0.96
+0.97
+
+Speedup for syn-small
+Lock-based
+2
+4
+8
+1
+1.87 3.30 5.34 0.89
+1.85 3.50 6.13 0.90
+1.87 3.57 6.21 0.88
+
+Lock-Free
+2
+4
+1.75 3.31
+1.71 3.02
+1.72 3.04
+
+8
+5.88
+3.76
+3.75
+
+1
+1.00
+1.00
+1.00
+
+Speedup for syn-large
+Lock-based
+2
+4
+8
+1
+1.92 3.73 6.47 0.90
+1.89 3.62 5.98 0.90
+1.92 3.74 6.53 0.90
+
+Lock-Free
+2
+4
+1.79 3.59
+1.77 3.42
+1.79 3.57
+
+8
+6.75
+6.55
+6.77
+
+Variant
+global
+private
+shared
+Variant
+global
+private
+shared
+
+Table 2: Speedup for the synthetic algorithm
+
+tational intensive tasks (we chose the calculation of π as indicated above). By varying f , the amount of computation
+per task can be modiﬁed, by varying the initial i the number of tasks and the degree of irregularity can be modiﬁed.
+We benchmarked the synthetic algorithm using two problem instances: ﬁrst, with very small tasks (default size
+of 1) and a depth of 24 (196418 tasks) (syn-small), second with larger tasks (default size 100) and a depth of 15 (2584
+tasks). The results are shown in Table 2. In addition to the mostly similar results of a) to d) we make the following
+observations:
+e) The performance of the private and shared lock-free variants for small tasks is low. We think that the impact of
+the overhead for (synchronized) thread-local storage is even higher: since the tasks are smaller than in pi-small, the
+storage is accessed more often due to the shorter computation time.
+f) The private variants are slower than the respective global pools: Since tasks are stored thread-local and task stealing
+is not enabled, large tasks remain unreachable for idle threads.
+4.3. LU Decomposition
+Solving a system of linear equations described by Ax = b with A ∈ Rn×n and x, b ∈ Rn is common in many
+scientiﬁc applications. A well-known approach is the Gaussian Elimination Algorithm and its specializations. If
+the system has to be solved for multiple b, a more eﬃcient approach than solving the system repeatedly uses the
+LU-decomposition of A.
+There are eﬃcient approaches to parallelize LU decomposition. Due to the available space we omit a thorough
+description and solely describe the task structure. We refer to [3] for an overview and an extended description of
+our approach. There are two distinct diﬀerences in comparison with the previous example problems: First, both
+the number of tasks and the computation time per task becomes smaller with progressing decomposition. Second,
+the calculation works in data dependent parallel phases that we call iterations. To calculate values for the current
+iteration, all values from the previous one are needed; hence, additional data dependencies occur and all taskpool
+implementations need to support iterations and waiting on their processing. We explicitly want to clarify that our
+chosen parallelization does not achieve optimal parallel performance; for better performance one would switch to a
+sequential algorithm when tasks become too small. Nevertheless, we chose this particular example to examine task
+structures of this type.
+For benchmarking the LU problem we measured the decomposition time for a randomly generated 5000 × 5000
+matrix. Table 3 shows the speedup. We made the following observations:
+g) The drop in speedup for eight cores for the lock-based variant is a well-known problem with the parallel runtime
+system of the used GHC version[14]; although this bug has been ﬁxed in later GHC versions, we were not able to
+use them at the time of benchmarking due to technical reasons. Currently we can not explain why the drop does not
+happen with the lock-free variants and instead they even gain performance.
+h) All implementations have low speedup. The sequential implementation was a straightforward nested loop implementation of solely math operations that perform naturally fast. We believe that the overhead of the taskpools in
+
+2325
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+Variant
+global
+private
+shared
+
+1
+0.64
+0.64
+0.63
+
+Lock-based
+2
+4
+7
+1.14 1.98 2.41
+1.14 1.94 2.22
+1.18 2.11 2.77
+
+8
+0.81
+1.04
+1.33
+
+1
+0.37
+0.36
+0.37
+
+Lock-Free
+2
+4
+7
+0.69 1.18 1.45
+0.67 1.05 1.18
+0.67 1.10 1.36
+
+8
+1.47
+1.26
+1.46
+
+Table 3: Speedup for LU-decomposition
+
+conjunction with the diﬃcult task structure leads to these results and that the better performance of the lock-based
+implementations is due to the better handling of short-lived tasks (see a)) and utilization of thread-local storage.
+4.4. Summary
+The benchmarks have shown that for typical scenarios of task pools lock-free programming is performance-wise a
+viable alternative to the traditional lock-based approach. The gap between lock-based and lock-free implementations
+for corner cases can possibly be closed with the implementation of native thread-local storage (either through a library
+or compiler extension) or performance improvements for TArrays.
+5. Related work
+We chose to examine classical taskpools to compare the performance of lock-based and lock-free synchronization
+models because there exists an enormous amount of parallel algorithms that use the taskpool pattern (see [15, 3] for
+an overview) and our work eases the transformation of such algorithms into Haskell. Since we want to reduce the
+development overhead and the diﬃculty of interpreting the benchmark results we made the design choices outlined in
+Section 3. An extensive discussion of the large taskpool design space can be found in [16].
+Due to the high level of abstraction that he Haskell language provides, many more abstract models for parallel
+programming exist: The de-facto standard Glasgow Haskell compiler supports two other parallelization models that
+are feasible for simple task structures (when tasks do not spawn subtasks, involve additional operations in the IO
+monad or need access to shared data structures). By using data parallel Haskell, vectorized operations can be executed very fast; approaches to port this model to GPUs exist[17][18]. By using semi-implicit parallelism[6] with the
+par-operator, it is possible to leave all details of parallelization besides annotating potential sources to the compiler.
+An analysis of diﬀerent problems solely for semi-implicit parallelism can be found in [19]; the examined problems
+from the noﬁb-benchmark suite have similar irregular tasks, i.e. calculation of mandelbrot sets, matrix multiplication
+and raytracing. Intel’s Concurrent Collection Library show a new message-based high-level approach on implementing parallel algorithms while providing more control over the parallel execution and granularity[20]. The parallel
+programming language Eden deﬁnes additional constructs on top of a Haskell-like language to control the parallel
+evaluation of expressions[21]. It especially makes the deﬁnition of skeletons[2] easier and allows the general and
+performant deﬁnition of e.g. taskpool-based algorithms[22].
+An analysis similar to ours for concurrent linked-list implementations, but using diﬀerent implementations (STM,
+MVars and IORefs), can be found in [12]. The authors came to similar results concerning the scalability of STM,
+even though the diﬀerent variants perform quite diﬀerently, hence a future comparison of these variants in the context
+of taskpools would be interesting. The idea of comparing diﬀerent taskpool variants and irregular tasks with synthetic problems has been examined for Java in [13] and OpenMP in [11] and came to similar results concerning the
+diﬀerences between global, private and shared taskpools.
+6. Conclusion and Future Work
+We have shown how to implement diﬀerent variants of the taskpool pattern (global and private pools with and
+without task stealing) in Haskell using both manual lock-based and automatic lock-free approaches. The lock-free
+taskpools were implemented using Software Transactional Memory (STM). We benchmarked each taskpool using
+two synthetic problems and the LU decomposition of a matrix. We made the following observations:
+
+2326
+
+Michael Lesniak / Procedia Computer Science 4 (2011) 2317–2326
+
+• The implementation of parallel programs using STM is easier and less error-prone than their lock-based counterparts, since the developer does not have to keep synchronization issues in mind.
+• The performance of lock-based and lock-free taskpools is comparable. Our benchmark results suggest that
+STM-based implementations currently scale better with a large number of cores.
+• The reasons for worse performance were not in the concept of STM per se, but lay either in implementation
+details, for example, ineﬃcient arrays or very unusual scenarios, i.e. with task durations around 10−3 seconds.
+• Finding performance bottlenecks is diﬃcult in the lock-based and even more diﬃcult in the lock-free synchronization models, since there exist no advanced proﬁlers or other development tools for either implementation.
+Our results suggest that the implementation of STM in GHC is mature enough to use it to develop parallel programs
+that are easier to comprehend and perform comparable to their lock-based variants.
+We see more topics for future research on lock-based and lock-free taskpools in Haskell: ﬁrst, it remains interesting
+to examine if the lock-free variants continue to scale better with more cores, e.g. on Intel’s ManyCore architecure[23],
+which recently made GHC on their platform available. Second, by implementing more performant alternatives for
+thread-local storage for STM, the advanced taskpool variants should deliver better parallel performance. Third, since
+taskpool are so widely used and our results are equal to those of imperative languages, developing and analyzing
+advanced taskpool variants in Haskell is a viable alternative to implementations in imperative languages. Fourth,
+exploring the advantages and disadvantages of the diﬀerent taskpools by implementing additional real world examples,
+e.g. from [15], looks promising.
+[1] N. Shavit, D. Touitou, Software transactional memory, in: Proceedings of the fourteenth annual ACM symposium on Principles of distributed
+computing, PODC ’95, ACM, New York, NY, USA, 1995, pp. 204–213.
+[2] F. A. Rabhi, S. Gorlatch (Eds.), Patterns and skeletons for parallel and distributed computing, Springer-Verlag, London, UK, 2003.
+[3] V. Kumar, A. Grama, A. Gupta, G. Karypis, Introduction to parallel computing: design and analysis of algorithms, Benjamin-Cummings
+Publishing Co., Inc., Redwood City, CA, USA, 1994.
+[4] T. Peierls, B. Goetz, J. Bloch, J. Bowbeer, D. Lea, D. Holmes, Java Concurrency in Practice, Addison-Wesley Professional, 2005.
+[5] S. Marlow, Haskell 2010 language report.
+[6] P. W. Trinder, K. Hammond, W, S. L, P. Jones, Algorithm + Strategy = Parallelism, Journal of Functional Programming 8 (1998) 23–60.
+[7] S. P. Jones, A. Gordon, S. Finne, Concurrent haskell, ACM Press, 1996, pp. 295–308.
+[8] T. Harris, S. Marlow, S. Peyton-Jones, M. Herlihy, Composable memory transactions, in: PPoPP ’05: Proceedings of the tenth ACM SIGPLAN symposium on Principles and practice of parallel programming, ACM, New York, NY, USA, 2005, pp. 48–60.
+[9] S. P. Jones, S. Singh, A tutorial on parallel and concurrent programming in haskell, in: Lecture Notes in Computer Science, Springer Verlag,
+2008.
+[10] S. P. Jones, Beautiful Concurrency, O’Reilly Media, Inc., 2007.
+[11] A. Wirz, M. S¨uß, C. Leopold, A comparison of task pool variants in openmp and a proposal for a solution to the busy waiting problem, Int.
+Workshop on OpenMP.
+[12] M. Sulzmann, E. S. Lam, S. Marlow, Comparing the performance of concurrent linked-list implementations in haskell, in: DAMP ’09:
+Proceedings of the 4th workshop on Declarative aspects of multicore programming, ACM, New York, NY, USA, 2008, pp. 37–46.
+[13] M. Korch, T. Rauber, A comparison of task pools for dynamic load balancing of irregular algorithms, Concurrency and Computation: Practice
+and Experience 16 (2004) 1–47. doi:10.1002/cpe.745.
+[14] GHC Bug #3553: parallel gc suﬀers badly if one thread is descheduled.
+URL http://hackage.haskell.org/trac/ghc/ticket/3553
+[15] T. Rauber, G. R¨unger, Parallel Programming for Multicore and Cluster Systems, Springer Verlag, 2010.
+[16] T. Mattson, B. Sanders, B. Massingill, Patterns for parallel programming, Addison-Wesley Professional, 2004.
+[17] S. P. Jones, R. Leshchinskiy, G. Keller, M. M. T. Chakravarty, Harnessing the multicores: Nested data parallelism in haskell (2008).
+[18] S. Peyton Jones, Harnessing the multicores: Nested data parallelism in haskell, in: APLAS ’08: Proceedings of the 6th Asian Symposium on
+Programming Languages and Systems, Springer-Verlag, Berlin, Heidelberg, 2008, pp. 138–138.
+[19] S. Marlow, S. Peyton Jones, S. Singh, Runtime support for multicore haskell, SIGPLAN Not. 44 (9) (2009) 65–78.
+[20] R. Newton, C.-P. Chen, S. Marlow, Intel concurrent collections for haskell, submitted to the Haskell Symposium 2010 (2010).
+[21] R. Loogen, Y. Ortega-mall´en, R. Pe˜na mar´ı, Parallel functional programming in eden, J. Funct. Program. 15 (2005) 431–475.
+[22] J. Berthold, M. Dieterle, R. Loogen, S. Priebe, Hierarchical master-worker skeletons, in: Proceedings of the 10th international conference on
+Practical aspects of declarative languages, PADL’08, Springer-Verlag, Berlin, Heidelberg, 2008, pp. 248–264.
+[23] Intel Manycore Testing Lab.
+URL http://software.intel.com/en-us/articles/intel-many-core-testing-lab/
+
+

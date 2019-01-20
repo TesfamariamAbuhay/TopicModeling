@@ -1,0 +1,916 @@
+Procedia Computer Science
+Volume 80, 2016, Pages 1147–1158
+ICCS 2016. The International Conference on Computational
+Science
+
+Asynchronous Two-Level Checkpointing Scheme for
+Large-Scale Adjoints in the Spectral-Element Solver
+Nek5000
+Michel Schanen, Oana Marin, Hong Zhang, and Mihai Anitescu
+Mathematics and Computer Science Division
+Argonne National Laboratory
+Argonne, IL, USA
+{mschanen,oanam,hongzhang,anitescu}@anl.gov
+
+Abstract
+Adjoints are an important computational tool for large-scale sensitivity evaluation, uncertainty
+quantiﬁcation, and derivative-based optimization. An essential component of their performance
+is the storage/recomputation balance in which eﬃcient adjoint checkpointing strategies play a
+key role. We introduce a novel asynchronous two-level adjoint checkpointing scheme for numerical time discretizations targeted at large-scale numerical simulations. The checkpointing scheme
+combines bandwidth-limited disk checkpointing and space-limited binomial memory checkpointing. Based on assumptions about the target petascale systems, which we later demonstrate to
+be realistic on the IBM Blue Gene/Q system Mira, we create a model of the predicted performance of the adjoint computation and validate it using the highly scalable Navier-Stokes
+spectral-element solver Nek5000 on small to moderate subsystems of the Mira supercomputer.
+Keywords: Two-Level Checkpointing, Adjoints, Gradient, Large Scale, Nek5000, CFD
+
+1
+
+Introduction
+
+The computation of adjoints of time-dependent nonlinear systems of equations puts a huge
+strain on memory requirements. The goal of this paper is to enable adjoint-based optimization
+on time dependent partial diﬀerential equations (PDEs). For brevity purposes, we assume a
+ﬁrst order time intergration scheme and we ignore whether the scheme is implicit or explicit
+since this aspect bears no importance for our purposes. If we consider our scheme given by, say,
+a function F , we then have for the forward problem, called forward run an update of the type
+ut+1 = F (h, L[ut ]), where h is the time-step length and the operator L the accumulated spatial
+operators such as gradient and Laplacian. Similarly for the reverse problem, called adjoint run
+we have
+¯ t ]),
+¯ t−1 = F (h, L∗ [ut−1 , u
+(1)
+u
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2016
+c The Authors. Published by Elsevier B.V.
+
+doi:10.1016/j.procs.2016.05.444
+
+1147
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+¯ denotes the adjoint variable of u and L∗ is the adjoint operator. The adjoint run
+where u
+will access ut available from the forward run. Notice that at the peak memory requirement,
+¯ t−1 is computed
+just after the forward run, all checkpoints ut are stored in memory and u
+according to (1). This data-ﬂow reversal problem of ut is known as adjoint checkpointing
+in the ﬁeld of Algorithmic Diﬀerentiation (AD) [5] or discrete adjoints. To reduce memory
+consumption a trade oﬀ between recomputations and memory requirement may be applied
+using a so called adjoint checkpointing strategy. This research ﬁeld is not related in any way to
+resilience checkpointing, as there are no assumptions on system failure; all checkpoints of ut are
+equally important in (1). However, resilience checkpointing may be applied as a second layer
+on top of the adjoint computation or both checkpointing strategies may be run in combination,
+although the latter has still to be addressed in research. Griewank and Walther [4] developed
+an oﬄine algorithm, named revolve, to generate an adjoint checkpointing scheme that has
+been proven to minimize the number of recomputation time steps, given the total number of
+time steps and the number of allowed checkpoints in memory. To address the problems that
+an a priori number of time steps is not known (e.g., in the case of adaptive time stepping),
+researchers have proposed several online checkpointing algorithms [10, 6, 11]. The common
+feature for all these oﬄine and online algorithms is that only limited RAM is considered to be
+the storage medium and the cost of storing and restoring checkpoints is negligible.
+Using extra storage devices such as external disks for checkpointing may reduce the overall
+computational time despite the I/O cost, which may be considerable even on massively parallel
+systems with many nodes. To this end, Stumm and Walther proposed a multistage oﬄine
+algorithm in [9] to minimize the overall access cost to checkpoints, which could be stored
+either in memory or on disk, with the choice depending on the frequency of the read-write
+checkpoint operations. The access cost of one disk checkpoint is assumed to be less than the
+cost for one time step, which is a strong restriction. More important, all these algorithms apply
+only one binomial strategy in the adjoint computation and hence can be classiﬁed as singlelevel schemes. Although having proven the optimality bounds for these algorithms, optimality
+proofs for two-level checkpointing are still limited. In [1], Aupy et al. prove an optimal scheme
+for synchronous as opposed to asynchronous two-level checkpointing with unlimited size and
+non-negligible latency for the disk.
+In our two-level checkpointing scheme we distinguish between storing a checkpoint to memory or to disk under the following assumptions:
+A1 The total number of time steps is a priori unknown.
+A2 Disk I/O is limited only by bandwidth and latency (not by size).
+A3 There may be inﬁnite disk checkpoints; writing to archive tapes is considered as disk.
+A4 Memory is bound by size.
+A5 Memory bandwidth is inﬁnite (writing/reading is 0 cost compared to the rest of the
+application).
+Assumption A1 allows for a time stepper where the total number of time steps is unknown.
+Assumptions A2 and A3 posit an application that is able to exploit the full I/O bandwidth is
+able to write during the entire execution time without being limited by storage size. Assumption A4 describes RAM per core limited by the ever-increasing clock rate, also known as the
+memory wall. Assumption A5 considers the writing and reading of checkpoints into RAM to
+be instantaneous. This will be investigated in Section 4.2.
+Single-level checkpointing schemes can accommodate a stringent Assumption A4 only by
+signiﬁcantly increasing the number of recomputed steps for very long time horizons [4, 11].
+1148
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+The currently proposed multilevel checkpointing schemes [9, 1] cannot satisfy A1. We aim to
+accommodate all ﬁve assumptions. In particular, our contributions are the following: (1) a
+novel asynchronous two-level adjoint checkpointing algorithm, (2) a performance model of this
+algorithm under the parametric limitations of Assumptions A2 and A4, (3) validation of this
+performance model on a large subsystem of the Mira supercomputer, and (4) prediction of
+the performance for running the largest possible adjoint computation instance for Nek5000 on
+Mira. In the numerical experiments section we will demonstrate that in our target regime of a
+large number of time steps, our two-level approach outperforms single-level checkpointing. To
+our knowledge, this is the ﬁrst case of a two-level adjoint checkpointing scheme demonstrated
+for ﬂuid dynamics adjoint computations on the scales described here. Moreover, an interesting
+feature of our solution is that it makes intensive use of all assets of the supercomputers—CPU,
+memory, disk, and archive—to improve overall time to solution.
+
+2
+
+Asynchronous Two-Level Checkpointing Algorithm
+
+2.1
+
+HPSS (archive)
+
+Disks
+
+I/O Nodes
+
+Compute Nodes
+
+This section introduces a novel two-level adjoint checkpointing scheme that, as opposed to
+revolve [4], satisﬁes Assumption A1, in addition to A2–A5 in Section 1.
+We present in Figure 1 the hardware setup
+for our target system Mira. There are two Mira
+storage devices for ﬁles. One are the disks
+Storage Area Network
+Fiber
+of Mira, connected to the compute nodes at a
+2GB/s
+≈ 2GB/s
+relatively high bandwidth. Storage size is still
+limited, however. Hence the archive, called
+the high-performance storage system (HPSS),
+Figure 1: Mira storage hierarchy
+is made available for storing large amounts of
+data. There is no oﬃcial limit on its size, its
+main limiting factor being a bandwidth of around 2 GB/s. We assume and verify that the
+write to Mira disk is negligible compared with that of the transfer to archive, which takes up
+a considerable amount of time and can be done asynchronously (see Section 4 for timings).
+Our top-level checkpointing layer uses limited disk space only as a caching mechanism for the
+transfer to archive, and not as resident storage. Thus, the archive bandwidth transfer is the
+practical limiting factor, while space becomes unlimited.
+Our two-level checkpointing algorithm proceeds as follows. On the top level we carry out
+a bandwidth-limited checkpointing to archive where no new checkpoint is generated until the
+current one has ﬁnished being written to archive. As a result, the current checkpoint stride,
+q, is a function of the available bandwidth. On the lower level we use revolve in the adjoint
+run, with checkpointing in limited memory, which is known to be optimal during computational
+ﬂow reversal once q is prescribed by the forward run. First, we introduce the ﬁrst level with
+checkpoints to archive in Section 2.1, followed by the memory checkpoints in Section 2.2, which
+are applied in the reverse run of the archive checkpoints.
+
+Checkpointing to Archive
+
+The ﬁrst level checkpointing stores a checkpoint at every qth time step (see Figure 2). This
+process can be asynchronous, and it is assumed so for the rest of this work. The larger the stride
+q, the more recomputations will be required by revolve in the reverse run (see Section 2.2).
+The reason is that the revolve memory checkpointing is restricted by a limited number of
+checkpoints c while covering this larger stride q. The lower bound of q is given only by the
+1149
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+q
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+11
+
+12
+
+13
+
+14
+
+Figure 2: Forward run with a store (down-arrow) of disk checkpoints at every q-th time step.
+q changes at every stride and is dependent on the bandwidth to archive.
+bandwidth (network), the checkpoint(deﬁned by the problem size) size and the wall clock time
+of one time step (a property of Nek5000 on Mira, which will be proﬁled in Section 4).
+Algorithm 1 presents the algorithm for
+storing checkpoints. The checkpoints are
+stored using a stack interface by calling apush Algorithm 1 Bandwidth-limited disk check(statet ), where statet is the state at time step pointing: forward run and cached asynchronous
+t. apush is considered to be asynchronous: push to disk
+the push is initialized and the function reRequire: Initial conditions: state0
+turns while the data is being copied. As a
+done ← f alse
+consequence of A2 and A3, we assume that
+apush(state0 )
+apush never fails because of space limitations.
+c ← 0, q ← 0, t ← 0
+First the initial state0 is stored via apush
+while !last do
+(state0 ), where c is the counter of all the
+statet , last ← forwardStep(statet−1 )
+stored archive checkpoints and q is the disif transf er done then
+tance in time steps to the last checkpoint.
+apush(q)
+The algorithm loops over all the time steps
+apush(statet )
+t = 1 to t = n, where the forward solver in
+c ← c + 1, q ← 0
+forwardStep() computes state statet based
+end if
+on statet−1 . The application that implements
+q ←q+1
+forwardStep() has to return via the Boolean
+t←t+1
+last whether this was the last time step or
+end while
+not. Bandwidth is considered available if
+apush(q)
+there is no checkpoint currently transferred
+apush(c)
+via apush to the archive. This availability is
+return statet
+represented by the Boolean transf er done,
+being true if apush is done with the transfer
+and f alse otherwise. If the transfer is done, a new checkpoint is stored using an asynchronous
+apush(statet ). This operation is preceded by storing the stride size q that corresponds to the
+just ﬁnished transfer. This information q is important for the oﬄine revolve scheme that is being applied in the adjoint run (see Section 2.2). The checkpoint counter c is then increased by
+one, and the stride size q is reset to 0. Finally, independently of whether a checkpoint is saved
+or not, the stride size q is increased by one. After the last time step t = n has been computed,
+forwardStep() returns with last set to true, and the while loop breaks. The last stride size
+q is being pushed together with the ﬁnal number of checkpoints c. Once the forward run is
+completed, the computational ﬂow reversal starts using the restore of a disk checkpoint and the
+application of revolve as a second-level checkpointing in order to compute the adjoints.
+
+2.2
+
+Restoring from Archive and Applying revolve
+
+This section describes the stride-by-stride restoring of the disk checkpoints followed by the
+application of revolve and thus the actual computation of the adjoints. For each stride with
+variable size q determined in Section 2.1, revolve is run (see example in Figure 3). The disk
+1150
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+.
+
+5
+
+6
+
+.
+
+3
+
+4
+
+5
+
+.
+
+Schanen, Marin, Zhang and Anitescu
+
+3
+
+4
+
+.
+
+0
+
+1
+
+2
+
+3
+
+.
+
+1
+
+2
+
+.
+
+0
+
+1
+
+.
+
+Figure 3: Single reverse run of one stride with q = 7, archive restore (up-arrow), memory store
+(dashed down-arrow) and memory restore (dashed up-arrow) according to revolve.
+
+checkpoint is restored (up-arrow), and the forward run begins where new memory checkpoints
+of state statet (dashed down-arrows) are placed according to the revolve scheme (t = 3 and
+t = 5). At the end of the stride (here t = 7), the adjoints are initialized by the initial condition
+of the adjoint state adjstate0 or taken over by the adjoint state adjstate of the last adjoined
+stride. After the adjoint of t = 5 is computed, t = 3 is restored. Then state t = 4 is recomputed
+and the adjoint of t = 4 is evaluated. Again, state t = 3 is restored and the adjoint of t = 3
+computed. Now, the disk checkpoint (cached in memory) of t = 0 is restored, and state t = 1 is
+recomputed and stored. This step is followed by state t = 2 being recomputed and the adjoint
+of t = 2 being computed. State t = 1 is restored, followed by the adjoint evaluation of t = 1.
+The adjoint of t = 0 then is computed by reusing again the checkpoint of state t = 0. The
+additional number of recomputations compared with a store-all strategy is 3. The total memory
+checkpoints used is 2, whereas the store-all strategy would have used 5.
+The interface for revolve used in Algorithm 2 is presented as a black box through the interface function revolve(state, q, adjstate, snaps), where state is the forward state and adjstate
+is the adjstate used to adjoin a stride of length q under the constraint of using at most snaps
+number of checkpoints. snaps is a constant global parameter for the entire run and does not
+need to be handed over to revolve in our algorithm.
+The revolve interface is called by Algorithm 2, while the disk checkpoints are reAlgorithm 2 Bandwidth-limited disk check- stored. The checkpoints are restored with
+pointing: reverse run and pop asynchronous one prefetch buﬀer. The only requirement is
+the initial adjoint state adjstate0 and maxiahead from disk
+Require: Initial adjoints: adjstate0 , snaps is mum number of memory checkpoints snaps.
+The checkpoint counter c is popped by a call
+set
+to a synchronous pop. Then the ﬁrst stride
+c ← pop()
+size
+q is popped, followed by the state state.
+q ← pop()
+All
+this
+has to be done synchronously bestate ← pop()
+cause
+c,
+q,
+and state have to be fully loaded
+qc ← apop()
+before
+revolve
+is called for the ﬁrst time.
+statec ← apop()
+Now
+an
+asynchronous
+pop apop() is called
+adjstate ← revolve(state, q, adjstate0 )
+prefetch
+the
+next
+stride
+size qc and state
+to
+for c − 2 to 0 do
+.
+As
+opposed
+to
+pop(),
+the function
+state
+c
+q ← qc , state ← statec
+apop()
+directly
+returns
+while
+doing
+the transqc ← apop()
+in
+the
+background,
+leading
+to
+the
+ﬁrst call
+fer
+statec ← apop()
+to
+revolve
+that
+computes
+the
+updated
+adadjstate ← revolve(state, q, adjstate)
+joint
+state
+adjstate
+of
+the
+ﬁrst
+stride
+of
+size
+end for
+q based on the restored state state and the
+return adjstate
+initial adjoints saved in adjstate0 . During
+this computation apop continues to restore
+the second state in statec . When the ﬁrst call to revolve is done, we enter the checkpoint
+loop which will be repeated c − 1 times. The prefetched stride size qc and state statec will be
+1151
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+copied to q and state, respectively, followed by the next prefetch of the next stride in qc and
+statec through a call to apop. Then, revolve is called on the current stride. After c − 1 steps,
+the ﬁnal result is saved in adjstate. Notice that in the case of multistep time steppers the only
+diﬀerence is larger checkpoint sizes to cover all the required time steps.
+
+3
+
+Algorithmic Analysis
+
+Here we analyze the performance of our two-level checkpointing algorithm. As a performance
+metric, we use the number of time-step recomputations in the adjoint, lower being better. For
+brevity we consider the ﬁxed-stride case, which can provide considerable insight into the overall
+performance. Our analytical tool is encapsulated in the following result.
+Proposition 1. Given C allowed checkpoints in RAM, the number of extra forward steps
+(recomputations) needed by the two-level checkpointing Algorithm 2 with a ﬁxed stride size Q
+for the adjoint computation of M time steps (M is not known before the end of the computation
+is ﬂagged) is
+Nr = M + ns p(Q, C) + p (nl , C)
+(2)
+where ns = M/Q is the number of Q-sized strides and nl = M mod Q is the size of the last
+b+t
+stride. Here p(a, b) = t a − t−1
+, where t is the unique integer (also known as repetition number
+b+t−1
+[4]) satisfying t−1 < a ≤ b+t
+t .
+Proof. According to Proposition 1 in [4], p(a, b) gives the number of extra forward steps using
+revolve to adjoin a sequence of a time steps storing up to b checkpoints. Thus, the overall
+number of forward steps needed for a time steps is a + p(a, b). The ﬁrst-level checkpointing of
+the two-level scheme storing data to disk requires integrating M steps. All the following forward
+steps should be considered as “extra” steps. Summing up the overall number of forward steps
+in each stride and substituting M = ns Q + nl leads to (2).
+With this proposition, we can predict the actual number of recomputations of our online
+checkpointing algorithm for diﬀerent M , C, and Q. Figure 4 plots, as a function of the total
+number of time steps M , the number of recomputations for the oﬄine revolve algorithm [4];
+the online algorithm combing Walther’s algorithm [10] and Wang’s algorithm [11]; and our twolevel algorithm with stride sizes Q = 200 and Q = 250. The number of maximum checkpoints
+in RAM is set to C = 50. The combined algorithm in (2) using only checkpoints in RAM has
+been proven to be optimal when the number of time integration steps is less than 50+2
+= 1326,
+2
+=
+23426.
+After
+that
+point,
+it
+and near-optimal until the number of time steps reaches 50+3
+3
+switches to Wang’s algorithm [11], which has a proven minimal repetition number. The oﬄine
+revolve algorithm of case (1) is included for comparison even if it is not applicable since M is
+not known a priori. Its performance is computed as if M were known a priori.
+From Figure 4(a) we can see that our algorithm needs fewer recomputations than does
+the combined online algorithm if M is suﬃciently large (larger than approximately 5, 300 for
+Q = 200 and 6, 550 for Q = 250). For lower values of M , our algorithm may need more
+recomputations, but only slightly; see Figure 4(b). Nevertheless the beneﬁts in recomputations
+by using our algorithm signiﬁcantly increase as the number M of integration time steps becomes
+large. For example, at time step 50, 000, the gap in the number of recomputations between our
+algorithm and the combined online algorithm is already over 50, 000. That is, our two-level
+algorithm requires less than 75% of the number of recomputations of the best single-level online
+1152
+
+
+
+
+
+
+
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+ !
+!
+"#!$%&
+"#!$%&
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 		
+
+
+
+(a) 250-50000 time steps
+
+
+
+
+
+Schanen, Marin, Zhang and Anitescu
+
+!"#
+#
+$%#&'(
+$%#&'(
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+
+	
+
+
+
+(b) 4500-7500 time steps
+
+Figure 4: Comparison with online and oﬄine revolve algorithms in terms of time-step recomputations. There are up to 50 checkpoints available in RAM. For better visibility, (b) is extracted
+from a portion of (a).
+scheme. We note that these number ranges are common for complex ﬂuid dynamics simulations
+such as those carried out by Nek5000 [2].
+An interesting observation deriving from Proposition 1 and also seen in Figure 4(b) is that
+a smaller stride size Q results in an even small M , where our two-level checkpointing scheme
+presents a deﬁnite advantage. This suggests the beneﬁt of using as small a stride Q as feasible.
+In the next section we will validate this observation and demonstrate the other beneﬁts of our
+algorithm with proﬁling data from actual Nek5000 runs on Mira.
+
+4
+
+Performance Analysis Based on Mira and Nek5000
+
+In this section we carry out proﬁling experiments and analyze how our predicted performance
+results, which use Assumptions A1–A5, compared with actual performance as measured on
+Nek5000 runs on the Mira supercomputer.
+Nek5000 is a spectral-element thermo-hydraulics solver, here however we focus only on the
+ﬂow part given by the incompressible Navier-Stokes equations. Neglecting the force terms and
+presuming the ﬂow to be driven by initial/boundary conditions we have the following adjoint
+Navier-Stokes equations:
+¯
+∂u
+1 2
+¯ − u · ∇¯
+¯ + ∇¯
+¯=0
++ (∇u) u
+∇ u
+u+
+p = 0, ∇ · u
+∂t
+Re
+
+(3)
+
+Our test case is based on the three-dimensional lid driven cavity [7] which consists of a box
+where the boundary conditions are set to 0, except for the velocity u in x direction of the top
+lid set to 1. The Reynolds number is set at Re = 4000, while the initial conditions u0 inside
+the box are all set to zero. Nek5000 is run for roughly 100k until the end time T timesteps
+at which point the ﬂow uT is steady. Adjoint computations need a ﬂow metric for computing
+the adjoint sensitivity. In our numerical experiments, we compute the sensitivity of the ﬁnal
+kinetic energy Ek = 12 < uT , uT > / < u0 , u0 > normalized by the initial condition u0 , T
+being the end time. Ek is here used as an objective function, and it is an important metric for
+dE
+by setting the initial
+ﬂow sensitivity [8]. One adjoint computation gives us the gradient du
+0
+¯ T = uT .
+condition of the adjoint (at ﬁnal time, due to the computational ﬂow reversal) to u
+To validate the implementation the gradient of the objective function for one time step was
+compared using ﬁnite diﬀerences with the one accumulated by an adjoint run of the lid driven
+1153
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+(a) Velocity u
+
+(b) Adjoint
+
+Schanen, Marin, Zhang and Anitescu
+
+(c) Finite diﬀerence
+
+Figure 5: Validation of the gradient in x direction computed of the energy Ek at time step t
+with respect to velocity u at time step t − 1 via adjoint and ﬁnite diﬀerence in the 2d lid driven
+cavity.
+cavity (see Figure 5). This comparison requires a number of computations proportional to the
+number of degrees of freedom, whereas the adjoint was, independently of the degrees of freedom,
+2.2 slower than a forward step. This makes the gradient using ﬁnite diﬀerence with only 1,296
+degrees of freedom already roughly 600 times more expensive than using the adjoint.
+
+4.1
+
+Nek5000 Performance Proﬁle
+
+Nek5000 has been shown to scale up to 250,000 cores. For a more detailed description of
+Nek5000, please refer to the user manual [3]. For simplicity, we used a ﬁrst order time stepper
+in our test case. Nek5000 shows good scaling when run with two processes per core provided
+that it uses at least nP equal to 2, 000 to 4, 000 with nP being the degrees of freedom per
+process. Below that limit communication overhead becomes signiﬁcant. The smallest choice
+in this range for nP gives the fastest time to solution. However, this may not be the most
+cost-eﬃcient solution in terms of energy consumption or total core hours. Given that each node
+has 16 cores, we run with 32 processes on one node. One node has 16 GB of RAM, so we end up
+with 0.5 GB of maximum RAM per process. This gives us a maximum limit on nP , the degrees
+of freedoms per process. To have a representative test case, we assumed that 0.25 GB of RAM
+per process should be used, leading to 50, 000 degrees of freedom per process. To be precise,
+the RAM usage is expected to be equal to 50, 000 · 8 [bytes] · 450 ≈ 200M B, which we validated
+in measurements throughout our tests. The factor 450 is a Nek5000-speciﬁc factor, deﬁning the
+workspace required to carry out various internal operations, mapping from complex geometries
+to reference elements etc.
+
+4.2
+
+Memory Checkpoints Using Revolve
+
+For the memory checkpoints we set a maximum number of 50 available memory checkpoints.
+This translates into a reasonable memory consumption of 50 · 3 [dimension] · 8 [bytes] ·
+50000 [points per process] ≈ 60M B per process. Thus Nek5000 requires in this setup a total
+of 260 MB of memory per node. The ﬁrst benchmarks were done on 512 nodes, amounting to
+8, 192 cores and thus 16, 384 processes. Besides the number of checkpoints, revolve requires
+the total number of time steps, in our case the stride size. Based on the analysis in [4], we
+can produce the predicted additional eﬀort of recomputation revolve needs after feeding in the
+1154
+
+	
+
+		
+
+
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 6: The analytically derived predicted normalized runtime assumes that storing and
+restoring memory checkpoints in lstinlinerevolve has no cost and one adjoint and primal solve
+for one time step have the same runtime. The seeming discontinuity in the predicted time
+= 52
+marks the point at s+2
+s
+50 = 1300 mentioned in [10]. This point marks maximum reusage
+of the checkpoints and thus also maximum memory access, hinting at the largest diﬀerence at
+this point between measured and predicted curve in life experience. For revolve 50 checkpoints
+were used on 8,192 cores (512 nodes) at a problem size of 100, 000 degrees of freedom per core.
+The disk I/O bandwidth during the forward run determines the stride of time steps that revolve
+will be applied to.
+information we have measured in our runs that the dual solve takes 2.2 times as long as the
+primal solve. The predicted performance result is displayed in Figure 6 as normalized runtime,
+that is, the ratio of an entire adjoint computation of a given number of time steps n (relying on
+our checkpointing scheme) to a forward computation of n time steps. As explained in Section 2,
+this ratio is only dependent on the number of time steps q in a stride while using our adjoint
+checkpointing algorithm.
+In Figure 6 we see also that the normalized runtime is already relatively ﬂat after a stride size
+of 500 time steps. Much of the runtime improvement can be done only if the strides get below
+500 time steps. However, having a normalized runtime below 5 at a stride size of 1,000 time
+steps is still considered acceptable. Given the curve ﬂatness, we decided that the reasonable
+range of strides should be no larger than 2,500, and we then ran numerical experiments on
+Mira with the stride in the range of 50–2,500. We see that the agreement between prediction
+and measurement is excellent; they are oﬀ by 8.5% in the worst case. This points out that
+the assumptions of revolve, also used in this work, and representing a subset of the A1–
+A5 assumptions are indeed reasonable to produce this performance model of our second-level
+checkpointing layer. The next section investigates larger settings, the disk/archive performance,
+and the impact on the ﬁrst-level checkpointing layer of our approach.
+
+4.3
+
+Disk Checkpoints Based on Revolve Performance and Bandwidth
+
+We are now in a position to state our overall performance model. The ﬁnal assumption, which
+is a design objective of Nek5000 and also extensively observed empirically for this code, is
+1155
+
+
+
+ !
+"#$%&&
+"#$%&
+
+
+
+
+
+
+Schanen, Marin, Zhang and Anitescu
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+
+
+
+
+
+
+
+	
+
+
+
+Figure 7: Runs conducted with a stride size of 250 and 50 memory checkpoints per stride.
+The average runtime of the forward run and adjoint run per stride represent the weak scaling
+behavior of Nek5000. The normalized runtime stays constant with increasing number of nodes.
+
+that the compute time of a forward time step can be assumed constant if the number of
+degrees of freedom per process, nP , is ﬁxed to some quantity τs which in this model can
+be measured with a small experiment. Since this is an indication of the scalability of the
+checkpointed code and not related directly to checkpointing, we keep it separate from A1–A5.
+Then the size S(n) of a checkpoint can be computed as we did in Section 4.2. The disk/archive
+bandwidth B(S) can be estimated by running read/write experiments on Mira with ﬁles of
+the target checkpoint size. With this measured data, the expected stride size of our ﬁrst-layer
+S(n)
+checkpointing scheme becomes q =
+. Subsequently, the performance of the reverse
+B(S(n)) · τs
+computation, a normalized adjoint/forward time-step calculation, can be computed from the
+performance model as we did in Section 4.2 and displayed in Figure 6. This model now can
+produce an estimate of the usage of all Mira resources at any run parameter size. IO noise may
+become an issue if the asynchronous restore is not ﬁnished after a stride has been adjoined.
+This has always been consistently not the case in our test runs. If this is not guaranteed on a
+system, our performance model fails.
+Next we validate our performance model and our contention that our two-level checkpointing
+scheme scales weakly for a given ﬁxed stride size. For this experiment, the stride size was chosen
+to be ﬁxed at q = 250. For our setting this allows us to increase the number of nodes and thus
+the problem size up to 8,192 nodes, after which the stride size would have to be increased
+further. The primal and dual computation weakly scale equally well, with the predicted ratio
+of the normalized runtime being at a constant 4.2, deducible from Figure 6. We see in Figure 7
+that the measured normalized runtime is within 2% of the predicted one for the entire range of
+512–4,096 nodes. This both supports our contention that we have a valid performance model
+for any problem size and shows the scalability of our approach. While more runs are desirable
+to strengthen the validation case, we point out that Figure 7 took half a million CPU-hours on
+Mira, whereas the runs to calibrate the prediction took a mere 40,000 core-hours.
+1156
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+5
+
+Schanen, Marin, Zhang and Anitescu
+
+Conclusion
+
+We present a new online and scalable two-level checkpointing scheme for large scale timedependent adjoint computations and we demonstrate it for the highly scalable ﬂuid dynamics
+code Nek5000. The approach makes use of all the system’s resources, from local node memory
+down the memory hierarchy to the archive. At the lower level, it uses the revolve algorithm
+which requires a given stride—a prescribed number of time steps. At the upper level, we use an
+algorithm that adapts the stride size to the disk/archive bandwidth and that can accommodate
+an a priori unknown number of total time steps.
+With our performance model, we can predict the adjoint to forward run performance ratio
+and thus the total CPU time of a problem of arbitrary size with the same nP . We validated
+our model with several experiments with a three-dimensional lid driven cavity example where
+the measured errors were within 2% in the entire parameter range, which included the use of
+4096 ∗ 32 = 131072 parallel processes. Based on this performance model, we also estimate
+that our adjoint two-level checkpointing approach oﬀers signiﬁcant beneﬁts compared with
+single-level adjoint checkpointing; for example, our approach needs only 75% recomputations
+compared with single-level adjoint checkpointing for simulations exceeding 50,000 time steps of
+Nek5000.
+This work started out as an exploratory overview for a generic adjoint capability implementation in Nek5000. The compression of checkpoints as a mean of trading disk memory for
+computational resources has been identiﬁed as an interesting option. Additionally, noise is a
+major issue on large-scale systems, since resources are rarely used solely by one application.
+Our adaptive stride approach is a ﬁrst attempt at addressing that issue. We note, however,
+that if storing and restoring transfer times are not between speciﬁc bounds, the eﬃciency of
+this algorithm is dramatically reduced.
+
+Acknowledgment
+We thank Philipp Schlatter, KTH, Sweden for providing the test case and his suggestions and
+insights in the ﬁeld of ﬂuid dynamics. We also thank the entire Nek5000 group at Argonne for
+their continuous help on the inner workings of Nek5000 and Mira compute time. This research
+used resources of the Argonne Leadership Computing Facility, which is a DOE Oﬃce of Science
+User Facility supported under Contract DE-AC02-06CH11357.
+
+References
+[1] G. Aupy, J. Herrmann, P. Hovland, and Y. Robert. Optimal multistage algorithm for adjoint
+computation. Technical report, Research Report RR-8721, LIP - ENS Lyon; Argonne national
+labortory, 2014.
+[2] G. El Khoury, P. Schlatter, A. Noorani, P. Fischer, G. Brethouwer, and A. Johansson. Direct numerical simulation of turbulent pipe ﬂow at moderately high Reynolds numbers. Flow, Turbulence,
+and Combustion, 91(3):475–495, 2013.
+[3] P. Fischer, J. Lottes, S. Kerkemeier, O. Marin, K. Heisey, A. Obabko, E. Merzari, and Y. Peet.
+Nek5000: User’s manual. Technical Report ANL/MCS-TM-351, Argonne National Laboratory,
+2015.
+[4] A. Griewank and A. Walther. Algorithm 799: Revolve: An Implementation of Checkpointing for
+the Reverse or Adjoint Mode of Computational Diﬀerentiation. ACM Transactions on Mathematical Software, 26(1):19–45, Mar. 2000.
+
+1157
+
+Two-Level Checkpointing Scheme for Large-Scale Adjoints
+
+Schanen, Marin, Zhang and Anitescu
+
+[5] A. Griewank and A. Walther. Evaluating Derivatives: Principles and Techniques of Algorithmic
+Diﬀerentiation. Number 105. SIAM, Philadelphia, PA, 2nd edition, 2008.
+[6] V. Heuveline and A. Walther. Online checkpointing for parallel adjoint computation in PDEs:
+Application to goal-oriented adaptivity and ﬂow control. In Euro-Par 2006 Parallel Processing,
+pages 689–699. Springer, 2006.
+[7] J. Koseﬀ and R. Street. The lid-driven cavity ﬂow: a synthesis of qualitative and quantitative
+observations. Journal of Fluids Engineering, 106(4):390–398, 1984.
+[8] A. Peplinski, P. Schlatter, P. Fischer, and D. Henningson. Stability tools for the spectral-element
+code Nek5000: Application to jet-in-crossﬂow. In Spectral and High Order Methods for Partial
+Diﬀerential Equations-ICOSAHOM 2012, pages 349–359. Springer, 2014.
+[9] P. Stumm and A. Walther. MultiStage Approaches for Optimal Oﬄine Checkpointing. SIAM
+Journal on Scientiﬁc Computing, 31(3):1946–1967, 2009.
+[10] P. Stumm and A. Walther. New algorithms for optimal online checkpointing. SIAM Journal on
+Scientiﬁc Computing, 32(2):836–854, 2010.
+[11] Q. Wang, P. Moin, and G. Iaccarino. Minimal repetition dynamic checkpointing algorithm for
+unsteady adjoint calculation. SIAM Journal on Scientiﬁc Computing, 31(4):2549–2567, 2009.
+
+The submitted manuscript has been created by the University of Chicago as Operator of Argonne National
+Laboratory (“Argonne”) under Contract No. DE-AC02-06CH11357 with the U.S. Department of Energy.
+The U.S. Government retains for itself, and others acting on its behalf, a paid-up, nonexclusive, irrevocable
+worldwide license in said article to reproduce, prepare derivative works, distribute copies to the public, and
+perform publicly and display publicly, by or on behalf of the Government.
+
+1158
+
+

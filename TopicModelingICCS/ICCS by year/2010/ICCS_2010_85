@@ -1,0 +1,797 @@
+Procedia Computer
+Science
+Procedia
+Computer
+(2012)1–9
+1815–1823
+Procedia
+Computer Science
+Science 001 (2010)
+www.elsevier.com/locate/procedia
+
+International Conference on Computational Science, ICCS 2010
+
+Towards generating optimised ﬁnite element solvers for GPUs from
+high-level speciﬁcations
+Graham R. Markalla,∗, David A. Hamb,c , Paul H. J. Kellya
+a Department
+
+of Computing, Imperial College London
+of Earth Science & Engineering, Imperial College London
+c Grantham Institute for Climate Change, Imperial College London
+
+b Department
+
+Abstract
+We argue that producing maintainable high-performance implementations of ﬁnite element methods for multiple
+targets requires that they are written using a high-level domain-speciﬁc language. We make the case for using one such
+language, the Uniﬁed Form Language (UFL), by discussing how it allows the generation of high-performance code
+from maintainable sources. We support this case by showing that optimal implementations of a ﬁnite element solver
+written for a Graphics Processing Unit and a multicore CPU require the use of diﬀerent algorithms and data formats
+that are embodied by the UFL representation. Finally we describe a prototype compiler that generates low-level
+code from high-level speciﬁcations, and outline how the high-level UFL representation can be lowered to facilitate
+optimisation using existing techniques prior to code generation.
+c 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+⃝
+Keywords: Finite Element Method, GPU
+
+1. Introduction
+The development of ﬁnite element codes in low-level languages is complicated and error prone. When a code is
+ported to a new architecture, much of it must be rewritten in a new language, requiring a large amount of time and
+eﬀort. This process is complicated by the fact that optimal data layouts and access patterns diﬀer between targets,
+especially when execution of the code spans multiple architectures. Additionally, the optimal choice of algorithm that
+implements a given operation depends on characteristics of the target hardware, and even the parameters of a speciﬁc
+problem. To produce eﬃcient implementations in a low-level language, developers must maintain multiple algorithm
+implementations for multiple targets.
+The FEniCS project [1] has shown that the Uniﬁed Form Language (UFL) provides an appropriate level of abstraction of the ﬁnite element method for generating optimised code from maintainable sources. Using UFL for writing
+ﬁnite element codes is desirable as it eliminates many time-consuming and error-prone tasks required when developing in a low-level language, and prevents many common errors. In addition to this, we propose that unmodiﬁed UFL
+sources can be translated into low-level code for multiple hardware platforms with target-speciﬁc optimisations.
+∗ Corresponding
+
+author
+Email address: grm08@doc.ic.ac.uk (Graham R. Markall)
+
+c 2012 Published by Elsevier Ltd. Open access under CC BY-NC-ND license.
+1877-0509 ⃝
+doi:10.1016/j.procs.2010.04.203
+
+1816
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+
+2
+
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+1
+
+3
+
+2
+1
+
+Ω
+
+1
+
+2
+
+Ω
+
+2 1
+Ω
+
+1
+
+2
+2
+
+Ω
+
+Figure 1: Left: A 1D domain decomposed into two elements (Ωi ). Right: Local node numbering of individual elements.
+
+The contributions of this paper are: a high-performance implementation of a ﬁnite element solver for an advectiondiﬀusion problem written using NVidia CUDA (Section 3), a prototype implementation of a compiler that generates
+CUDA code from UFL sources (Section 4.2), and a discussion of how the UFL representation can be lowered to allow
+the use of loop nest optimisations (Section 4.3). We begin with a brief overview of the CUDA programming language
+(Section 1.1) and a description of the main stages of the ﬁnite element method (Section 2) before discussing options
+for its implementation.
+1.1. CUDA
+CUDA [2] is a language for programming NVidia’s Tesla Graphics Processing Units (GPUs). GPUs have a large
+memory bandwidth and many processing cores, making them ideal for computational science applications. Execution
+on a GPU is performed by launching individual kernels that are executed by many threads in parallel. As GPU
+memory is separate from the main memory of a machine, data must be transferred to and from it before and after
+execution. Because of this overhead it is important that a large enough workload is provided in order to beneﬁt
+from GPU performance. The workload must be decomposed into many (thousands) of data-parallel tasks that can be
+mapped to individual threads to fully utilise the GPU hardware.
+We highlight two performance considerations. First, groups of 32 threads (referred to as warps) all share a single
+program counter, and execute the same code path concurrently. When threads within a warp take diﬀerent paths,
+execution is serialised between these two paths, reducing performance. Second, coalesced memory access is needed
+for high memory bandwidth utilisation, and is achieved when groups of 16 threads concurrently access data within a
+128-byte aligned memory window. For further details of the Tesla architecture and CUDA programming language,
+see [2].
+2. The Finite Element Method
+The ﬁnite element method is used for discretising the weak form of partial diﬀerential equations. Solving a partial
+diﬀerential equation with a time-varying solution using the ﬁnite element method typically consists of the following
+phases for each timestep:
+Local Assembly. For each element i in the domain, an Ne × Ne matrix, Mei , and an Ne -length vector, bei , are computed,
+where Ne is the number of nodes per element. These are referred to as local matrices and vectors. Computing these matrices and vectors usually involves the evaluation of integrals over the elements using Gaussian
+quadrature. In most implementations, every element has the same number of nodes.
+Global Assembly. The local matrices, Mei , and vectors, bei , are used to form a global matrix, M, and global vector,
+b, respectively. This process couples the contributions of elements together.
+Solution. The system of equations Mx = b is solved for x, often using an iterative method, which requires computation of the sparse matrix-vector product (SpMV) y = Mv.
+For a complete treatment of the method, see [3]. We shall examine the global assembly phase, which consists of
+performing the following computations:
+M = A T Me A
+T e
+
+b=A b
+
+(1)
+(2)
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+1817
+3
+
+where A is a matrix mapping the local node numbers of each element to the global node numbers, Me is a blockdiagonal matrix whose i-th block is Mei , and be is a vector of stacked bei . We shall examine algorithms that can be
+used to implement these computations, as the optimal choice of algorithm depends on the target hardware. Consider a
+two-element, three-node decomposition of a 1-dimensional domain (see Figure 1). In this example, the matrices and
+vector are:
+⎡
+⎢⎢⎢1
+⎢⎢⎢
+A = ⎢⎢⎢⎢
+⎢⎢⎣
+
+1
+1
+
+⎤
+⎥⎥⎥
+⎥⎥⎥
+⎥⎥⎥
+⎥⎥⎥
+⎦
+
+1
+
+⎡ 1
+⎢⎢⎢m11
+⎢⎢⎢m1
+e
+M = ⎢⎢⎢⎢ 21
+⎢⎢⎣
+
+m112
+m122
+
+m211
+m221
+
+⎤
+⎥⎥⎥
+⎥⎥⎥
+⎥
+2 ⎥
+m12 ⎥⎥⎥⎥⎦
+m222
+
+⎡ 1⎤
+⎢⎢⎢b1 ⎥⎥⎥
+⎢⎢⎢b1 ⎥⎥⎥
+e
+b = ⎢⎢⎢⎢ 22 ⎥⎥⎥⎥
+⎢⎢⎣b1 ⎥⎥⎦
+b22
+
+where meij is the i, j-th term of the local matrix for element Ωe , and bei is the i-th term of the local vector for element
+Ωe . The structure of A arises from the geometry of the elemental decomposition of the domain.
+It is often ineﬃcient to compute the matrix multiplications described in Equations 1 and 2 on traditional architectures due to the sparsity of A. The Addto algorithm is usually more eﬃcient. To describe this algorithm, we ﬁrst
+deﬁne an array, map[e][i], that maps the local node i of the element e to a global node number. In our example, the
+array is deﬁned as:
+map[1][i] =
+
+1
+2
+
+map[2][i] =
+
+2
+3
+
+Algorithms 1 and 2 describe the Addto algorithm for computing M and b. Intuitively, terms of the local matrix (or
+vector) of each element are summed into particular terms in the global matrix (or vector) depending on the node
+numbers of the element.
+Algorithm 1: Addto for global matrix assembly.
+Algorithm 2: Addto for global vector assembly.
+M=0;
+b=0;
+foreach Element e do
+foreach Element e do
+for i ← 1 to Ne do
+for i ← 1 to Ne do
+for j ← 1 to Ne do
+b[map[e][i]]+=be [i] ;
+M[map[e][i], map[e][ j]]+=Me [i, j] ;
+These algorithms are massively data-parallel, as iterations of all the loops can be executed independently of others.
+Although this appears to make them ideal for implementing on GPU architectures, there are two issues. First, data
+races occur if threads concurrently update the same term of the global matrix. Costly atomic operations must be used
+to ensure correctness. Second, M is often stored using a format such as compressed sparse row (CSR). Finding the
+location in memory of a particular term requires a bisection search of the sparsity structure of the matrix, leading to
+uncoalesced accesses and control ﬂow divergence within warps.
+To avoid these issues, we can derive an alternative algorithm, referred to as the Local Matrix Approach (LMA),
+noting that the only use of M is for computation of the product Mv in the solution phase. We omit the global assembly
+of M (Equation 1) altogether, and when computation of y = Mv is required, the following computation is performed:
+y = AT (Me (Av))
+
+(3)
+
+It is not possible to avoid the assembly of b, as it is explicitly required by the solver. However, we can eliminate the
+use of atomic operations by computing the matrix-vector product b = AT be using an SpMV kernel instead of using
+the Addto algorithm.
+We note that using the Local Matrix Approach instead of the Addto algorithms results in an increase in computation and memory bandwidth usage in the solver phase proportional to the average number of elements that share a
+single node (the variance) of the mesh. However, its implementation avoids the use of atomic operations and bisection
+searches in the global assembly phase. We demonstrate in Section 3 that the optimal choice of algorithm depends on
+the target hardware.
+
+1818
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+
+4
+
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+5
+
+4
+B
+
+C
+
+A
+1
+
+2
+
+3
+
+1
+2
+3
+4
+5
+
+1
+2
+4
+A
+
+5
+4
+2
+B
+
+2
+3
+5
+C
+
+Figure 2: Left: A 2D domain decomposed into three elements. Middle: Node data layout in CPU implementation. Right: Node data layout in GPU
+implementation. Threads accessing data in diﬀerent elements (arrowed) achieve coalescing.
+
+2.1. Data Format Considerations
+In general, data structures must be carefully chosen to achieve optimal performance (e.g. for cache-optimality
+on a CPU), and the optimal choice of data structure depends on characteristics of the target architecture. In order
+to examine the structures that can be used when implementing the ﬁnite element method on CPUs and GPUs, we
+consider a three element domain (see Figure 2).
+In CPU implementations, nodal data is often stored on a per-node basis. When data for the nodes of a single
+element is needed, the mapping array (map) is used to indirectly access the nodal data. Although this can lead to
+poor cache performance due to random access into the nodal data structure, reordering optimisations can be used to
+minimise this overhead.
+This data format is ineﬃcient for GPU implementations, where coalesced accesses must be used to maximise
+memory performance. It is diﬃcult to achieve coalesced access because the nodal data structure is accessed in a
+somewhat random fashion. We propose that it can be more eﬃcient to store nodal data on a per-element basis in GPU
+implementations, interleaving the nodal data for each node of each element. This leads to some redundancy in the
+storage of nodal data, again proportional to the average variance of nodes; however, it allows coalesced accesses when
+there is a one-to-one mapping between threads and elements.
+Maintaining low-level implementations for multiple devices that use diﬀerent data structures is time-consuming
+and error-prone. The complexity of managing multiple data structures is exacerbated if data must be marshalled
+between devices, for example in the case when computation is distributed between a CPU and a GPU. A UFL compiler
+that is aware of the data formats of its target devices can automatically generate code that marshals the required data
+based on a UFL description of a method, as it is possible to determine the items of data that are required from the
+UFL source.
+3. Experiments
+We evaluate the performance of the Addto algorithm and the Local Matrix Approach on GPUs using an implementation of a test problem that solves the advection-diﬀusion equation:
+∂T
++ u∇T = ∇ · μ · ∇T
+∂t
+where T is the concentration of a tracer, t is time, u is velocity, and μ is a rank-2 tensor of diﬀusivity. This problem
+is chosen as it is both a sub-problem and simpliﬁed model of a full computational ﬂuid dynamics system. The system
+is discretised using order-1 basis functions. A split scheme is used, solving for advection ﬁrst and then diﬀusion at
+each time step. The advection term is timestepped using a 4th-order Runge-Kutta scheme, and the diﬀusion term
+is timestepped using an implicit theta scheme. The problem is solved over a square domain with suitable initial
+conditions. For further details of the test implementation, see [4]. We compare with a CPU implementation to
+demonstrate that the optimal choice of algorithm depends on the target hardware.
+3.1. CUDA and CPU Implementations and Experimental Setup
+CUDA Implementations of the solver that implement both the Addto algorithm and the Local Matrix Approach
+have been produced. The Local Matrix Approach is implemented by considering the computation in Equation 3 in
+three stages:
+
+1819
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+
+5
+
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+t = Av,
+
+t = Me t,
+
+y = AT t .
+
+Stage 2
+
+Stage 1
+
+Stage 3
+
+Since A contains only one non-zero entry per row that is always 1, Stage 1 is implemented as a gather. This
+involves uncoalesced memory accesses but is more eﬃcient than using an SpMV kernel. The implementation of
+Stage 2 exploits the block-diagonal structure of Me to achieve coalesced accesses and maximal reuse of matrix values.
+Stages 1 and 2 are implemented in a single kernel. Stage 3 is implemented as an SpMV kernel that is optimised for all
+the non-zero values equalling 1. Because a global barrier is required between Stages 2 and 3, Stage 3 is implemented
+in a separate kernel.
+The baseline version is implemented within Fluidity [5], a ﬁnite element computational ﬂuid dynamics code that
+has been chosen because it is a mature and optimised CPU implementation. The Local Matrix Approach is not implemented in this version, as it is known to be less eﬃcient than the Addto algorithm on CPUs for low-order basis
+functions [6]. Node data structures are implemented using the element-wise storage layout in the CUDA implementation, and the node-wise layout is used in the CPU implementation.
+The test hardware consists of an Intel Core 2 Duo E8400, 2GiB RAM, and an NVidia 280GTX GPU. The Intel
+v10.1 compilers with the -O3 ﬂag were used for the CPU code (v11.0 onwards cannot compile Fluidity due to compiler
+bugs), and the CUDA SDK 2.2 is used for CUDA code. The CUDA implementation uses a Conjugate Gradient (CG)
+solver described in [7]; the baseline version make use of the PETSc [8] CG solver. The simulation is run for 200
+timesteps, with all computations using double precision arithmetic. Gmsh [9] was used to generate meshes varying in
+size between 28710 and 331714 elements. Each simulation was run ﬁve times, and averages are reported.
+3.2. Results
+Figure 3 shows the total time taken by each CUDA implementation to run the entire simulation, and their speedup
+relative to the baseline version running on 2 cores. We see that the LMA implementation is up to 2.2 times faster than
+the Addto implementation on the GPU, and is over an order of magnitude faster than the baseline implementation.
+100
+
+14
+
+Addto for Matrix and RHS
+LMA, SpMV for RHS
+
+12
+10
+
+60
+
+Speedup
+
+Time (s)
+
+80
+
+40
+
+8
+6
+4
+
+20
+
+2
+0
+
+0
+
+0
+
+0
+
+0
+00
+
+30
+
+0
+
+Number of Elements
+
+0
+00
+
+25
+
+0
+
+0
+00
+
+20
+
+0
+00
+
+15
+
+00
+00
+10
+0
+00
+50
+
+0
+
+0
+
+0
+00
+
+30
+
+0
+
+0
+00
+
+25
+
+0
+
+0
+00
+
+20
+
+0
+00
+
+15
+
+00
+00
+10
+0
+00
+50
+
+Number of Elements
+
+LMA, SpMV for RHS
+Addto for Matrix and RHS
+
+Figure 3: Left: Total execution time of GPU implementations. Right: Speedup of GPU implementations relative to the baseline executing using 2
+cores.
+
+Figure 4 shows the total time taken for the local and global assembly phases in the CUDA implementations. We
+observe that the Local Matrix Approach is faster than the Matrix Addto algorithm, and that it is faster to assemble
+the global vector by computing the product AT be . Figure 4 also shows the total time spent inside the SpMV kernels
+for each implementation for the largest and smallest mesh sizes. The cost of computing AT (Me (Av)) (in the LMA
+implementation) is up to 2.5 times that of computing Mv (in the Addto implementation). The performance increase
+of the LMA implementation is a tradeoﬀ between the decrease in the assembly time, and the increase in the SpMV
+computation time.
+We also investigated using graph colouring to eliminate atomic operations in the Addto implementation (as used in
+[10]). We replaced atomic operations with equivalent non-atomic operations. The resulting implementation produced
+
+1820
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+
+6
+
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+40
+
+Addto for Matrix and RHS
+LMA, Addto for RHS
+LMA, SpMV for RHS
+
+35
+
+Time (s)
+
+30
+25
+20
+15
+10
+5
+0
+
+30
+
+25
+
+20
+
+15
+
+10
+
+00
+
+00
+
+00
+
+00
+
+00
+
+00
+
+00
+
+00
+
+0
+
+00
+
+00
+
+00
+
+50
+
+Number of Elements
+
+Elements
+28710
+331714
+
+AT (Me (Av))
+1.91 × 106
+2.45 × 107
+
+Mv
+8.48 × 105
+9.85 × 106
+
+Figure 4: Left: Execution time of the assembly phases for each CUDA implementation. Right: Total time spent computing each product on the
+largest and smallest meshes (in μsec), recorded using the CUDA Proﬁler.
+
+incorrect results, but gave an upper bound on the performance increase facilitated by colouring. The assembly phase
+ran 25% faster with non-atomic operations, corresponding to a 10% speedup in the entire simulation. Since the
+performance of the LMA implementation is far greater than this, it is unnecessary to produce an implementation that
+uses colouring.
+3.3. Remarks
+Our results show that the optimal algorithm depends on the target architecture. We speculate that it is also problemdependent. In a 2D domain the average variance of nodes is approximately 6. In a 3D domain, the variance is around
+24, and the overheads of storage and computation for the local matrix approach are four times greater than in 2D.
+This extra overhead may decrease performance to the point where it is more eﬃcient to use the Addto algorithm. Our
+further work involves investigating the performance in this case.
+4. Compiling the Uniﬁed Form Language
+4.1. Poisson’s Equation - A Motivating Example
+Here we discuss how UFL can be used to describe the assembly and solution of a partial diﬀerential equation. For
+a complete reference of UFL, see [11]. Poisson’s Equation, and a weak form are:
+∇2 u = f
+Ω
+
+∇v · ∇u dX =
+
+(4)
+v f dX
+
+(5)
+
+Ω
+
+We assume the boundary condition ∂Ω v∇u·n ds = 0 to simplify the example. Figure 5 gives the UFL code for the
+assembly and solution of the weak form. Lines 1 and 2 instruct the compiler that v and u are test and trial functions,
+which is known from the mathematical formulation of the problem. The known function f is speciﬁed as a function of
+coordinates within the domain. A and RHS specify the left- and right-hand sides of Equation 5. The ﬁnal line speciﬁes
+that these forms are to be assembled into a linear system, which is solved to ﬁnd the solution to the problem. The
+solve keyword is an addition to UFL, which is usually provided by tools that are part of the FEniCS project.
+Note that Figure 5 is a complete speciﬁcation of how the problem may be solved using the ﬁnite element method,
+yet contains no implementation-speciﬁc information. This provides the ﬂexibility to generate code for multiple architectures, using alternative algorithms - the code is eﬀectively “future-proofed”. In particular, a low-level implementation using either the Addto algorithm or the Local Matrix Approach may be generated from this source. Compare
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+1821
+7
+
+v=TestFunction(P)
+u=TrialFunction(P)
+f=Function(P, sin(x[0])+cos(x[1]))
+A=dot(grad(v),grad(u))*dx
+RHS=v*f*dx
+P = solve(A,RHS)
+Figure 5: UFL code for the assembly and solution of Poisson’s Equation. P is assumed to be some ﬁnite element space.
+
+this with a direct implementation in a low-level language, for which it is diﬃcult to transform the data layout or implementation algorithm. The UFL compiler eventually commits to speciﬁc aspects of the low-level implementation
+during one or more of its passes.
+Targeting a new platform is accomplished by the development of a new compiler backend, without modifying the
+UFL sources. This allows the concerns of diﬀerent developers to be separated: the work of mathematicians who test
+and implement new schemes is decoupled from the work of those whose concern is the low-level implementation of
+codes. This separation eases the development of ﬁnite element codes by eliminating a large proportion of the repetitive
+and error-prone tasks that are usually required. The generated code can be better optimised than handwritten code,
+as optimisations often cut across the boundaries of the abstractions required for developing software in low-level
+languages.
+4.2. A Prototype Compiler
+A ﬁrst step in experimenting with generating CUDA code from UFL involved the implementation of a compiler
+that performs a syntax-directed translation of the UFL code to CUDA code. The generated code uses a library of
+kernels that perform common operations in ﬁnite element assembly. A subset of the kernels in this library are shown
+in Table 1. These kernels perform quadrature-based assembly, rather than the tensor-based method that is used in the
+FEniCS project.
+The compiler inputs UFL using the FEniCS UFL distribution [11] to produce Directed Acyclic Graphs (DAGs) of
+the operations speciﬁed in a UFL source. Each DAG node is converted to a call to a kernel implementing the required
+operation. This DAG of kernel calls is passed to a code generator that is implemented using the ROSE Compiler
+Infrastructure [12]. Examples of the DAGs for the left-hand side of Equation 5 are shown in Figure 6.
+v
+
+u
+
+tform shape(v)
+
+tform shape(u)
+
+∇v
+
+∇u
+
+tform dshape(v)
+
+tform dshape(u)
+
+∇v · ∇u
+
+dshape dot dshape
+
+A
+
+mat addto
+
+(a) Expression DAG.
+
+(b) Kernel DAG.
+
+Figure 6: DAGs for the form
+
+Ω
+
+∇v · ∇u dX.
+
+The CUDA code generated by this compiler for the Poisson problem produces identical results to a handwritten
+CUDA implementation, as well as a CPU implementation of the same problem. Although the generated code executes
+faster than the CPU implementation for large meshes, we do not investigate its performance as there is only a limited
+speed improvement that can be gained for steady-state problems.
+
+1822
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+Kernel
+tform shape
+tform dshape
+dshape dot dshape
+shape shape
+mat addto
+
+8
+
+Operation
+Transform basis functions from reference space to physical space.
+Transform derivatives of basis functions to physical space.
+Computes Ω ∇v · ∇u dX.
+Computes Ω vu dX.
+Adds local matrices into a global matrix using the Addto algorithm.
+Table 1: A subset of kernels in the CUDA kernel library.
+
+4.3. Further UFL Compiler Development
+Although the prototype compiler demonstrates the feasibility of generating CUDA code from UFL sources, the
+requirement for a library of handwritten CUDA kernels limits its output to a pre-deﬁned set of forms optimised by
+hand. Here we describe an intermediate phase that lowers the UFL representation to one amenable to optimisation
+with established techniques before being used to generate CUDA kernels. Consider one term from the weak form of
+the Helmholtz equation [3]:
+
+Ω
+
+∇v · ∇u + λvu dX
+
+(6)
+
+There are several combinations of kernels that implement the local assembly phase of this term that can be implemented. We can enumerate these possibilities by building an Intermediate Representation (IR) that provides a
+high-level semantic representation of each term. Sub-terms of the intermediate representation are determined by
+working bottom-up from leaf nodes to identify the smallest set of nodes that describes the assembly of a local matrix.
+Higher sub-terms are identiﬁed as the addition or scalar multiplication of lower-sub terms.
+The IR for Equation 6 is shown in Figure 7. As there are four sub-terms, up to four separate kernels may perform
+local assembly for this term. Using more kernels increases the memory bandwidth requirements; however, larger
+kernels require more resources, decreasing the total parallelism [13]. Instead of building a performance model to
+evaluate each candidate implementation, a pragmatic approach is to lower this representation to one that can be
+optimised using existing techniques.
+Each of the nodes at the root of the sub-terms may be lowered to a loop over a certain index. For example, the
+sum node corresponds to a loop over the elements that sums the local matrices produced by the lower sub-terms.
+The generated loop nest can be optimised using standard techniques, for example in the polyhedral model [14] or the
+Æcute framework [15]. Our current work involves implementing a compiler that performs this lowering.
+dX
+sum
+dot
+
+scalarproduct
+
+grad
+
+grad
+
+λ
+
+v
+
+u
+
+Figure 7: Intermediate Representation of the term
+
+outerproduct
+v
+
+Ω
+
+u
+
+∇v · ∇u + λvu dX. Sub-terms are indicated by dotted outlines.
+
+G.R. Markall et al. / Procedia Computer Science 1 (2012) 1815–1823
+G.R. Markall / Procedia Computer Science 00 (2010) 1–9
+
+1823
+9
+
+5. Conclusions and future work
+UFL is a desirable language in which to write ﬁnite element codes due to its closeness to the mathematical
+representation of the ﬁnite element method. We have shown that the optimal choice of algorithm and data format
+used by a low-level implementation depends on the target hardware. The UFL representation provides freedom of
+choice in the algorithm and data format used by generated code and therefore provides the right level of abstraction
+for generating optimised code for multiple targets. Furthermore, the UFL representation may be lowered before code
+generation to facilitate optimisation using existing techniques.
+Our long-term project is to rewrite a large portion of Fluidity using UFL. This process will take place gradually,
+as integration of UFL codes within its Fortran sources is made possible by the use of a UFL compiler whose output
+makes use of data structures in Fluidity. The result of this work will be a portable and maintainable high-performance
+code that allows aggressive exploitation of future architectures.
+Acknowledgements
+The authors wish to thank Alexander Monakov for his suggestion to implement stages 1 and 2 of the LMA in a single
+kernel, and Anton Lokhmotov for his helpful comments and feedback. This work was partially supported by the
+NERC (DTG NE/G523512/1) and EPSRC EP/E002412/1.
+References
+[1] A. Logg, Automating the ﬁnite element method, Arch. Comput. Methods Eng. 14 (2) (2007) 93–138.
+[2] NVidia, NVidia CUDA Programming Guide Version 2.3.1, URL: http://developer.download.nvidia.com/compute/cuda/2_3/
+toolkit/docs/NVIDIA_CUDA_Programming_Guide_2.3.pdf (August 2009).
+[3] G. E. M. Karniadakis, S. J. Sherwin, Spectral/hp Element Methods for CFD, Oxford University Press, 1999.
+[4] G. Markall, Generatively Programming Galerkin Projections on General Purpose Graphics Processing Units, Master’s thesis, Imperial College
+London, http://www.doc.ic.ac.uk/~grm08/graham_markall_msc_report.pdf (2009).
+[5] G. Gorman, M. Piggott, P. Farrell, About Fluidity, URL: http://amcg.ese.ic.ac.uk/index.php?title=FLUIDITY (November 2009).
+[6] P. E. J. Vos, S. J. Sherwin, R. M. Kirby, From h to p eﬃciently: implementing ﬁnite and spectral/hp element discretisations to achieve
+optimal performance at low and high order approximations, Submitted to Journal of Computational Physics. http://www2.imperial.ac.
+uk/ssherw/spectralhp/papers/JCP-VoShKi-09.pdf (October 2009).
+[7] G. Markall, P. H. J. Kelly, Accelerating Unstructured Mesh Computational Fluid Dynamics Using the NVidia Tesla GPU Architecture, ISO
+Report, Imperial College London (2009).
+[8] S. Balay, K. Buschelman, W. D. Gropp, D. Kaushik, M. G. Knepley, L. C. McInnes, B. F. Smith, H. Zhang, PETSc Web page,
+http://www.mcs.anl.gov/petsc (2009).
+[9] C. Geuzaine, J.-F. Remacle, Gmsh: A 3-D ﬁnite element mesh generator with built-in pre- and post-processing facilities, Int. J. Numerical
+Methods in Engineering 79 (11) (2009) 1309–1331.
+[10] D. Komatitsch, D. Mich´ea, G. Erlebacher, Porting a high-order ﬁnite-element earthquake modeling application to NVIDIA graphics cards
+using CUDA, J. Parallel Distrib. Comput. 69 (5) (2009) 451–460.
+[11] M. Alnæs, A. Logg, UFL Speciﬁcation and User Manual 0.1, URL: http://www.fenics.org/pub/documents/ufl/
+ufl-user-manual/ufl-user-manual.pdf (April 2009).
+[12] D. Quinlan, C. Liao, T. Panas, R. Matzke, M. Schordan, R. Vuduc, Q. Yi, ROSE: A Tool For Building Source-to-Source Translators. User
+Manual (version 0.9.4a), http://www.rosecompiler.org/ROSE_UserManual/ROSE-UserManual.pdf, Retrieved 15 September 2009
+(2009).
+[13] J. Filipovic, I. Peterlik, J. Fousek, GPU Acceleration of Equations Assembly in Finite Elements Method - Preliminary Results, in: SAAHPC
+: Symposium on Application Accelerators in HPC, 2009.
+[14] L.-N. Pouchet, C. Bastoul, A. Cohen, N. Vasilache, Iterative optimization in the polyhedral model: Part i, one-dimensional time, in: CGO
+’07: Proceedings of the International Symposium on Code Generation and Optimization, IEEE Computer Society, Washington, DC, USA,
+2007, pp. 144–156.
+[15] L. W. Howes, A. Lokhmotov, A. F. Donaldson, P. H. Kelly, Deriving eﬃcient data movement from decoupled access/execute speciﬁcations,
+in: Proceedings of the 4th International Conference on High Performance and Embedded Architectures and Compilers (HiPEAC), Vol. 5409
+of Lecture Notes in Computer Science, Springer, 2009, pp. 168–182.
+
+

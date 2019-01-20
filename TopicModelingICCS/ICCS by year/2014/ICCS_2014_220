@@ -1,0 +1,576 @@
+Procedia Computer Science
+Volume 29, 2014, Pages 1123–1133
+ICCS 2014. 14th International Conference on Computational Science
+
+Generating Code and Memory Buﬀers to Reorganize Data
+on Many-core Architectures
+Lo¨ıc Cudennec1 , Paul Dubrulle1 , Fran¸cois Galea1 , Thierry Goubier1 , and
+Renaud Sirdey1
+CEA, LIST, Saclay, France
+firstname.name@cea.fr
+
+Abstract
+The dataﬂow programming model has shown to be a relevant approach to eﬃciently run massively parallel applications over many-core architectures. In this model, some particular builtin
+agents are in charge of data reorganizations between user agents. Such agents can Split, Join
+and Duplicate data onto their communication ports. They are widely used in signal processing
+for example. These system agents, and their associated implementations, are of major importance when it comes to performance, because they can stand on the critical path (think about
+Amdhal’s law). Furthermore, a particular data reorganization can be expressed by the developer in several ways that may lead to ineﬃcient solutions (mostly unneeded data copies and
+transfers). In this paper, we propose several strategies to manage data reorganization at compile
+time, with a focus on indexed accesses to shared buﬀers to avoid data copies. These strategies
+are complementary: they ensure correctness for each system agent conﬁguration, as well as
+performance when possible. They have been implemented within the Sigma-C industry-grade
+compilation toolchain and evaluated over the Kalray MPPA 256-core processor.
+Keywords: Many-core, Dataﬂow, Compilation, Data reorganization
+
+1
+
+Introduction
+
+Many-core processors are composed by hundreds, if not thousands processing cores on a single
+chip. These cores are connected by a network on chip (NoC) that mirrors the global chip
+organization, from a ﬂat 2-D mesh, to complex hierarchical clustered architectures. Many-core
+are expected to enter green high performance computing, embedded systems and mobile devices,
+as they oﬀer processing power while keeping a reasonable power consumption. However, getting
+high performance is conditioned by the eﬃcient use of the chip, mainly relying on massive
+parallelism that is still hard to express in regular programming languages.
+In this context, the dataﬂow paradigm appears to be a relevant approach. Processings
+are executed by agents (or tasks, depending on the language) onto data that are exchanged
+using a set of user-deﬁned communication links. The inherent parallelism comes from the
+Selection and peer-review under responsibility of the Scientiﬁc Programme Committee of ICCS 2014
+c The Authors. Published by Elsevier B.V.
+doi:10.1016/j.procs.2014.05.101
+
+1123
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+concurrent execution of agents on diﬀerent data. With dataﬂow languages, developers can
+focus on the processing code while all communications and synchronizations between agents
+are transparently optimized by the compilation toolchain and then handled by the runtime.
+However, transparency has a price when it comes to performance. While in regular parallel
+programming languages it is possible to ﬁnely tune every aspect of task creation, communications, data localization and migration, with dataﬂow programming these tuning are now the
+responsability of the sole compiler. In order to hide these parallelism considerations, most of the
+toolchains achieve compilation steps such as graph instanciation, task scheduling, task placement and communication routing, with a few, if not any help from the developer. Compilation
+results are part of the runtime, a code-generated library that gathers all information to run a
+particular application.
+One of the main application performance issue is to eﬃciently manage communications between tasks. In the dataﬂow programming model, communications share some similarities with
+the message passing programming model. However, the underlying implementation does not
+necessarily rely on message passing. Depending on the targeted architectures, communications
+can be achieved using message passing, uniﬁed and shared memory, or other complex systems
+like a DMA (direct memory access). Therefore, choosing the right method to implement communications has two goals: correctness and eﬃciency. And this has to be done to every single
+communication channel.
+In dataﬂow languages, some particular agents - that we call system agents in the following
+- are deﬁned to reorganize data between processing agents. For example, some widely-used
+system agents include the Split agent that spreads data among communication ports, the Join
+agent that merges data, and the Duplicate agent. Despite the fact that these agents do not
+necessarily have a real existence at run time 1 , their implementations might imply non negligible
+processing costs, which is particularly true when composed together (e.g. a split followed by
+a join agent). From the compilation point of view, system agent composition brings severe
+complexity for both correctness and eﬃciency goals. One of the main objective of the compiler
+is to limit the number of online buﬀers and data copies to achieve communications.
+In this paper, we present and evaluate several contributions that have been proposed to
+manage system agents within a state-of-the-art industrial-grade dataﬂow compiler [3]. We
+describe three compilation strategies to reorganize data that can be deployed on diﬀerent manycore architectures. The ﬁrst strategy consists in calculating access indexes to shared buﬀers.
+This appears to be the most eﬃcient approach because processors directy read and write memory
+without indirection. However this can only be applied in particular data reorganizations, using
+a physical shared memory. The second approach consists in generating micro-code to drive a
+DMA. This approach is less eﬃcient than the latter one, but it can be applied without physical
+shared memory. Finally, the compiler can fall back into a user-code compilation mode that
+consists in writing genuine dataﬂow source code for each system agent. This approach is clearly
+ineﬃcient because of the numerous buﬀers and data copies that are involved. However, this
+can be safely used in all situations and it ensures to ﬁnd a solution even with complex system
+agent compositions.
+The remaining of this paper is organized as follow. The second section presents the dataﬂow
+paradigm and data reorganizations. Section three presents diﬀerent compilation strategies that
+are evaluated in section four. Section ﬁve concludes this paper.
+
+1 the concept of agents proposed by the programming language does not necessarily match with the concepts
+used by the underlying system (e.g. system thread).
+
+1124
+
+Data Reorganization for Many-cores
+
+2
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+Data reorganization and the Dataﬂow Paradigm
+
+Dataﬂow programming is one paradigm in which processings are organized within communicating tasks. A dataﬂow program consists in deﬁning tasks (also called agents in the remainder of
+the paper), and in describing the application structure (basically connecting ports in order to
+build a graph). Data are written onto output ports and read onto input ports, in a sequential
+and FIFO way. For example, a picture can be sent between two agents pixel by pixel, line by
+line or even in a single block of data.
+Most of the applications require more or less complex data reorganizations between tasks.
+As an example, a simple edge detection application can be written using two successive parallel
+ﬁlter steps, as illustrated in ﬁgure 1. In this example, processings are ﬁrst applied on the lines,
+then on the columns of each image. As ﬁlters read an write pixels sequentially, a transposition of
+the image is applied in between. This transposition is implemented thanks to the combination
+of a join and a split agent with appropriate production and consumption quantities (the k
+parameter).
+System agents. However, some
+agents may build data from noncontiguous parts of the original
+data.
+For example, reading a
+macro-block 2 (say BW wide and
+BH height) in a picture (W wide
+and H height) requires to select
+some sparse parts of a given number of lines. This pattern, as applied on a streamed picture, consists in looping BH times a read
+of BW pixels followed by a shift of
+the image width W minus the block
+width BW . There are basically two
+ways of doing this. A ﬁrst one is
+to build the macro-block within the
+producer agent and directly write it Figure 1: Communication graph for an edge detection applicaonto the output port to the con- tion. System agents are used to spread lines, then columns among
+sumer. This makes the producer ﬁltering agents. Consumptions and productions are given by k.
+wait for all the pixels (even the unneeded ones) before sending the block, leading to an excessive use of memory (it may not be
+possible to store all the data needed to build the block, especially in the context of embedded
+architectures). It also relies on user-code that is in charge of building and ﬁlling an appropriate
+memory structure, which is quite an annoying, error-prone and repetitive task for the developer.
+A second way, as illustrated in ﬁgure 2, is to use builtin agents. In this example, the image is
+split onto the seven output ports of the Split agent. Each port receives a sequence of pixels as
+described in the right part of the ﬁgure. From outputs 1, 3 and 5, it is possible to rebuild the
+block thanks to a round-robin Join agent. This solution has two major interests. First, there is
+no user-code involved (except maybe for the production and consumption quantities that are
+set for each system agent port): processing agents written by the developer receive ready-to-use
+data. Second, the data reorganization is under the control of the compilation toolchain and as
+2 we
+
+consider a macro block as a block of pixels, not following the MPEG deﬁnition
+
+1125
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+a matter of fact, it beneﬁts from a dedicated implementation, as well as several optimizations
+for the targeted platform.
+
+Figure 2: Using a Split and a Join to read a block within an image. Image size: W ∗ H, block size: BW ∗ BH,
+oﬀset: (V O ∗ W ) + HO.
+
+Data reorganization compilation. In order to let the compiler deal with data reorganization, some stream and dataﬂow-based languages propose a set of system agents. These
+builtin agents can be used thanks to reserved keywords and an appropriate syntax. This is
+particularly true for Streamit [14] (using Pipeline, Splitter, Joiner and FeedbackLoop composing ﬁlters), Sigma-C [12] (using Split, Join and Dup system agents), Tau-C [11] (using Split,
+Join and Dup system tasks), SPL [13] (using Sort, Split, Join, Aggregate stream operators)
+and GreenStreams [4] (using SplitJoin and FeedbackLoop stream ﬁlters). In a slighly diﬀerent
+approach, CAL [8] proposes to bind data sequences between ports thanks to the deﬁnition of
+index sequences (refered as multiport input patterns). While most of the publications available
+for these languages deal with expressiveness, application case studies and general compilation
+strategies, a very few information are given on the particular problem of the implementation of
+data reorganization. In the Streamit project [2, 10], the authors present several contributions in
+which the compiler is able to modify the application graph, based on the recognition of system
+agent patterns. Fission and reordering transformations simplify the application graph to get
+better performance. In [7, 6], transformations are also applied at compile time onto system
+agents in order to adapt the degree of parallelism to the execution platform. However, these
+optimizations remain at a high level of abstraction in the application description and do not
+give elements on generating an eﬃcient runtime for data reorganization.
+The Sigma-C dataﬂow language. In this paper, we show how data reorganizations are
+processed at compile time to be handled in a runtime for a dataﬂow programming language.
+We focus on the Sigma-C [12] language that has been proposed to enhance manycore programmability, and has been successfully implemented and validated with the Kalray 256-core
+MPPA processor [1]. Sigma-C is based on a deterministic process network with process behaviour speciﬁcations, which is very close to cycle-static dataﬂow (CSDF [5]). Sigma-C has
+been designed as an extension of the regular ANSI C language, with some additional keywords
+to declare agents and establish connections between ports. In the model, the agent speciﬁcation deﬁnes all consumptions and productions that occur on communication ports each time the
+agent is ﬁred up (what is called an occurrence). It is possible to specify diﬀerent consumptions
+and productions depending on the occurrence number. For example, a classic behaviour for the
+1126
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+round-robin split agent is to read kj data on its input port and to write kj data on output port
+i (i being incremented the next occurrence and looping to the ﬁrst output port when reaching
+the last one). This accurate speciﬁcation is used by the compiler in order to verify properties
+such as communication buﬀer sizing, deadlocks, task placement, routing and tuning of the degree of parallellism. The speciﬁcations play a central role for building the runtime 3 , as they
+are used to determine the scheduling of the task occurrences, the number of communication
+buﬀers, their sizes and as presented in the next section, the data access patterns.
+Equivalence of pointers. The data reorganization compilation has several constraints. A
+ﬁrst constraint, tightly coupled with the programmability of the Sigma-C language, makes
+possible to transparently access communication ports by deﬁning aliases. These aliases can be
+manipulated either as primitive types in case of a single data, or as a memory pointer in case
+of complex structures. This is convenient from the developer point of view because ports can
+be directly read and written without the use of a dedicated API. Port aliasing is motivated by
+the possibility to transparently manage all communications and to ease the porting of regular
+C applications. However, transparency brings complexity on the compiler side that has to
+ensure that all aliases point to a contiguous memory space. This property, called equivalence of
+pointers, allows to access buﬀers without any indirection. Pointer arithmetic is oﬀered without
+degrading the performance (for example reading an array by adding its aliased based memory
+address and an online-evaluated oﬀset). For each occurrence of the task and for each of its port,
+the compiler is in charge of building a memory space (shared with one or more ports) that is
+big enough to host the expected data, and to properly update this buﬀer with incoming data.
+Furthermore, if an input port is connected to a combination of system agents, the data update
+has to mirror the corresponding reorganization.
+Performance and correctness. Another constraint is to oﬀer reasonable performance while
+executing data reorganizations. In parallel and distributed computing, a large amount of time
+can be spend in copying data between buﬀers. This can be seen for example in high performance
+networking with zero-copy protocols that let the user code directly access data received at the
+bottom of the network stack. In our context, we minimize the number of buﬀers by merging
+them into shared buﬀers when possible. Finally, a constraint consists in ﬁnding a solution to
+each system agent combination (several system agents connected together with at least one
+communication port, also called a system surface in the following). If most of the time there
+is a trivial way for compiling a single agent, agent combinations introduce complex memory
+access patterns for agents connected to the system surface. In that particular cases, if these
+patterns are too complex to calculate, the compiler falls back to a simple mode with multiple
+temporary buﬀers.
+
+3
+
+Data Reorganization Strategies at Compile Time
+
+The Sigma-C toolchain is made of four main compilation steps. The ﬁrst step applies lexical
+parsing and semantic analysis. The second step instantiates the application graph and adapts
+the parallelism degree. The third step proceeds to the buﬀer sizing, task scheduling and the
+place and route of tasks onto the hardware. Finally, the fourth step generates the runtime and
+
+3 In this paper we consider the runtime as a set of instanciated parameters and some generated pieces of
+code, to be used with system functions that are part of a system software.
+
+1127
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+processes a hierchical linking with the user code and the system software. We describe how
+these steps are involved in the compilation of system agents, using three diﬀerent strategies.
+
+Figure 3: Access patterns and the occurrence scheduling graph.
+Shared Buﬀers and Indexes Generation. Shared buﬀers are one eﬃcient strategy to
+reorganize data. For each system agent surface a shared buﬀer is created and for each communication port belonging to the edge of the surface, a data access pattern is calculated. This
+pattern deﬁnes, for each occurrence of the task, the oﬀset and the access size to be applied on
+the shared buﬀer. Figure 3 shows a surface made of two system agents (a split and a join),
+connected to one producer p and one consumer c. Productions and consumptions are indicated
+along the communication links. On the right side, we represent the corresponding shared buﬀer
+@0 and the diﬀerent accesses made by the user agents. The buﬀer has a length of 32 elements,
+and is partially updated by each occurrence of p, starting at address 0 for p0 , 4 for p1 , 8 for
+p2 and 12 for p3 . The pattern is thereafter repeated for the next occurrences. Consumer c is
+given as well. At the bottom of the ﬁgure, we show the scheduling graph for tasks p and c.
+Nodes represent the task occurrences and the edges the dependencies. Dependencies can be
+implicit (between two consecutive occurrences of the same task), explicit (two diﬀerent tasks)
+or directed by the producer-consumer pattern (for example, occurrence p4 requires c12 to write
+in the ﬁrst part of the buﬀer to avoid overwriting unread data). A direct mapping is done
+between this scheduling graph and the access patterns.
+This direct mapping is illustrated in Figure 4: a single split agent is connected to one
+producer p and two consumers a and b. On the right side is the complete Sigma-C source code
+of consumer b. The interface section declares one input port and the spec section indicates
+1128
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+that the input port receives two data each time the start function is ﬁred up (which happens
+at each occurrence). Within this function, a read access is made to the input port, aliased to i.
+A representation of the runtime access table is given for the input port of b. It indicates that
+when executing the start function at occurrence number 2, the i alias (and therefore i[0]) points
+to the twelfth element of the shared buﬀer. This table is represented in a slightly diﬀerent way
+in the runtime, using increments instead of oﬀsets. This example preserves the equivalence
+of pointer as alias i always points to a contiguous memory space of size 2. This is a direct
+consequence of the production and consumption quantities of the split agent and its consumers
+that divide each other.
+Figure 5 illustrates what
+happens when such conditions are not met and
+the equivalence of pointers
+(EoP) is broken. On the
+left part is the application
+graph with a surface made
+of six system agents. On
+the right part we represent
+the diﬀerent accesses onto
+the shared buﬀer. This
+buﬀer has a size of 32 elements and is equally divided into 4 parts, following the productions of
+agent p. Below the buﬀer,
+we represent the memory
+access positions for different agents. Each access has a number givFigure 4: From the Sigma-C source code to the runtime access table.
+ing the order (this corresponds to the occurrence
+number, starting from 1). For example, the ﬁrst access of agent S0 is made at oﬀset 0, then
+at oﬀsets 4, 16 and 20. According to this, we calculate the expected oﬀsets for the agents
+connected after S0 . At the end of the surface, consumer c follows the access pattern given at
+the bottom of the ﬁgure. This incremental method is also used by the algorithm in charge
+of calculating the access patterns within the compiler. Figure 5 shows two compilation cases
+regarding EoP: branch S0 -J0 accesses 8 elements at oﬀsets 0 and 16, in which c is always able
+to read 2 contiguous elements, whereas branch S1 -J1 leads to sparse memory sections (red sections on the ﬁgure). Indeed, the memory space attached to the third occurrence of agent S1 is
+composed by two sections: two elements starting at oﬀset 14 and one element located at oﬀset
+24. Non contiguous sections also refers to the problem of data alignment, in which memory
+operations are eﬃcient if data is located at a memory oﬀset that is equal to some multiple
+of the word size. In this example, EoP is broken by the fact that S1 consumptions do not
+divide S productions (same for J1 and S1 ). On the ﬁgure, system agents that are connected to
+agents whose consumptions divide productions are in violet, and in orange otherwise. As for
+the compiler’s algorithm, we consider each system agent and compare its output productions
+with the consumptions of the ports it is connected to. Diﬀerent situations are then handled.
+The equivalence of pointers is always preserved when the consumptions divide the produc1129
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+Figure 5: Equivalence of pointer with a consumer connected to a system surface.
+
+Figure 6: Reorganizing the producer writing pattern to keep the equivalence of pointer.
+
+tions (whatever the system agents are). Other conﬁgurations generally do not work as this.
+However, some of them can be slightly modiﬁed in order to get the EoP property back. These
+modiﬁcations are made by the compiler and work as presented in ﬁgure 6 in which the split
+agent productions are not written sequentially (as in the top diagram), but instead a contiguous
+space is reserved to each output port (bottom diagram).
+The shared buﬀer size is calculated while compiling the system surface. The optimal size
+is the minimum size that allows a maximum degree of parallelism (giving enough space for
+producers to write while consumers read). However, due to memory restrictions at run time (at
+least in embedded systems), the buﬀer size can also be seen as a tradeoﬀ between parallelism
+and memory footprint. Usually, a good guess is to use the least common multiple of the sum
+of the productions and the sum of the consumptions.
+
+DMA Micro-Code Generation. Shared buﬀer compilation is tightly coupled with the
+targeted hardware architecture: to be eﬃcient, agents connected to the same system surface
+have to be mapped [9] onto cores that share a physical memory (let’s call it a cluster). With
+both complexity of applications and many-core memory hierarchies, some surfaces may not
+ﬁnd a cluster and have to be split among them. Several many-core systems oﬀer DMA engines
+to move data from one cluster to another. In the Sigma-C compiler, a set of basic surfaces
+have been identiﬁed (such as split-join), and it is possible to generate the corresponding DMA
+micro-code. This micro-code can either be made of nested loops (up to 3 if 3D DMA engine),
+or a sequence of indexes, which is better regarding performance.
+1130
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+User Code Generation. Whenever it is not possible to calculate access patterns onto a
+shared buﬀer, neither a DMA micro-code, the compiler falls back into a safe transformation
+of system agents into user agents. A genuine Sigma-C source code is generated from system
+parameters attached to the remaining system agents. This source code is merged to the project
+thanks to iterative compilation. This simple strategy ensures to ﬁnd a solution in complex
+situations, however this leads to the use of one buﬀer and data copies per communication port,
+which is far from being eﬃcient.
+
+4
+
+Experiments
+
+M
+
+n
+
+io
+ot
+
+n
+
+Q
+SE
+
+Q
+
+SE
+
+Q
+
+SR
+
+SE
+
+U
+
+SR
+
+on
+
+U
+
+iti
+
+on
+
+iti
+
+SR
+
+U
+
+e
+
+e
+
+ad
+
+io
+ot
+
+c
+as
+
+ad
+
+os
+sp
+an
+
+c
+as
+
+M
+
+C
+
+C
+
+Tr
+
+Q
+SE
+
+SR
+
+U
+
+os
+sp
+an
+
+Tr
+
+ity
+
+t
+en
+Id
+
+ity
+
+t
+en
+Id
+
+In this section, we evaluate the shared buﬀer and the user agent compilation strategies for
+three synthetic applications and an industrial motion detection application. Experiments are
+conducted over the instruction set simulator (ISS) of the Kalray MPPA 256-core processor.
+This processor is made of 16 clusters interconnected by a dual torus network-on-chip, each
+cluster being composed of 16 cores and a shared 2 MB scratchpad memory. The ISS is an
+accurate simulator that mirrors the architecture behaviour, down to the core registers. Synthetic
+applications include a simple system surface made of 2 successive identity agents, a surface of
+cascading split agents (7 split agents organized in 3 levels, each split having 2 outputs) and
+a simple matrix transposition surface (a split reading line by line connected to a join reading
+element by element).
+The motion detection
+application takes two im120
+minimum
+average
+ages and draws rectanmaximum
+66094660
+146511424
+4280415585
+6666390
+gles that highlight parts
+100
+that have changed. Input images are both split
+80
+thanks to 2 duplicate
+4492484
+agents within 8 process60
+ing pipelines made of
+73255064
+6 user agents and a du40
+plicate agent.
+Finally,
+3 join agents rebuild the
+resulting image. When
+20
+compiling this applica72327408
+32785
+tion, 11 system agents are
+0
+transformed into shared
+buﬀers, while the 2 remaining, part of those in
+charge of rebuilding the
+image, are transformed
+into user agents.
+Figure 7: Instruction Set Simulator cycles are given to complete one appliIn these experiments, cation cycle. We compare applications compiled with the user agents strategy
+we evaluate the time needeed(USR) with the shared buﬀer strategy (SEQ). For each application, the repreto process a piece of data, sentation is normalized to the maximum value. Smaller is better.
+corresponding to the complete cycle of the application. This includes all user processings and data reorganizations.
+Figure 7 shows the number of simulation cycles (one ISS cycle is 2.5ns) needed to perform one
+application cycle, for the applications compiled in both user (USR) and shared buﬀer (SEQ)
+1131
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+modes. The general observation is that shared buﬀers signiﬁcantly improve performance for all
+the applications. This is particularly true for complex system surfaces such as the split cascade
+(the identity application is quite obvious and should be read as a test case). The industrial
+motion detection application also beneﬁts from shared buﬀers by running 1.5x times faster.
+This also demonstrates that even if all the algorithm complexity stands within the user code,
+data reorganization plays a key role in the overall performance.
+
+5
+
+Conclusion
+
+Data reorganization can be a major issue while running applications onto may-core processors,
+due to the complex memory movements it involves. Dataﬂow programming languages transparently manages communications, but at the price of relying on a compiler that eﬃciently works
+on it. In this paper we focus on the use of shared buﬀers and the calculation of memory access
+patterns. This strategy has shown to be eﬃcient while targeting the 256-core MPPA processor,
+as it is possible to use shared physical memories. The compiler is also able to switch back to
+a micro-code generation for a DMA engine, or to a user source code generation. Experiments
+show expected improvements over regular data reorganizations, especially in presence of large
+system surfaces and complex reorganizations. It also improves performance in the context of
+the motion detection application (an industrial test case for the MPPA processor) that runs up
+to 1.5x times faster. Some future works can focus on generalizing the shared buﬀer strategy to
+all system agent combinations, regardless of their productions and consumptions.
+
+References
+[1] The kalray mppa 256 manycore processor. Kalray S.A. http://www.kalray.eu/.
+[2] Saman Amarasinghe, Michael I. Gordon, Michal Karczmarek, Jasper Lin, David Maze, Rodric M.
+Rabbah, and William Thies. Language and compiler design for streaming applications. Int. J.
+Parallel Program., 33(2):261–278, June 2005.
+[3] Pascal Aubry, Pierre-Edouard Beaucamps, Fr´ed´eric Blanc, Bruno Bodin, Sergiu Carpov, Lo¨ıc
+Cudennec, Vincent David, Philippe Dor´e, Paul Dubrulle, Benoˆıt Dupont De Dinechin, Fran¸cois
+Galea, Thierry Goubier, Michel Harrand, Samuel Jones, Jean-Denis Lesage, St´ephane Louise,
+Nicolas Morey Chaisemartin, Thanh Hai Nguyen, Xavier Raynaud, and Renaud Sirdey. Extended
+Cyclostatic Dataﬂow Program Compilation and Execution for an Integrated Manycore Processor.
+In Alchemy 2013 - Architecture, Languages, Compilation and Hardware support for Emerging
+ManYcore systems, volume 18, pages 1624–1633, Barcelona, Espagne, June 2013.
+[4] Thomas W. Bartenstein and Yu David Liu. Green streams for data-intensive software. In Proceedings of the 2013 International Conference on Software Engineering, ICSE ’13, pages 532–541,
+Piscataway, NJ, USA, 2013. IEEE Press.
+[5] G. Bilsen, M. Engels, R. Lauwereins, and J. Peperstraete. Cycle-static dataﬂow. Signal Processing,
+IEEE Transactions on, 44(2):397–408, 1996.
+[6] Sergiu Carpov, Lo¨ıc Cudennec, and Renaud Sirdey. Throughput constrained parallelism reduction
+in cyclo-static dataﬂow applications. In International Conference on Computational Science (ICCS
+2013), volume 18, pages 30–39, Barcelona, Espagne, June 2013.
+[7] Lo¨ıc Cudennec and Renaud Sirdey. Parallelism reduction based on pattern substitution in dataﬂow
+oriented programming languages. In Proceedings of the 12th International Conference on Computational Science, ICCS’12, Omaha, Nebraska, USA, June 2012.
+[8] J. Eker and J. W. Janneck. Cal language report speciﬁcation of the cal actor language. Technical
+Report UCB/ERL M03/48, EECS Department, University of California, Berkeley, 2003.
+
+1132
+
+Data Reorganization for Many-cores
+
+Cudennec, Dubrulle, Gal´ea, Goubier and Sirdey
+
+[9] Fran¸cois Galea and Renaud Sirdey. A parallel simulated annealing approach for the mapping of
+large process networks. In IPDPS Workshops, pages 1787–1792. IEEE Computer Society, 2012.
+[10] Michael Gordon, William Thies, Michal Karczmarek, Jeremy Wong, Henry Hoﬀmann, David
+Maze, and Saman Amarasinghe. A stream compiler for communication-exposed architectures. In
+In Proceedings of the 10th International Conference on Architectural Support for Programming
+Languages and Operating Systems, pages 291–303, 2002.
+[11] Thierry Goubier, Damien Courouss´e, and Selma Azaiez. Programming the sthorm manycore:
+Tauc. In Design, Automation and Test in Europe (DATE 2013), STHORM Workshop, March
+2013.
+[12] Thierry Goubier, Renaud Sirdey, St´ephane Louise, and Vincent David. Sigma-C: A programming
+model and language for embedded manycores. In Yang Xiang, Alfredo Cuzzocrea, Michael Hobbs,
+and Wanlei Zhou, editors, Algorithms and Architectures for Parallel Processing, volume 7016 of
+Lecture Notes in Computer Science, pages 385–394. Springer Berlin / Heidelberg, 2011.
+[13] Sherif Sakr. An introduction to infosphere streams: A platform for analyzing big data in motion.
+Technical report, May 2013.
+[14] William Thies, Michal Karczmarek, and Saman Amarasinghe. StreamIt: A language for streaming
+applications. In In International Conference on Compiler Construction, pages 179–196, 2001.
+
+1133
+
+
